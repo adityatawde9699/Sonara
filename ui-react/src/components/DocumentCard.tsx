@@ -50,7 +50,9 @@ export const DocumentCard: FC<Props> = ({
           </svg>
         </div>
         <div className="document-meta">
-          <h2 id="document-title">{documentName || "No document selected"}</h2>
+          <h2 id="document-title" title={documentName || undefined}>
+            {documentName || "No document selected"}
+          </h2>
           <p id="document-detail" className={errorText ? "error" : ""}>
             {errorText || statusText}
           </p>
