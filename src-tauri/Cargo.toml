@@ -1,0 +1,23 @@
+[package]
+name = "sonara-desktop"
+version = "0.1.0"
+description = "Local-first Sonara document reader"
+authors = ["Sonara contributors"]
+edition = "2021"
+rust-version = "1.90"
+
+[build-dependencies]
+tauri-build = { version = "=2.5.6", features = [] }
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+libc = "=0.2.182"
+getrandom = "=0.3.4"
+tauri = { version = "=2.10.3" }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+strip = true

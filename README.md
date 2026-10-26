@@ -1,0 +1,123 @@
+# Sonara
+
+Sonara is a local document-to-speech reader with a Python CLI and a Tauri 2 desktop app featuring an accessible React + TypeScript interface. The desktop app and CLI extract PDF, plain text (`.txt`/`.text`), Markdown (`.md`), Word (`.docx`), and e-book (`.epub`) files, then generate mapped WAV chunks with a local Piper TTS worker. Native document selection, speech synthesis lifecycle, real-time chunk progress, audio playback, passage navigation, speed adjustment, keyboard shortcuts, document history, and Rust-owned reading progress are implemented.
+
+## Prerequisites
+
+- Python with versions matching the available `piper-tts` and ONNX Runtime wheels. Python 3.14.4 is the environment tested for this baseline; other Python versions are not verified here.
+- Poppler's `pdftotext` command. On Debian/Ubuntu: `sudo apt install poppler-utils`; verify with `pdftotext -v`.
+- The local Piper voice model and adjacent JSON configuration in `models/piper/` (or an explicitly installed voice in another data directory). See [the model record](models/piper/README.md).
+- For the desktop application: Rust stable/Cargo, GTK 3, WebKitGTK 4.1 development packages, Zenity or Kdialog for Linux's native document picker, and `gstreamer1.0-plugins-bad` for WebKitGTK media decoding. Rust crates are pinned and locked in `src-tauri/Cargo.lock`.
+
+## Environment setup
+
+Create an isolated environment and install only the pinned Python runtime dependencies:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip check
+```
+
+The app requires system Poppler separately; it is not a Python package. Sonara does not download voice files automatically. If obtaining a voice, use Piper's documented voice acquisition workflow, review its model card and terms, and verify the provenance before using or redistributing it.
+
+## Read a Document
+
+Sonara accepts PDF, plain text (`.txt`, `.text`), Markdown (`.md`), Word documents (`.docx`), and e-books (`.epub`):
+
+```sh
+.venv/bin/python sonara.py read ./document.pdf \
+  --voice en_US-john-medium \
+  --data-dir ./models/piper \
+  --output-dir ./reading
+```
+
+Open `./reading/index.html` in a browser. The page offers play/pause, document-wide seeking across sentence chunks, a 0.7–1.5× speed slider, pause timing between chunks, retry/skip controls for failed chunks, and an attempt to save segment/time/rate in browser local storage. Generated chunk WAVs and `audio_chunks.json` are stored under `./reading`; the optional content-addressed synthesis cache is stored in `./.sonara-audio-cache` and pruned using a 512 MiB inactive-cache budget.
+
+The default `--piper piper` path uses a persistent worker when `piper-tts` is installed in the active Python environment. It loads the selected model once per reading session and keeps document text out of process arguments. An explicit executable override (or PATH fallback when the Python package is absent) retains the compatible one-shot CLI path and passes text through a short-lived UTF-8 input file. Run `.venv/bin/python sonara.py read --help` for all options.
+
+By default, the Python worker leaves Piper's `noise_scale` and `noise_w_scale` unset so each voice uses its own model configuration. `--variation less|more` applies a small experimental adjustment relative to those voice defaults; `voice_default` remains the default. These controls change generator noise and phoneme-width variation, not pitch or emotional acting. Compare them by listening before choosing a different default.
+
+The narration planner preserves source text and source offsets while creating a separate spoken-text layer. English rules expand a conservative set of abbreviations and common units. ISO dates and numeric bracket citations remain unchanged unless enabled with `--expand-dates` or `--expand-citations`. In the desktop app, use **Preview narration** on a selected document to review the original and spoken versions before starting synthesis.
+
+## Desktop application
+
+The desktop application is a single-window Tauri 2 app with an accessible React + TypeScript frontend in `ui-react/`. It uses native file picking (Zenity with Kdialog fallback on Linux, AppleScript on macOS, PowerShell on Windows), starts the local Python Piper synthesis pipeline with real-time passage progress events, and stores generated audio plus versioned progress under Tauri's per-user local application data directory. For WebView media playback, Rust starts an ephemeral loopback HTTP listener bound only to `127.0.0.1`; a random per-launch token, exact Host check, active document hash/index, and canonical chunk-directory check restrict it strictly to generated passage WAVs. Byte ranges support seamless seeking. The frontend receives no arbitrary filesystem access.
+
+The desktop app accepts **PDF, TXT/TEXT, Markdown (`.md`), Word (`.docx`), and EPUB** documents. Extraction and speech generation run locally with the Python document adapters and Piper.
+
+When a prepared desktop session is active, the listening workspace also shows its locally extracted text. The reading view supports paragraph-based paging, in-document search, and adjustable text size. It is limited to the active session: original document page layout, heading navigation, durable library reopening, and synchronized text/audio highlighting are not currently provided by the backend.
+
+### Run the desktop app
+
+1. Build the React frontend bundle:
+   ```sh
+   cd ui-react && npm run build && cd ..
+   ```
+
+2. Run the desktop application:
+   ```sh
+   cargo run --manifest-path src-tauri/Cargo.toml --locked
+   ```
+
+The application embeds the production frontend assets from `ui-react/dist/` directly, requiring no external dev server or network connections.
+
+For frontend development with live hot-reloading:
+```sh
+cd ui-react && npm run dev
+```
+
+The default runtime expects `.venv/bin/python`, `sonara.py`, and `models/piper/en_US-john-medium.onnx` in this checkout. Override those locations with `SONARA_PROJECT_ROOT`, `SONARA_PYTHON`, and `SONARA_MODEL_DIR` when needed.
+
+## Performance Benchmark & Packaging
+
+- **Performance Benchmarks**: See [Benchmark Report](docs/BENCHMARKS.md) for multi-voice latency, Time to First Audio (TTFA), and Real-Time Factor (RTF) figures on CPU execution.
+- **Packaging & Bundling**: See [Packaging Guide](docs/PACKAGING.md) for instructions on creating standalone `.deb`, `AppImage`, and desktop bundles.
+
+```sh
+# Benchmark single voice
+.venv/bin/python benchmark.py --voice en_US-john-medium
+
+# Benchmark all installed voices
+.venv/bin/python benchmark.py --all
+```
+
+## Tests
+
+Frontend checks from `ui-react/`:
+
+```sh
+npm test
+npm run build
+npm run lint
+```
+
+Fast tests do not load a model or require Poppler:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+The opt-in integration suite generates its own PDFs and compares structured Poppler output to the existing `-layout` text extraction. It tests the real PDF-to-CLI path, direct Piper Python API chunk generation and source mapping, cancellation, and corrupt-model errors using only the existing local model. Generated fixture/output files live inside temporary directories:
+
+```sh
+SONARA_RUN_INTEGRATION=1 .venv/bin/python -m unittest discover -s tests -p 'test_integration_*.py' -v
+```
+
+See [testing instructions and current evidence](docs/TESTING.md). Node.js syntax-checks the generated player script when available, but this is not browser playback verification.
+
+## Current limitations
+
+- Searchable PDF text is extracted directly via Poppler. Scanned PDFs are supported via pluggable Tesseract OCR (`ocr.py`) with `pdftoppm` rendering, coordinate translation, and disk caching when `tesseract-ocr` is installed on the host system.
+- The canonical extracted representation retains page, block, and bounding-box locations. Headings/list labels are visual/text heuristics; tables remain text blocks, and complex columns can require review. A machine-readable document schema exists in code but is not yet a persisted UI format.
+- Narration boundaries are deterministic heuristics with a finite English abbreviation list. Equations, citations, code, unusual abbreviations, and non-English punctuation may need review.
+- Date and numeric citation expansions are opt-in; the current English abbreviation/unit rules are conservative and do not alter source documents. A preview is available in the desktop interface and with `sonara.py read --preview`.
+- The CLI generates the complete document before the HTML player is opened; playback then loads one persisted sentence WAV at a time. Pause/resume, cross-chunk seeking, speed, pause timing, per-document segment/time progress, and retry/skip UI are implemented in the player, but actual browser behavior and progress persistence remain unverified. Pausing browser playback does not cancel or pause synthesis because synthesis completes first.
+- Piper advertises speed control only. It does not provide the current adapter with emotion or phrase-emphasis controls, diarization, or GPU selection. The explicit executable override remains one-shot.
+- Optional WAV caching is enabled by the default CLI, with LRU cleanup of inactive content-addressed WAVs at a 512 MiB budget; entries for the active synthesis plan are protected and can temporarily exceed it.
+- A blinded listening-pack generator is available as `.venv/bin/python listening_eval.py --voice en_US-john-medium --output-dir /tmp/sonara-listening-evaluation`. It generates randomized, RMS-level-matched samples for voice-default/less/more variation and separates participant sheets from the facilitator key. A pack was generated successfully, but no human listening result is claimed until participants rate the samples.
+- The Tauri UI has compiled but has not been opened interactively here: GTK initialization fails because this environment has no usable display. The earlier generated HTML player also remains without browser verification. Historical performance benchmark results are documented separately; they are not human listening results.
+- The installed model and config have recorded hashes and upstream revision; runtime, model, phonemizer, and application licensing must be assessed separately before distribution.
+- Git metadata is unavailable in this workspace (`.git/` is empty).
+
+Sonara has a desktop development prototype, not a distributable desktop release. See [the roadmap](docs/ROADMAP.md) for the staged plan.

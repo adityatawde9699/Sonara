@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Sonara</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Sonara home"><span class="brand-mark">S</span><span>sonara</span></a>
+        <span class="local-badge"><span aria-hidden="true">●</span> Local processing</span>
+      </header>
+
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">A quieter way to read</p>
+        <h1 id="page-title">Listen to your documents.</h1>
+        <p class="subtitle">Choose a searchable PDF and Sonara will prepare it for listening on this device.</p>
+      </section>
+
+      <section class="document-card" aria-labelledby="document-title">
+        <div class="card-heading">
+          <div class="document-icon" aria-hidden="true">PDF</div>
+          <div class="document-meta">
+            <h2 id="document-title">No document selected</h2>
+            <p id="document-detail">Your file stays on this device.</p>
+          </div>
+          <button id="choose-document" class="button button-secondary" type="button">Choose PDF</button>
+          <button id="start-synthesis" class="button button-primary" type="button" hidden>Prepare speech</button>
+        </div>
+        <div id="synthesis-area" class="synthesis-area" hidden>
+          <div class="progress-track" aria-hidden="true"><span></span></div>
+          <div class="synthesis-row"><span id="synthesis-status">Preparing local speech…</span><button id="cancel-synthesis" class="text-button" type="button">Cancel</button></div>
+        </div>
+      </section>
+
+      <section id="player-card" class="player-card" aria-labelledby="player-title" hidden>
+        <div class="player-heading">
+          <div><p class="eyebrow">Now ready</p><h2 id="player-title">Your document</h2></div>
+          <span id="voice-label" class="voice-label">John · English (US)</span>
+        </div>
+        <audio id="audio" preload="metadata"></audio>
+        <div class="transport">
+          <button id="play" class="button button-primary" type="button" aria-label="Play">▶ <span>Play</span></button>
+          <button id="pause" class="button button-secondary" type="button" disabled>Pause</button>
+          <button id="retry" class="text-button" type="button" hidden>Retry passage</button>
+          <button id="skip" class="text-button" type="button" hidden>Skip passage</button>
+        </div>
+        <label class="range-label" for="seek"><span>Position</span><span id="position-label">0:00 / 0:00</span></label>
+        <input id="seek" class="range" type="range" min="0" max="1000" value="0" aria-label="Seek through document" />
+        <div class="speed-control">
+          <label class="range-label" for="speed"><span>Listening speed</span><span id="speed-label">1.0×</span></label>
+          <input id="speed" class="range" type="range" min="0.7" max="1.5" step="0.1" value="1" />
+        </div>
+        <p id="player-status" class="status" role="status" aria-live="polite">Ready to play.</p>
+      </section>
+
+      <footer><span>Made for focused listening.</span><span>Sonara · Offline by default</span></footer>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

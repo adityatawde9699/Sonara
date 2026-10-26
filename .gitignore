@@ -1,0 +1,63 @@
+# Python environments, bytecode, and tool caches
+.venv/
+venv/
+.python-version.local
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.cache/
+.tools/
+
+# Node / Vite / frontend test output
+node_modules/
+dist/
+coverage/
+.vite/
+playwright-report/
+test-results/
+
+# Rust / Tauri build artifacts
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+
+# Local models and generated reading/audio output
+/models/*
+!/models/piper/
+/models/piper/*
+!/models/piper/README.md
+sonara-reading/
+reader-output/
+.sonara-audio-cache/
+audio_chunks.json
+*.wav
+
+# Local application data and diagnostics
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Secrets and machine-specific credentials
+.env
+.env.*
+!.env.example
+.aws/
+
+# Locally installed agent skills / temporary design-skill state
+.agents/skills/
+.agents/tsconfig.json
+.taste-skill/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json

@@ -1,0 +1,6 @@
+# Sonara invokes Piper as a local CLI/module for actual speech generation.
+piper-tts==1.8.0
+
+# Pin Piper's ONNX inference runtime for a repeatable local baseline.
+# This is a dependency of piper-tts, not imported directly by sonara.py.
+onnxruntime==1.31.0
