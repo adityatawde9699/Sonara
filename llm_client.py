@@ -8,26 +8,35 @@ OpenRouter, LocalAI, and LM Studio.
 from __future__ import annotations
 
 import json
+import hashlib
+import ipaddress
+import math
+import os
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
 
 
 DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434/v1"
 DEFAULT_OPENAI_ENDPOINT = "https://api.openai.com/v1"
 DEFAULT_GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai"
+DEFAULT_LLAMA_CPP_ENDPOINT = "http://127.0.0.1:9931/v1"
 
 
 @dataclass(frozen=True)
 class LlmConfig:
-    provider: str = "ollama"  # "ollama" | "openai" | "gemini" | "custom"
+    provider: str = "ollama"  # "ollama" | "llama_cpp" | "openai" | "gemini" | "custom"
     endpoint: str = DEFAULT_OLLAMA_ENDPOINT  # e.g. "http://localhost:11434/v1"
     model: str = "llama3.2"  # e.g. "llama3.2", "gpt-4o-mini", "gemini-1.5-flash"
     api_key: str = ""
     temperature: float = 0.7
     max_tokens: int = 1024
+    embedding_model: str = ""
+    embedding_endpoint: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LlmConfig:
@@ -41,12 +50,17 @@ class LlmConfig:
         elif provider == "gemini":
             default_endpoint = DEFAULT_GEMINI_ENDPOINT
             default_model = "gemini-1.5-flash"
+        elif provider == "llama_cpp":
+            default_endpoint = DEFAULT_LLAMA_CPP_ENDPOINT
+            default_model = "local-model"
 
         endpoint = str(data.get("endpoint") or default_endpoint).rstrip("/")
         model = str(data.get("model") or default_model)
         api_key = str(data.get("apiKey") or data.get("api_key") or "")
         temperature = float(data.get("temperature", 0.7))
         max_tokens = int(data.get("maxTokens") or data.get("max_tokens") or 1024)
+        embedding_model = str(data.get("embeddingModel") or data.get("embedding_model") or "")
+        embedding_endpoint = str(data.get("embeddingEndpoint") or data.get("embedding_endpoint") or "")
 
         return cls(
             provider=provider,
@@ -55,6 +69,8 @@ class LlmConfig:
             api_key=api_key,
             temperature=temperature,
             max_tokens=max_tokens,
+            embedding_model=embedding_model,
+            embedding_endpoint=embedding_endpoint,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -76,6 +92,8 @@ def chat_completion(
     max_tokens: int | None = None,
 ) -> str:
     """Send an OpenAI-compatible /chat/completions request via standard library urllib."""
+    if config.provider in {"llama_cpp", "ollama"} and not _is_loopback_endpoint(config.endpoint):
+        raise RuntimeError(f"{config.provider} provider only accepts a local loopback endpoint.")
     url = f"{config.endpoint}/chat/completions"
     headers = {
         "Content-Type": "application/json",
@@ -178,6 +196,8 @@ def ask_document(
         "Ground your answers in the provided document context whenever applicable. "
         "If the document doesn't mention the answer, clearly state so."
     )
+    if config.provider == "llama_cpp":
+        system_prompt += " Cite supporting retrieved excerpts with their labels, such as [Passage 2]. Do not invent citations."
 
     messages = [{"role": "system", "content": system_prompt}]
     for msg in history:
@@ -188,6 +208,8 @@ def ask_document(
 
     user_content = question
     if context_text.strip():
+        if config.provider == "llama_cpp":
+            context_text = retrieve_relevant_context(config, question, context_text)
         # Truncate context to ~12,000 characters to prevent context window overflow
         safe_context = context_text.strip()[:12000]
         user_content = (
@@ -199,6 +221,102 @@ def ask_document(
 
     messages.append({"role": "user", "content": user_content})
     return chat_completion(config, messages)
+
+
+def _is_loopback_endpoint(endpoint: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+        host = parsed.hostname or ""
+        return parsed.scheme in {"http", "https"} and (
+            host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+def _embedding(config: LlmConfig, text: str) -> list[float]:
+    endpoint = config.embedding_endpoint or config.endpoint
+    if not _is_loopback_endpoint(endpoint):
+        raise RuntimeError("llama.cpp embedding endpoint must use localhost or a loopback IP address.")
+    data = json.dumps({"model": config.embedding_model or config.model, "input": text}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{endpoint}/embeddings", data=data,
+        headers={"Content-Type": "application/json", "User-Agent": "Sonara-Desktop/0.1.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        vector = payload["data"][0]["embedding"]
+        if not isinstance(vector, list) or not vector:
+            raise ValueError("empty embedding vector")
+        return [float(value) for value in vector]
+    except Exception as exc:
+        raise RuntimeError(
+            f"Local embeddings unavailable at {endpoint}. Start llama.cpp with --embedding "
+            f"and configure its embedding model. Details: {exc}"
+        ) from exc
+
+
+def retrieve_relevant_context(config: LlmConfig, question: str, document_text: str, *, top_k: int = 6) -> str:
+    """Retrieve paragraph-aligned passages using a local llama.cpp embedding endpoint."""
+    if not _is_loopback_endpoint(config.endpoint):
+        raise RuntimeError("llama.cpp provider is restricted to a local endpoint.")
+    chunks: list[str] = []
+    current = ""
+    for paragraph in (part.strip() for part in document_text.split("\n\n")):
+        if not paragraph:
+            continue
+        words = paragraph.split()
+        pieces: list[str] = []
+        piece = ""
+        for word in words:
+            if piece and len(piece) + len(word) + 1 > 1200:
+                pieces.append(piece)
+                piece = ""
+            piece = f"{piece} {word}".strip()
+        if piece:
+            pieces.append(piece)
+        for part in pieces:
+            if current and len(current) + len(part) + 2 > 1200:
+                chunks.append(current)
+                current = ""
+            current = f"{current}\n\n{part}".strip()
+    if current:
+        chunks.append(current)
+    if not chunks:
+        return document_text[:12000]
+    embedding_model = config.embedding_model or config.model
+    embedding_endpoint = config.embedding_endpoint or config.endpoint
+    use_nomic_prefixes = "nomic-embed-text" in embedding_model.lower()
+    input_schema = "nomic-task-prefixes-v1" if use_nomic_prefixes else "plain-text-v1"
+    digest = hashlib.sha256((embedding_endpoint + "\0" + embedding_model + "\0" + input_schema + "\0" + document_text).encode("utf-8")).hexdigest()
+    root = Path(os.environ.get("SONARA_CACHE_DIR", Path.home() / ".cache" / "sonara")) / "embeddings"
+    cache = root / f"{digest}.json"
+    vectors: list[list[float]] = []
+    try:
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        if saved.get("chunks") == chunks:
+            vectors = saved.get("vectors", [])
+    except (OSError, ValueError, AttributeError):
+        pass
+    if len(vectors) != len(chunks):
+        vectors = [
+            _embedding(config, f"search_document: {chunk}" if use_nomic_prefixes else chunk)
+            for chunk in chunks
+        ]
+        root.mkdir(parents=True, exist_ok=True)
+        temp = cache.with_suffix(".tmp")
+        temp.write_text(json.dumps({"chunks": chunks, "vectors": vectors}), encoding="utf-8")
+        os.replace(temp, cache)
+    query_text = f"search_query: {question}" if "nomic-embed-text" in embedding_model.lower() else question
+    query = _embedding(config, query_text)
+    def similarity(vector: list[float]) -> float:
+        dot = sum(a * b for a, b in zip(query, vector))
+        norm = math.sqrt(sum(a * a for a in query) * sum(b * b for b in vector))
+        return dot / norm if norm else 0.0
+    ranked = sorted(enumerate(vectors), key=lambda item: similarity(item[1]), reverse=True)[:top_k]
+    return "\n\n".join(f"[Passage {index + 1}]\n{chunks[index]}" for index, _ in ranked)
 
 
 def summarize_document(

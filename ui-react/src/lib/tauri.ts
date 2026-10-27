@@ -19,6 +19,7 @@ export interface FrontendSession {
   sourceSha256: string;
   narrationRulesetVersion: string;
   voice: string;
+  engine?: string;
   sampleRate: number;
   channels: number;
   sampleWidthBytes: number;
@@ -35,6 +36,7 @@ export interface VoiceInfo {
 }
 
 export type PiperVariation = "voice_default" | "less" | "more";
+export type SpeechEngine = "piper" | "kokoro";
 
 export interface NarrationPreviewChange {
   overrideId: string;
@@ -130,9 +132,12 @@ export async function startReading(
   voice?: string,
   variation?: PiperVariation,
   expandDates = false,
-  expandCitations = false
+  expandCitations = false,
+  engine: SpeechEngine = "piper"
 ): Promise<string> {
-  return invoke<string>("start_reading", { voice, variation, expandDates, expandCitations });
+  const args: Record<string, unknown> = { voice, variation, expandDates, expandCitations };
+  if (engine !== "piper") args.engine = engine;
+  return invoke<string>("start_reading", args);
 }
 
 export async function previewNarration(
@@ -184,12 +189,14 @@ export async function onSynthesisProgress(
 // ── LLM & AI Assistant APIs ──────────────────────────────────────────
 
 export interface LlmConfig {
-  provider: "ollama" | "openai" | "gemini" | "custom";
+  provider: "ollama" | "llama_cpp" | "openai" | "gemini" | "custom";
   endpoint?: string;
   model?: string;
   apiKey?: string;
   temperature?: number;
   maxTokens?: number;
+  embeddingModel?: string;
+  embeddingEndpoint?: string;
 }
 
 export interface ChatMessage {
@@ -239,6 +246,7 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
   provider: "ollama",
   endpoint: "http://localhost:11434/v1",
   model: "llama3.2",
+  embeddingModel: "",
   apiKey: "",
   temperature: 0.7,
   maxTokens: 1024,
@@ -252,7 +260,9 @@ export function loadStoredLlmConfig(): LlmConfig {
     const raw = localStorage.getItem(LLM_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...DEFAULT_LLM_CONFIG, ...parsed };
+      const config = { ...DEFAULT_LLM_CONFIG, ...parsed, apiKey: "" };
+      if (parsed.apiKey) localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify({ ...parsed, apiKey: "" }));
+      return config;
     }
   } catch {
     // Fallback to default
@@ -262,7 +272,7 @@ export function loadStoredLlmConfig(): LlmConfig {
 
 export function saveStoredLlmConfig(config: LlmConfig): void {
   try {
-    localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(config));
+    localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify({ ...config, apiKey: "" }));
   } catch {
     // Ignore storage errors
   }

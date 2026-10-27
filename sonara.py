@@ -30,7 +30,7 @@ from document import (
     parse_bbox_layout,
 )
 from narration import NarrationError, build_narration_plan
-from tts_engine import PiperEngine, SynthesisStream, TtsError
+from tts_engine import KokoroEngine, PiperEngine, SynthesisStream, TtsError
 
 
 class SonaraError(RuntimeError):
@@ -373,13 +373,20 @@ def read_document(args: argparse.Namespace) -> Path:
     try:
         plan = build_narration_plan(
             document,
-            language=_voice_language(args.voice),
+            language="en_US" if getattr(args, "engine", "piper") == "kokoro" else _voice_language(args.voice),
             expand_dates=getattr(args, "expand_dates", False),
             expand_citations=getattr(args, "expand_citations", False),
         )
     except NarrationError as exc:
         raise SonaraError(f"Could not plan document narration: {exc}") from exc
-    if _piper_python_api_available(args.piper):
+    if getattr(args, "engine", "piper") == "kokoro":
+        manifest = _synthesize_plan(
+            plan, args.voice, data_dir, speech,
+            variation=getattr(args, "variation", "voice_default"),
+            engine_name="kokoro",
+            kokoro_dir=getattr(args, "kokoro_dir", Path("models/kokoro")),
+        )
+    elif _piper_python_api_available(args.piper):
         manifest = _synthesize_plan(plan, args.voice, data_dir, speech, variation=getattr(args, "variation", "voice_default"))
     else:
         # Keep explicit executable overrides and the PATH fallback working.
@@ -450,12 +457,17 @@ def _synthesize_plan(
     output: Path,
     *,
     variation: str = "voice_default",
+    engine_name: str = "piper",
+    kokoro_dir: Path = Path("models/kokoro"),
 ) -> dict[str, Any]:
     """Generate mapped unit WAVs with one worker and return a playback manifest."""
-    model_path = data_dir / f"{voice}.onnx"
-    config_path = model_path.with_suffix(model_path.suffix + ".json")
     try:
-        engine = PiperEngine(model_path, config_path, variation=variation)
+        if engine_name == "kokoro":
+            engine = KokoroEngine(kokoro_dir, voice=voice)
+        else:
+            model_path = data_dir / f"{voice}.onnx"
+            config_path = model_path.with_suffix(model_path.suffix + ".json")
+            engine = PiperEngine(model_path, config_path, variation=variation)
     except TtsError as exc:
         raise SonaraError(str(exc)) from exc
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -679,7 +691,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     read = sub.add_parser("read", help="extract a document (.pdf, .txt, .text, .md, .docx, .epub), synthesize audio, and create a resumable browser player")
     read.add_argument("document", type=Path, metavar="DOCUMENT", help="Path to document (.pdf, .txt, .text, .md, .docx, .epub)")
-    read.add_argument("--voice", required=True, help="installed Piper voice model name")
+    read.add_argument("--voice", required=True, help="installed Piper voice model name or Kokoro voice id")
+    read.add_argument("--engine", choices=("piper", "kokoro"), default="piper", help="local speech engine")
+    read.add_argument("--kokoro-dir", type=Path, default=Path("models/kokoro"), help="directory containing Kokoro ONNX and voice files")
     read.add_argument(
         "--variation",
         choices=("voice_default", "less", "more"),

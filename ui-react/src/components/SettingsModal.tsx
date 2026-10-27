@@ -5,6 +5,7 @@ import {
   type LlmConfig,
   type LlmTestResult,
   type PiperVariation,
+  type SpeechEngine,
   loadStoredLlmConfig,
   saveStoredLlmConfig,
   llmTestConnection,
@@ -22,6 +23,8 @@ interface Props {
   onVoiceChange?: (voiceId: string) => void;
   piperVariation?: PiperVariation;
   onVariationChange?: (value: PiperVariation) => void;
+  speechEngine?: SpeechEngine;
+  onSpeechEngineChange?: (value: SpeechEngine) => void;
   expandDates?: boolean;
   onExpandDatesChange?: (enabled: boolean) => void;
   expandCitations?: boolean;
@@ -46,6 +49,8 @@ export const SettingsModal: FC<Props> = ({
   onVoiceChange,
   piperVariation = "voice_default",
   onVariationChange,
+  speechEngine = "piper",
+  onSpeechEngineChange,
   expandDates = false,
   onExpandDatesChange,
   expandCitations = false,
@@ -82,7 +87,10 @@ export const SettingsModal: FC<Props> = ({
   const handleProviderChange = (provider: LlmConfig["provider"]) => {
     let defaultEndpoint = "http://localhost:11434/v1";
     let defaultModel = "llama3.2";
-    if (provider === "openai") {
+    if (provider === "llama_cpp") {
+      defaultEndpoint = "http://127.0.0.1:9931/v1";
+      defaultModel = "local-model";
+    } else if (provider === "openai") {
       defaultEndpoint = "https://api.openai.com/v1";
       defaultModel = "gpt-4o-mini";
     } else if (provider === "gemini") {
@@ -171,16 +179,28 @@ export const SettingsModal: FC<Props> = ({
 
         {/* Dynamic Voice Selection */}
         <div className="settings-section">
+          <h3 className="settings-section-title">Speech engine</h3>
+          <label className="llm-field">
+            <span className="llm-label">Local narration engine</span>
+            <select className="voice-select" aria-label="Speech engine" value={speechEngine} onChange={(event) => onSpeechEngineChange?.(event.target.value as SpeechEngine)}>
+              <option value="piper">Piper · installed voice models</option>
+              <option value="kokoro">Kokoro · requires local model files and kokoro-onnx</option>
+            </select>
+          </label>
+          {speechEngine === "kokoro" && <p className="settings-section-desc">Kokoro runs on this device when configured. Sonara expects kokoro-v1.0.onnx and voices-v1.0.bin in models/kokoro, plus kokoro-onnx in its Python environment. Model downloads are not automatic.</p>}
+        </div>
+
+        <div className="settings-section">
           <div className="settings-section-head">
             <h3 className="settings-section-title">Narration Voice</h3>
-            {voices.length > 0 && (
+            {speechEngine === "piper" && voices.length > 0 && (
               <span className="settings-badge" data-testid="voice-count-badge">
                 {voices.length} {voices.length === 1 ? "voice" : "voices"} installed
               </span>
             )}
           </div>
           <p className="settings-section-desc">
-            Choose the neural Piper voice that reads your documents. Natural models provide warm cadence and fluid phrasing.
+            {speechEngine === "kokoro" ? "Choose a Kokoro voice preset." : "Choose an installed Piper voice for your documents."}
           </p>
           <div className="voice-select-field">
             <label htmlFor="voice-select" className="visually-hidden">
@@ -193,7 +213,14 @@ export const SettingsModal: FC<Props> = ({
               onChange={(e) => onVoiceChange?.(e.target.value)}
               aria-label="Select narration voice"
             >
-              {voices.length > 0 ? (
+              {speechEngine === "kokoro" ? (
+                <>
+                  <option value="af_sarah">Sarah · US English</option>
+                  <option value="af_heart">Heart · US English</option>
+                  <option value="am_adam">Adam · US English</option>
+                  <option value="am_michael">Michael · US English</option>
+                </>
+              ) : voices.length > 0 ? (
                 voices.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.name}
@@ -206,7 +233,7 @@ export const SettingsModal: FC<Props> = ({
           </div>
         </div>
 
-        <div className="settings-section">
+        {speechEngine === "piper" && <div className="settings-section">
           <h3 className="settings-section-title">Voice variation</h3>
           <p className="settings-section-desc">
             Adjust Piper’s generation variation. This does not control pitch or emotion; the voice default is the reference setting.
@@ -224,7 +251,7 @@ export const SettingsModal: FC<Props> = ({
               <option value="more">More variation</option>
             </select>
           </label>
-        </div>
+        </div>}
 
         <div className="settings-section">
           <h3 className="settings-section-title">Spoken text adjustments</h3>
@@ -256,11 +283,11 @@ export const SettingsModal: FC<Props> = ({
           <div className="settings-section-head">
             <h3 className="settings-section-title">AI Assistant & Smart Narration</h3>
             <span className="settings-badge" data-testid="llm-provider-badge">
-              {llmConfig.provider === "ollama" ? "Local Offline" : "Cloud API"}
+              {llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? "Local · loopback" : "Cloud API"}
             </span>
           </div>
           <p className="settings-section-desc">
-            Connect a local or cloud LLM for document Q&A, comprehensive summaries, and smart narration cleanup.
+            Use local Ollama or llama.cpp for on-device assistance. Cloud providers receive the document context included with your request. API keys stay in memory for this app session and are not saved in WebView storage.
           </p>
 
           <div className="llm-form-grid">
@@ -276,6 +303,7 @@ export const SettingsModal: FC<Props> = ({
                 onChange={(e) => handleProviderChange(e.target.value as LlmConfig["provider"])}
               >
                 <option value="ollama">Ollama (Local & Private · Recommended)</option>
+                <option value="llama_cpp">llama.cpp server (Local · GGUF)</option>
                 <option value="gemini">Google Gemini (Gemini 1.5 Flash)</option>
                 <option value="openai">OpenAI (GPT-4o mini)</option>
                 <option value="custom">Custom (OpenAI-Compatible / LM Studio)</option>
@@ -293,7 +321,7 @@ export const SettingsModal: FC<Props> = ({
                 className="llm-input"
                 value={llmConfig.endpoint || ""}
                 onChange={(e) => handleConfigUpdate({ endpoint: e.target.value })}
-                placeholder="http://localhost:11434/v1"
+                placeholder={llmConfig.provider === "llama_cpp" ? "http://127.0.0.1:9931/v1" : "http://localhost:11434/v1"}
               />
             </div>
 
@@ -312,14 +340,26 @@ export const SettingsModal: FC<Props> = ({
               />
             </div>
 
+            {llmConfig.provider === "llama_cpp" && <div className="llm-field">
+              <label htmlFor="llm-embedding-endpoint" className="llm-label">Embedding server URL</label>
+              <input id="llm-embedding-endpoint" type="text" className="llm-input" value={llmConfig.embeddingEndpoint || ""} onChange={(event) => handleConfigUpdate({ embeddingEndpoint: event.target.value })} placeholder="same server as chat" />
+              <span className="llm-hint">Optional separate loopback server running an embedding model with --embedding.</span>
+            </div>}
+
+            {llmConfig.provider === "llama_cpp" && <div className="llm-field">
+              <label htmlFor="llm-embedding-model" className="llm-label">Embedding model alias</label>
+              <input id="llm-embedding-model" type="text" className="llm-input" value={llmConfig.embeddingModel || ""} onChange={(event) => handleConfigUpdate({ embeddingModel: event.target.value })} placeholder="same as server model" />
+              <span className="llm-hint">Requires a llama.cpp server started with --embedding. Leave blank if the server uses one model for chat and embeddings.</span>
+            </div>}
+
             {/* API Key */}
             <div className="llm-field">
               <div className="llm-field-head">
                 <label htmlFor="llm-api-key" className="llm-label">
                   API Key
                 </label>
-                {llmConfig.provider === "ollama" ? (
-                  <span className="llm-hint">Not required for local Ollama</span>
+                {llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? (
+                  <span className="llm-hint">Not required for local inference</span>
                 ) : (
                   <button
                     type="button"
@@ -336,7 +376,7 @@ export const SettingsModal: FC<Props> = ({
                 className="llm-input"
                 value={llmConfig.apiKey || ""}
                 onChange={(e) => handleConfigUpdate({ apiKey: e.target.value })}
-                placeholder={llmConfig.provider === "ollama" ? "Optional for local Ollama" : "sk-..."}
+                placeholder={llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? "Optional for local inference" : "sk-..."}
               />
             </div>
           </div>
@@ -420,7 +460,7 @@ export const SettingsModal: FC<Props> = ({
             </div>
             <div className="spec-row">
               <span className="spec-label">Engine Runtime</span>
-              <span className="spec-value">Piper 1.8.0 (ONNX Runtime CPU)</span>
+              <span className="spec-value">{session?.engine ?? (speechEngine === "kokoro" ? "Kokoro · optional local runtime" : "Piper · ONNX Runtime CPU")}</span>
             </div>
             <div className="spec-row">
               <span className="spec-label">Audio Quality</span>
@@ -434,7 +474,7 @@ export const SettingsModal: FC<Props> = ({
             </div>
             <div className="spec-row">
               <span className="spec-label">Privacy Guarantee</span>
-              <span className="spec-value highlight-green">100% Offline (Local loopback with bearer auth)</span>
+              <span className="spec-value highlight-green">Narration stays local. Assistant provider is configured separately.</span>
             </div>
           </div>
         </div>

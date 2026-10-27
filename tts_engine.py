@@ -540,6 +540,100 @@ class PiperEngine:
         return worker
 
 
+class KokoroEngine:
+    """Optional local Kokoro ONNX adapter. Requires kokoro-onnx and local model files."""
+
+    def __init__(self, model_dir: Path, voice: str = "af_sarah") -> None:
+        self.model_dir = model_dir.expanduser().resolve()
+        self.model_path = self.model_dir / "kokoro-v1.0.onnx"
+        self.voices_path = self.model_dir / "voices-v1.0.bin"
+        if not self.model_path.is_file() or not self.voices_path.is_file():
+            raise TtsError(
+                f"Kokoro files are not installed. Expected {self.model_path.name} and {self.voices_path.name} in {self.model_dir}."
+            )
+        try:
+            import importlib.metadata
+            from kokoro_onnx import Kokoro
+            self._runtime_version = importlib.metadata.version("kokoro-onnx")
+            self._kokoro = Kokoro(str(self.model_path), str(self.voices_path))
+        except Exception as exc:
+            raise TtsError(
+                "Kokoro runtime is unavailable. Install kokoro-onnx in Sonara's Python environment (Python 3.10–3.13). "
+                f"Details: {exc}"
+            ) from exc
+        self.voice = voice
+        self.capabilities = EngineCapabilities(
+            engine="Kokoro", engine_version=self._runtime_version, voice=voice,
+            language="en-us", model_available=True, audio_format=AudioFormat(24000, 1, 2),
+            minimum_speed=0.5, maximum_speed=2.0,
+            supported_controls=("speed", "voice"),
+            unsupported_controls=("Piper variation", "speaker diarization", "GPU selection"),
+            supports_inflight_cancellation=False, device="CPU",
+        )
+        self.cache_identity = ":".join(("kokoro", self._runtime_version, _sha256_file(self.model_path), _sha256_file(self.voices_path), voice))
+        self._active = threading.Event()
+        self._stream_lock = threading.Lock()
+
+    def begin_stream(self) -> object:
+        if not self._stream_lock.acquire(blocking=False):
+            raise TtsError("This Kokoro engine already has an active synthesis stream.")
+        return object()
+
+    def end_stream(self, token: object) -> None:
+        self._stream_lock.release()
+
+    def cancel_active(self) -> None:
+        # kokoro-onnx does not expose cancellation during an inference call.
+        self._active.set()
+
+    def close(self) -> None:
+        """Release the adapter; Kokoro owns no persistent subprocess."""
+        return None
+
+    def synthesize_to_wav(self, text: str, speed: float, output_path: Path, cancel_event: threading.Event, timeout_seconds: float) -> AudioFormat:
+        if cancel_event.is_set():
+            raise SynthesisCancelled("Synthesis was cancelled before the next narration unit.")
+        if not self.capabilities.minimum_speed <= speed <= self.capabilities.maximum_speed:
+            raise TtsError("Kokoro speed must be between 0.5 and 2.0.")
+        try:
+            import numpy as np
+            samples, sample_rate = self._kokoro.create(text, voice=self.voice, speed=speed, lang="en-us")
+            audio = np.asarray(samples, dtype=np.float32)
+            if audio.ndim > 1:
+                audio = audio.reshape(-1)
+            pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(output_path), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(int(sample_rate))
+                wav.writeframes(pcm)
+            actual = AudioFormat(int(sample_rate), 1, 2)
+            if actual != self.capabilities.audio_format:
+                self.capabilities = EngineCapabilities(**{**self.capabilities.__dict__, "audio_format": actual})
+            if cancel_event.is_set():
+                output_path.unlink(missing_ok=True)
+                raise SynthesisCancelled("Synthesis was cancelled.")
+            return actual
+        except SynthesisCancelled:
+            raise
+        except Exception as exc:
+            if "Nothing to synthesize" in str(exc) and "produced no phonemes" in str(exc):
+                # Keep source/audio chunk indices aligned for PDF artifacts such
+                # as table separators that contain no speakable phonemes.
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                audio_format = self.capabilities.audio_format
+                silence_frames = max(1, int(audio_format.sample_rate * 0.1))
+                with wave.open(str(output_path), "wb") as wav:
+                    wav.setnchannels(audio_format.channels)
+                    wav.setsampwidth(audio_format.sample_width_bytes)
+                    wav.setframerate(audio_format.sample_rate)
+                    wav.writeframes(b"\x00" * silence_frames * audio_format.channels * audio_format.sample_width_bytes)
+                return audio_format
+            output_path.unlink(missing_ok=True)
+            raise TtsError(f"Kokoro synthesis failed: {exc}") from exc
+
+
 class _PiperWorkerClient:
     def __init__(self, model_path: Path, config_path: Path) -> None:
         worker_script = Path(__file__).with_name("piper_worker.py")

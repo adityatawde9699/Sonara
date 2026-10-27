@@ -37,6 +37,8 @@ pub struct LlmConfigInput {
     pub api_key: Option<String>,
     pub temperature: Option<f64>,
     pub max_tokens: Option<u32>,
+    pub embedding_model: Option<String>,
+    pub embedding_endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -130,6 +132,8 @@ struct ReaderSession {
     source_sha256: String,
     narration_ruleset_version: String,
     voice: String,
+    #[serde(default = "default_engine_name")]
+    engine: String,
     sample_rate: u32,
     channels: u16,
     sample_width_bytes: u16,
@@ -143,6 +147,7 @@ struct FrontendSession {
     source_sha256: String,
     narration_ruleset_version: String,
     voice: String,
+    engine: String,
     sample_rate: u32,
     channels: u16,
     sample_width_bytes: u16,
@@ -164,6 +169,7 @@ impl FrontendSession {
             source_sha256: session.source_sha256.clone(),
             narration_ruleset_version: session.narration_ruleset_version.clone(),
             voice: session.voice.clone(),
+            engine: session.engine.clone(),
             sample_rate: session.sample_rate,
             channels: session.channels,
             sample_width_bytes: session.sample_width_bytes,
@@ -178,6 +184,10 @@ impl FrontendSession {
                 .collect(),
         }
     }
+}
+
+fn default_engine_name() -> String {
+    "Piper".to_owned()
 }
 
 impl AudioServer {
@@ -477,6 +487,9 @@ fn current_session(
 #[tauri::command]
 fn list_voices() -> Result<Vec<VoiceInfo>, String> {
     let runtime = resolve_runtime()?;
+    if !runtime.model_dir.is_dir() {
+        return Ok(Vec::new());
+    }
     discover_voices(&runtime.model_dir)
 }
 
@@ -566,6 +579,7 @@ fn start_reading(
     variation: Option<String>,
     expand_dates: Option<bool>,
     expand_citations: Option<bool>,
+    engine: Option<String>,
 ) -> Result<String, String> {
     let selected_path = state
         .selected_document
@@ -587,6 +601,10 @@ fn start_reading(
     }
 
     let runtime = resolve_runtime()?;
+    let selected_engine = engine.unwrap_or_else(|| "piper".to_owned());
+    if !["piper", "kokoro"].contains(&selected_engine.as_str()) {
+        return Err("Choose Piper or Kokoro as the speech engine.".to_owned());
+    }
     let selected_voice = match voice.as_deref() {
         Some(v) if !v.trim().is_empty() => {
             let candidate = v.trim();
@@ -596,29 +614,39 @@ fn start_reading(
             {
                 return Err("Invalid voice name.".to_owned());
             }
-            if !runtime
-                .model_dir
-                .join(format!("{candidate}.onnx"))
-                .is_file()
-                || !runtime
+            if selected_engine == "piper"
+                && (!runtime
                     .model_dir
-                    .join(format!("{candidate}.onnx.json"))
+                    .join(format!("{candidate}.onnx"))
                     .is_file()
+                    || !runtime
+                        .model_dir
+                        .join(format!("{candidate}.onnx.json"))
+                        .is_file())
             {
                 return Err(format!(
                     "Selected voice '{candidate}' is not installed in {}.",
                     runtime.model_dir.display()
                 ));
             }
+            if selected_engine == "kokoro"
+                && !["af_sarah", "af_heart", "am_adam", "am_michael"].contains(&candidate)
+            {
+                return Err("Choose an available Kokoro voice (af_sarah, af_heart, am_adam, or am_michael).".to_owned());
+            }
             candidate.to_string()
         }
         _ => {
-            let voices = discover_voices(&runtime.model_dir)?;
-            voices
-                .iter()
-                .find(|v| v.is_default)
-                .map(|v| v.id.clone())
-                .unwrap_or_else(|| DEFAULT_FALLBACK_VOICE.to_string())
+            if selected_engine == "kokoro" {
+                "af_sarah".to_owned()
+            } else {
+                let voices = discover_voices(&runtime.model_dir)?;
+                voices
+                    .iter()
+                    .find(|v| v.is_default)
+                    .map(|v| v.id.clone())
+                    .unwrap_or_else(|| DEFAULT_FALLBACK_VOICE.to_string())
+            }
         }
     };
     let selected_variation = variation.unwrap_or_else(|| "voice_default".to_owned());
@@ -650,6 +678,7 @@ fn start_reading(
         &output_dir,
         &selected_voice,
         &selected_variation,
+        &selected_engine,
         expand_dates.unwrap_or(false),
         expand_citations.unwrap_or(false),
         log,
@@ -1151,6 +1180,11 @@ fn load_reader_session(output_dir: &Path, source_path: &Path) -> Result<ReaderSe
             .and_then(serde_json::Value::as_str)
             .unwrap_or(DEFAULT_FALLBACK_VOICE)
             .to_owned(),
+        engine: manifest
+            .get("engine")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Piper")
+            .to_owned(),
         sample_rate,
         channels,
         sample_width_bytes,
@@ -1206,6 +1240,7 @@ fn validate_document(path: &Path) -> Result<PathBuf, String> {
 struct RuntimePaths {
     project_root: PathBuf,
     python: PathBuf,
+    kokoro_python: PathBuf,
     script: PathBuf,
     model_dir: PathBuf,
 }
@@ -1216,12 +1251,24 @@ fn spawn_sonara_worker(
     output_dir: &Path,
     voice: &str,
     variation: &str,
+    engine: &str,
     expand_dates: bool,
     expand_citations: bool,
     stdout: File,
     stderr: File,
 ) -> std::io::Result<Child> {
-    let mut command = Command::new(&runtime.python);
+    let python = if engine == "kokoro" {
+        if !runtime.kokoro_python.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Kokoro Python environment is missing at {}. Install its dependencies in that environment.", runtime.kokoro_python.display()),
+            ));
+        }
+        &runtime.kokoro_python
+    } else {
+        &runtime.python
+    };
+    let mut command = Command::new(python);
     command
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -1240,8 +1287,12 @@ fn spawn_sonara_worker(
         .arg(voice)
         .arg("--variation")
         .arg(variation)
+        .arg("--engine")
+        .arg(engine)
         .arg("--data-dir")
         .arg(&runtime.model_dir)
+        .arg("--kokoro-dir")
+        .arg(runtime.project_root.join("models/kokoro"))
         .arg("--output-dir")
         .arg(output_dir)
         .stdin(Stdio::null())
@@ -1279,6 +1330,9 @@ fn resolve_runtime() -> Result<RuntimePaths, String> {
     if !python.is_file() {
         return Err(format!("Python environment was not found at {}. Set SONARA_PYTHON to the environment's Python executable.", python.display()));
     }
+    let kokoro_python = std::env::var_os("SONARA_KOKORO_PYTHON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".cache/kokoro-venv/bin/python"));
     // Keep the venv's `bin/python` symlink intact: resolving it to the system
     // interpreter discards the virtual environment's site-packages.
     let python = if python.is_absolute() {
@@ -1293,31 +1347,19 @@ fn resolve_runtime() -> Result<RuntimePaths, String> {
     let model_dir = std::env::var_os("SONARA_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("models/piper"));
-    let has_any_model = fs::read_dir(&model_dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .any(|entry| {
-            let p = entry.path();
-            p.is_file()
-                && p.extension().and_then(|e| e.to_str()) == Some("onnx")
-                && model_dir
-                    .join(format!("{}.json", p.file_name().unwrap().to_string_lossy()))
-                    .is_file()
-        });
-    if !has_any_model {
-        return Err(format!(
-            "No Piper voice models found in {}. Ensure .onnx and .onnx.json files exist.",
-            model_dir.display()
-        ));
-    }
-    let model_dir = model_dir.canonicalize().map_err(|error| {
-        format!("Could not access the configured Piper voice directory: {error}")
-    })?;
+    let model_dir = if model_dir.is_dir() {
+        model_dir.canonicalize().map_err(|error| {
+            format!("Could not access the configured Piper voice directory: {error}")
+        })?
+    } else if model_dir.is_absolute() {
+        model_dir
+    } else {
+        root.join(model_dir)
+    };
     Ok(RuntimePaths {
         project_root: root,
         python,
+        kokoro_python,
         script,
         model_dir,
     })
@@ -2048,6 +2090,8 @@ mod tests {
             api_key: None,
             temperature: Some(0.7),
             max_tokens: Some(100),
+            embedding_model: None,
+            embedding_endpoint: None,
         };
         let result =
             llm_test_connection(config).expect("IPC invocation should return a structured result");

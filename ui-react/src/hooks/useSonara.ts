@@ -4,6 +4,7 @@ import {
   type Progress,
   type VoiceInfo,
   type PiperVariation,
+  type SpeechEngine,
   type NarrationPreview,
   pickDocument,
   currentSession,
@@ -59,9 +60,16 @@ export function useSonara() {
 
   // Voice selection state
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
+  const [speechEngine, setSpeechEngine] = useState<SpeechEngine>(() => {
+    try { return localStorage.getItem("sonara_speech_engine") === "kokoro" ? "kokoro" : "piper"; } catch { return "piper"; }
+  });
   const [selectedVoice, setSelectedVoice] = useState<string>(() => {
     try {
-      return localStorage.getItem("sonara_selected_voice") || "en_US-ryan-medium";
+      const selected = localStorage.getItem("sonara_selected_voice");
+      if (localStorage.getItem("sonara_speech_engine") === "kokoro") {
+        return selected?.startsWith("af_") || selected?.startsWith("am_") ? selected : "af_sarah";
+      }
+      return selected && !selected.startsWith("af_") && !selected.startsWith("am_") ? selected : "en_US-ryan-medium";
     } catch {
       return "en_US-ryan-medium";
     }
@@ -75,6 +83,12 @@ export function useSonara() {
       // storage unavailable
     }
   }, []);
+
+  const handleSpeechEngineChange = useCallback((value: SpeechEngine) => {
+    setSpeechEngine(value);
+    try { localStorage.setItem("sonara_speech_engine", value); } catch { /* storage unavailable */ }
+    handleVoiceChange(value === "kokoro" ? "af_sarah" : "en_US-ryan-medium");
+  }, [handleVoiceChange]);
 
   const [piperVariation, setPiperVariation] = useState<PiperVariation>(() => {
     try {
@@ -504,18 +518,18 @@ export function useSonara() {
   const beginSynthesis = useCallback(async () => {
     audioRef.current?.pause();
     setPhase("synthesizing");
-    setStatusText("Preparing speech with the local Piper voice…");
+    setStatusText(`Preparing speech with the local ${speechEngine === "kokoro" ? "Kokoro" : "Piper"} voice…`);
     try {
-      await startReading(selectedVoice, piperVariation, expandDates, expandCitations);
+      await startReading(selectedVoice, piperVariation, expandDates, expandCitations, speechEngine);
     } catch (error) {
       setPhase("selected");
       setErrorText(String(error));
     }
-  }, [selectedVoice, piperVariation, expandDates, expandCitations]);
+  }, [selectedVoice, piperVariation, expandDates, expandCitations, speechEngine]);
 
   const previewCurrentNarration = useCallback((): Promise<NarrationPreview> => {
-    return fetchNarrationPreview(selectedVoice, expandDates, expandCitations);
-  }, [selectedVoice, expandDates, expandCitations]);
+    return fetchNarrationPreview(speechEngine === "kokoro" ? "en_US-ryan-medium" : selectedVoice, expandDates, expandCitations);
+  }, [selectedVoice, expandDates, expandCitations, speechEngine]);
 
   const cancelSynthesis = useCallback(async () => {
     try {
@@ -763,6 +777,8 @@ export function useSonara() {
 
     // Voice
     voices,
+    speechEngine,
+    setSpeechEngine: handleSpeechEngineChange,
     selectedVoice,
     setSelectedVoice: handleVoiceChange,
     piperVariation,

@@ -30,6 +30,9 @@ test-results/
 !/models/piper/
 /models/piper/*
 !/models/piper/README.md
+!/models/kokoro/
+/models/kokoro/*
+!/models/kokoro/README.md
 sonara-reading/
 reader-output/
 .sonara-audio-cache/
