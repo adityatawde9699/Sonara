@@ -1,29 +1,57 @@
+import tempfile
 import unittest
+import wave
+from pathlib import Path
 from types import SimpleNamespace
 
-from piper_worker import _variation_scales
+from piper_worker import PIPER_SENTENCE_PAUSE_MS, _write_sentences_with_pauses
 
 
-class PiperVariationTests(unittest.TestCase):
-    def setUp(self):
-        self.voice_config = SimpleNamespace(noise_scale=0.667, noise_w_scale=0.8)
+class PiperSentencePauseTests(unittest.TestCase):
+    def _wav(self, chunks):
+        class FakeVoice:
+            config = SimpleNamespace(sample_rate=22050)
 
-    def test_voice_default_defers_to_model_config(self):
-        self.assertEqual(_variation_scales(self.voice_config, "voice_default"), (None, None))
+            def synthesize(self, text, *, syn_config):
+                yield from chunks
 
-    def test_less_and_more_variation_scale_the_selected_voice_defaults(self):
-        less = _variation_scales(self.voice_config, "less")
-        more = _variation_scales(self.voice_config, "more")
-        self.assertAlmostEqual(less[0], 0.667 * 0.85)
-        self.assertAlmostEqual(less[1], 0.8 * 0.85)
-        self.assertAlmostEqual(more[0], 0.667 * 1.10)
-        self.assertAlmostEqual(more[1], 0.8 * 1.10)
+        return FakeVoice()
 
-    def test_variation_rejects_unsupported_names_and_out_of_range_values(self):
-        with self.assertRaisesRegex(ValueError, "variation must be"):
-            _variation_scales(self.voice_config, "dramatic")
-        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
-            _variation_scales(self.voice_config, "voice_default", noise_scale=1.1)
+    def test_inserts_pause_between_sentences_but_not_after_last_sentence(self):
+        audio_chunks = [
+            SimpleNamespace(audio_int16_bytes=b"\x01\x00" * 2),
+            SimpleNamespace(audio_int16_bytes=b"\x02\x00" * 2),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "speech.wav"
+            with wave.open(str(path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(22050)
+                _write_sentences_with_pauses(self._wav(audio_chunks), "First. Second.", wav_file, object())
+
+            with wave.open(str(path), "rb") as wav_file:
+                frame_count = wav_file.getnframes()
+                frames = wav_file.readframes(frame_count)
+
+        pause_frames = round(22050 * PIPER_SENTENCE_PAUSE_MS / 1000)
+        self.assertEqual(frame_count, 4 + pause_frames)
+        self.assertEqual(frames[:4], b"\x01\x00" * 2)
+        self.assertEqual(frames[4:4 + pause_frames * 2], bytes(pause_frames * 2))
+        self.assertEqual(frames[-4:], b"\x02\x00" * 2)
+
+    def test_single_sentence_has_no_added_silence(self):
+        audio = b"\x01\x00" * 3
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "speech.wav"
+            with wave.open(str(path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(22050)
+                _write_sentences_with_pauses(self._wav([SimpleNamespace(audio_int16_bytes=audio)]), "Only.", wav_file, object())
+
+            with wave.open(str(path), "rb") as wav_file:
+                self.assertEqual(wav_file.readframes(wav_file.getnframes()), audio)
 
 
 if __name__ == "__main__":

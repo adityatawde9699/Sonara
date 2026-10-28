@@ -9,6 +9,9 @@ import wave
 from pathlib import Path
 
 
+PIPER_SENTENCE_PAUSE_MS = 200
+
+
 def _send(message: dict) -> None:
     sys.stdout.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
@@ -70,7 +73,7 @@ def main() -> int:
                 wav_file.setframerate(voice.config.sample_rate)
                 wav_file.setsampwidth(2)
                 wav_file.setnchannels(1)
-                voice.synthesize_wav(text, wav_file, syn_config=config, set_wav_format=False)
+                _write_sentences_with_pauses(voice, text, wav_file, config)
                 if wav_file.tell() == 0:
                     # Text contained only punctuation/symbols with no speakable phonemes (e.g. "...", "---", "•").
                     # Emit a brief slice of silence (0.1s) so the chunk is a valid, playable audio file.
@@ -97,6 +100,24 @@ def main() -> int:
                 "error": str(exc),
             })
     return 0
+
+
+def _write_sentences_with_pauses(voice, text: str, wav_file: wave.Wave_write, config) -> None:
+    """Write Piper's sentence chunks with a short pause, without a trailing gap."""
+    chunks = iter(voice.synthesize(text, syn_config=config))
+    try:
+        current = next(chunks)
+    except StopIteration:
+        return
+
+    silence = bytes(round(voice.config.sample_rate * PIPER_SENTENCE_PAUSE_MS / 1000) * 2)
+    while True:
+        wav_file.writeframes(current.audio_int16_bytes)
+        try:
+            current = next(chunks)
+        except StopIteration:
+            return
+        wav_file.writeframes(silence)
 
 
 def _adjust_variation(value: float, factor: float) -> float:

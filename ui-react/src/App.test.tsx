@@ -6,7 +6,7 @@ describe("Sonara workspace", () => {
   it("shows the honest first-run state and keeps desktop import disabled in browser preview", async () => {
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "A quieter way to read." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What would you like to listen to?" })).toBeInTheDocument();
     expect(screen.getByText("Nothing prepared yet.")).toBeInTheDocument();
     expect(screen.getByText("Choose a PDF, text, Markdown, Word, or EPUB file. Extraction and speech generation stay local.")).toBeInTheDocument();
     expect(screen.getByText("PDF · TXT/TEXT · MD · DOCX · EPUB")).toBeInTheDocument();
@@ -52,5 +52,37 @@ describe("Sonara workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close settings dialog" }));
     fireEvent.click(screen.getByRole("button", { name: "Open keyboard shortcuts guide" }));
     expect(await screen.findByRole("dialog", { name: "Keyboard Shortcuts" })).toBeInTheDocument();
+  });
+
+  it("searches recent documents and persists favorite filtering in the library", () => {
+    localStorage.setItem("sonara_recent_documents", JSON.stringify([
+      { sourceName: "Field Notes.pdf", sourceSha256: "field-notes", voice: "voice", chunksCount: 8, totalDurationSeconds: 600, lastListenedAt: 1000 },
+      { sourceName: "Annual Review.docx", sourceSha256: "annual-review", voice: "voice", chunksCount: 12, totalDurationSeconds: 900, lastListenedAt: 2000 },
+    ]));
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /My Library/ }));
+    expect(screen.getByText("Field Notes.pdf")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Search your library" }), { target: { value: "annual" } });
+    expect(screen.getByText("Annual Review.docx")).toBeInTheDocument();
+    expect(screen.queryByText("Field Notes.pdf")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Search your library" }), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to favorites: Field Notes.pdf" }));
+    fireEvent.click(screen.getByRole("button", { name: "Favorites" }));
+    expect(screen.getByText("Field Notes.pdf")).toBeInTheDocument();
+    expect(screen.queryByText("Annual Review.docx")).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("sonara_favorites") || "[]")).toContain("field-notes");
+    localStorage.removeItem("sonara_recent_documents");
+    localStorage.removeItem("sonara_favorites");
+  });
+
+  it("switches and persists the application appearance", () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Switch to light appearance" }));
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(localStorage.getItem("sonara_theme")).toBe("light");
+    fireEvent.click(screen.getByRole("button", { name: "Switch to dark appearance" }));
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    localStorage.removeItem("sonara_theme");
   });
 });

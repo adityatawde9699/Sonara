@@ -292,10 +292,10 @@ class PlayerTests(unittest.TestCase):
             preview = sonara.preview_document(args)
 
         self.assertEqual(preview["sourceName"], "sample.txt")
-        self.assertEqual(preview["totalUnits"], 2)
+        self.assertEqual(preview["totalUnits"], 1)
         self.assertIn("five kilometers per hour", preview["units"][0]["spokenText"])
-        self.assertIn("October twenty-seventh", preview["units"][1]["spokenText"])
-        self.assertEqual(preview["units"][1]["changes"][0]["matchedSourceText"], "2026-10-27")
+        self.assertIn("October twenty-seventh", preview["units"][0]["spokenText"])
+        self.assertIn("2026-10-27", [change["matchedSourceText"] for change in preview["units"][0]["changes"]])
 
     def test_large_documents_are_rejected_until_chunking_exists(self):
         with self.assertRaisesRegex(sonara.SonaraError, "100 KB"):

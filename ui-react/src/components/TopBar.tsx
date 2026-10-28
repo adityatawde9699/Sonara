@@ -6,6 +6,8 @@ interface Props {
   onOpenSettings: () => void;
   onOpenShortcuts: () => void;
   onOpenAssistant?: () => void;
+  searchValue?: string;
+  onSearchChange?: (value: string) => void;
 }
 
 export const TopBar: FC<Props> = ({
@@ -14,6 +16,8 @@ export const TopBar: FC<Props> = ({
   onOpenSettings,
   onOpenShortcuts,
   onOpenAssistant,
+  searchValue = "",
+  onSearchChange,
 }) => (
   <header className="topbar">
     <a className="brand" href="#" aria-label="Sonara home">
@@ -27,6 +31,12 @@ export const TopBar: FC<Props> = ({
       </span>
       <span>Sonara</span>
     </a>
+
+    {onSearchChange && <label className="global-search">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg>
+      <input id="global-search-input" type="search" aria-label="Global library search" placeholder="Search your library" value={searchValue} onChange={(event) => onSearchChange(event.target.value)} />
+      <kbd>Ctrl K</kbd>
+    </label>}
 
     <div className="topbar-actions">
       {onOpenAssistant && (

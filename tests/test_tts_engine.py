@@ -22,7 +22,8 @@ from tts_engine import (
 FORMAT = AudioFormat(22050, 1, 2)
 
 
-def make_plan(text="First sentence. Second sentence. Third sentence."):
+def make_plan(text="First sentence. Second sentence. Third sentence.", *, separate_paragraphs=False):
+    paragraphs = text.split("\n\n") if separate_paragraphs else [text]
     document = Document(
         schema_version=1,
         source_name="tts-test.pdf",
@@ -30,14 +31,14 @@ def make_plan(text="First sentence. Second sentence. Third sentence."):
         extractor="unit-test",
         extractor_version="1",
         page_count=1,
-        blocks=(DocumentBlock(
-            id="block-0",
+        blocks=tuple(DocumentBlock(
+            id=f"block-{index}",
             kind="paragraph",
             kind_source="unit-test",
-            order=0,
-            text=text,
-            source=SourceBox(1, 612, 792, 72, 72, 540, 90),
-        ),),
+            order=index,
+            text=paragraph,
+            source=SourceBox(1, 612, 792, 72, 72 + index * 20, 540, 90 + index * 20),
+        ) for index, paragraph in enumerate(paragraphs)),
         notes=(),
     )
     return build_narration_plan(document)
@@ -152,7 +153,7 @@ class SynthesisStreamTests(unittest.TestCase):
         self.assertTrue(all(not chunk.wav_path.exists() for chunk in chunks))
 
     def test_first_chunk_is_available_while_later_unit_is_still_synthesizing(self):
-        plan = make_plan()
+        plan = make_plan("First sentence.\n\nSecond sentence.\n\nThird sentence.", separate_paragraphs=True)
         engine = FakeEngine()
         engine.block_on = plan.units[1].spoken_text
         stream = SynthesisStream(engine, plan, prefetch_chunks=1)

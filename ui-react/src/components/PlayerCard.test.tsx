@@ -63,10 +63,39 @@ describe("PlayerCard component", () => {
     expect(screen.getByText("en_US-john-medium")).toBeInTheDocument();
 
     const playBtn = screen.getByRole("button", { name: /Play audio narration/i });
-    const pauseBtn = screen.getByRole("button", { name: /Pause audio narration/i });
 
     expect(playBtn).toBeEnabled();
-    expect(pauseBtn).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Pause audio narration/i })).not.toBeInTheDocument();
+  });
+
+  it("shows pause as the primary transport action while playing", () => {
+    const onPause = vi.fn();
+    const audioRef = { current: document.createElement("audio") };
+    render(
+      <PlayerCard
+        session={mockSession}
+        state={{ ...defaultPlayerState, isPlaying: true }}
+        audioRef={audioRef}
+        chunkStarts={[0, 10, 25]}
+        onPlay={vi.fn()}
+        onPause={onPause}
+        onSeek={vi.fn()}
+        onSeekChunk={vi.fn()}
+        onSpeedChange={vi.fn()}
+        onRetry={vi.fn()}
+        onSkip={vi.fn()}
+        onLoadedMetadata={vi.fn()}
+        onTimeUpdate={vi.fn()}
+        onError={vi.fn()}
+        onPlaying={vi.fn()}
+        onEnded={vi.fn()}
+        onCanPlay={vi.fn()}
+        onWaiting={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Pause audio narration/i }));
+    expect(onPause).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /Play audio narration/i })).not.toBeInTheDocument();
   });
 
   it("calls onPlay when Play button is clicked", () => {
@@ -97,6 +126,44 @@ describe("PlayerCard component", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Play audio narration/i }));
     expect(onPlay).toHaveBeenCalledTimes(1);
+  });
+
+  it("exposes real passage navigation, relative seeking, and supported speed choices", () => {
+    const onSeek = vi.fn();
+    const onSeekChunk = vi.fn();
+    const onSpeedChange = vi.fn();
+    const audioRef = { current: document.createElement("audio") };
+    render(
+      <PlayerCard
+        session={mockSession}
+        state={{ ...defaultPlayerState, segment: 1, globalPosition: 15 }}
+        audioRef={audioRef}
+        chunkStarts={[0, 10, 25]}
+        onPlay={vi.fn()}
+        onPause={vi.fn()}
+        onSeek={onSeek}
+        onSeekChunk={onSeekChunk}
+        onSpeedChange={onSpeedChange}
+        onRetry={vi.fn()}
+        onSkip={vi.fn()}
+        onLoadedMetadata={vi.fn()}
+        onTimeUpdate={vi.fn()}
+        onError={vi.fn()}
+        onPlaying={vi.fn()}
+        onEnded={vi.fn()}
+        onCanPlay={vi.fn()}
+        onWaiting={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Previous passage" }));
+    expect(onSeekChunk).toHaveBeenCalledWith(0);
+    fireEvent.click(screen.getByRole("button", { name: "Forward 10 seconds" }));
+    expect(onSeek).toHaveBeenCalledWith(25);
+    fireEvent.click(screen.getByRole("button", { name: "Next passage" }));
+    expect(onSeekChunk).toHaveBeenCalledWith(2);
+    fireEvent.change(screen.getByRole("combobox", { name: "Adjust playback speed" }), { target: { value: "1.2" } });
+    expect(onSpeedChange).toHaveBeenCalledWith(1.2);
   });
 
   it("renders interactive passage dots and triggers onSeekChunk", () => {

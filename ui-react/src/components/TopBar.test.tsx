@@ -62,4 +62,22 @@ describe("TopBar component", () => {
     fireEvent.click(screen.getByTitle("Shortcuts (?)"));
     expect(onOpenShortcuts).toHaveBeenCalledTimes(1);
   });
+
+  it("shows searchable library input when the app provides search state", () => {
+    const onSearchChange = vi.fn();
+    render(
+      <TopBar
+        historyCount={0}
+        onOpenHistory={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onOpenShortcuts={vi.fn()}
+        searchValue=""
+        onSearchChange={onSearchChange}
+      />
+    );
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Global library search" }), { target: { value: "notes" } });
+    expect(onSearchChange).toHaveBeenCalledWith("notes");
+    expect(screen.getByText("Ctrl K")).toBeInTheDocument();
+  });
 });

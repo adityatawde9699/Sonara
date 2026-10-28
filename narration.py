@@ -13,7 +13,12 @@ from document import Document, DocumentBlock, ExtractionNote
 
 
 NARRATION_SCHEMA_VERSION = 1
-NARRATION_RULESET_VERSION = "rules-2"
+NARRATION_RULESET_VERSION = "rules-4"
+
+# Keep a natural paragraph together for narration, but bound synthesis latency
+# and memory for unusually large blocks (common in PDF extraction).
+_MAX_PASSAGE_CHARS = 1_200
+_MAX_PASSAGE_WORDS = 180
 
 _ABBREVIATIONS = {
     "approx", "capt", "cmdr", "dept", "dr", "e.g", "eq", "etc", "fig", "gen",
@@ -144,9 +149,11 @@ def build_narration_plan(
 ) -> NarrationPlan:
     """Plan speech units with complete source coverage and separate spoken text.
 
-    Sentence boundaries are deterministic and intentionally conservative. The
-    supported abbreviation set is finite; URLs, equations, citations, code, and
-    uncommon abbreviations may need review. No model rewrites or drops text.
+    Source blocks are the primary passage boundary: sentences in a paragraph
+    stay together so playback does not pause after every sentence. Very long
+    blocks are split at sentence or whitespace boundaries. The supported
+    abbreviation set is finite; URLs, equations, citations, code, and uncommon
+    abbreviations may need review. No model rewrites or drops text.
     """
     overrides = tuple(pronunciation_overrides)
     _validate_overrides(overrides)
@@ -285,7 +292,52 @@ def _source_spans(block: DocumentBlock) -> list[tuple[int, int]]:
         spans.append((start, len(text)))
     if not spans and text:
         spans.append((0, len(text)))
-    return spans
+    return _coalesce_passage_spans(text, spans)
+
+
+def _coalesce_passage_spans(text: str, sentence_spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Join sentence spans into paragraph-sized passages with a safe upper bound."""
+    if not sentence_spans:
+        return []
+
+    bounded: list[tuple[int, int]] = []
+    for start, end in sentence_spans:
+        cursor = start
+        while end - cursor > _MAX_PASSAGE_CHARS or len(text[cursor:end].split()) > _MAX_PASSAGE_WORDS:
+            # Prefer a sentence boundary; for one exceptionally long sentence,
+            # cut near the limit at whitespace without dropping any source text.
+            limit = min(cursor + _MAX_PASSAGE_CHARS, end)
+            word_limited = _word_limit_end(text, cursor, end, _MAX_PASSAGE_WORDS)
+            limit = min(limit, word_limited)
+            split = text.rfind(" ", cursor + 1, limit + 1)
+            if split <= cursor:
+                split = text.find(" ", limit, end)
+            if split < 0 or split >= end:
+                break
+            bounded.append((cursor, split + 1))
+            cursor = split + 1
+        if cursor < end:
+            bounded.append((cursor, end))
+
+    passages: list[tuple[int, int]] = []
+    current_start, current_end = bounded[0]
+    for start, end in bounded[1:]:
+        combined = text[current_start:end]
+        if (len(combined) <= _MAX_PASSAGE_CHARS
+                and len(combined.split()) <= _MAX_PASSAGE_WORDS):
+            current_end = end
+        else:
+            passages.append((current_start, current_end))
+            current_start, current_end = start, end
+    passages.append((current_start, current_end))
+    return passages
+
+
+def _word_limit_end(text: str, start: int, end: int, max_words: int) -> int:
+    words = list(re.finditer(r"\S+", text[start:end]))
+    if len(words) <= max_words:
+        return end
+    return start + words[max_words - 1].end()
 
 
 def _is_dialogue_attribution(text: str, index: int) -> bool:

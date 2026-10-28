@@ -29,30 +29,24 @@ def make_document(*blocks):
 
 
 class NarrationSegmentationTests(unittest.TestCase):
-    def test_sentence_spans_cover_original_text_and_handle_abbreviations_decimals(self):
+    def test_sentences_stay_together_in_a_natural_paragraph_passage(self):
         original = "Dr. Ada measures 3.14 cm. She cites e.g. a study. It works!"
         document = make_document(("paragraph", "poppler_block", original))
         plan = build_narration_plan(document)
-        self.assertEqual([unit.spoken_text for unit in plan.units], [
-            "Dr. Ada measures three point one four centimeters.",
-            "She cites for example a study.",
-            "It works!",
-        ])
+        self.assertEqual(len(plan.units), 1)
+        self.assertEqual(plan.units[0].spoken_text,
+            "Dr. Ada measures three point one four centimeters. She cites for example a study. It works!")
         self.assertEqual("".join(unit.source_text for unit in plan.units), original)
-        self.assertEqual(plan.units[0].pause_after_ms, 300)
-        # End-of-paragraph spacing takes precedence over the terminal mark.
-        self.assertEqual(plan.units[-1].pause_after_ms, 520)
+        # A pause belongs after the paragraph, not each sentence.
+        self.assertEqual(plan.units[0].pause_after_ms, 520)
 
     def test_question_ellipsis_and_closing_quote_boundaries(self):
         text = '“Ready?” she asked. Wait… Then go!'
         plan = build_narration_plan(make_document(("paragraph", "poppler_block", text)))
-        self.assertEqual([unit.spoken_text for unit in plan.units], [
-            '“Ready?” she asked.',
-            "Wait…",
-            "Then go!",
-        ])
+        self.assertEqual(len(plan.units), 1)
+        self.assertEqual(plan.units[0].spoken_text, '“Ready?” she asked. Wait… Then go!')
         self.assertEqual(plan.units[0].content_type, "dialogue_candidate")
-        self.assertEqual(plan.units[1].pause_after_ms, 520)
+        self.assertEqual(plan.units[0].pause_after_ms, 460)
 
     def test_heading_remains_one_unit_and_list_marker_is_not_a_sentence(self):
         document = make_document(
@@ -62,13 +56,12 @@ class NarrationSegmentationTests(unittest.TestCase):
         plan = build_narration_plan(document)
         self.assertEqual([unit.spoken_text for unit in plan.units], [
             "Chapter 1. A long title.",
-            "1. First point.",
-            "Second point.",
+            "1. First point. Second point.",
         ])
         self.assertEqual(plan.units[0].content_type, "heading")
         self.assertEqual(plan.units[0].pause_after_ms, 720)
         self.assertEqual(plan.units[1].content_type, "list_item")
-        self.assertEqual(plan.units[1].pause_after_ms, 300)
+        self.assertEqual(plan.units[1].pause_after_ms, 380)
 
     def test_quote_and_speaker_labels_are_hints_not_voice_assignments(self):
         document = make_document(
@@ -85,8 +78,7 @@ class NarrationSegmentationTests(unittest.TestCase):
         block = make_document(("paragraph", "poppler_block", text)).blocks[0]
         plan = build_narration_plan(make_document(("paragraph", "poppler_block", text)))
         self.assertEqual([unit.spoken_text for unit in plan.units], [
-            "A short paragraph.",
-            "inter-\nnational study.",
+            "A short paragraph. inter-\nnational study.",
         ])
         self.assertEqual("".join(unit.source_text for unit in plan.units), text)
         self.assertEqual(block.text, text)
@@ -96,17 +88,14 @@ class NarrationSegmentationTests(unittest.TestCase):
         text = "Visit https://example.com/docs. Email reader@example.org. Done."
         plan = build_narration_plan(make_document(("paragraph", "poppler_block", text)))
         self.assertEqual([unit.spoken_text for unit in plan.units], [
-            "Visit https://example.com/docs.",
-            "Email reader@example.org.",
-            "Done.",
+            "Visit https://example.com/docs. Email reader@example.org. Done.",
         ])
 
     def test_unicode_multilingual_and_additional_abbreviations_preserve_coverage(self):
         text = "At 3 p.m., Dr. Li meets in the U.S. Café. Bonjour — 你好！"
         plan = build_narration_plan(make_document(("paragraph", "poppler_block", text)))
         self.assertEqual([unit.spoken_text for unit in plan.units], [
-            "At 3 p.m., Dr. Li meets in the U.S. Café.",
-            "Bonjour — 你好！",
+            "At 3 p.m., Dr. Li meets in the U.S. Café. Bonjour — 你好！",
         ])
         self.assertEqual("".join(unit.source_text for unit in plan.units), text)
 
@@ -116,7 +105,7 @@ class NarrationSegmentationTests(unittest.TestCase):
             ("footnote", "bottom_page_position_and_number_marker", "1. Footnote text."),
         )
         plan = build_narration_plan(document)
-        self.assertEqual([unit.order for unit in plan.units], list(range(3)))
+        self.assertEqual([unit.order for unit in plan.units], list(range(2)))
         for block in document.blocks:
             block_units = [unit for unit in plan.units if unit.source_block_id == block.id]
             self.assertEqual("".join(unit.source_text for unit in block_units), block.text)
@@ -146,6 +135,16 @@ class NarrationSegmentationTests(unittest.TestCase):
                     expected_start = unit.source_end
                 self.assertEqual(expected_start, len(block.text))
 
+    def test_long_paragraph_is_split_at_safe_boundaries_without_losing_source_text(self):
+        sentences = [f"Sentence {index} carries enough words to make this a realistic spoken passage." for index in range(36)]
+        original = " ".join(sentences)
+        document = make_document(("paragraph", "poppler_block", original))
+        units = build_narration_plan(document).units
+        self.assertGreater(len(units), 1)
+        self.assertEqual("".join(unit.source_text for unit in units), original)
+        self.assertTrue(all(len(unit.source_text.split()) <= 180 for unit in units))
+        self.assertTrue(all(unit.source_text.rstrip().endswith(".") for unit in units[:-1]))
+
 
 class PronunciationOverrideTests(unittest.TestCase):
     def test_override_changes_only_spoken_layer_and_records_reversible_source_spans(self):
@@ -154,8 +153,7 @@ class PronunciationOverrideTests(unittest.TestCase):
         override = PronunciationOverride("crispr", "CRISPR", "crisper")
         plan = build_narration_plan(document, [override])
         self.assertEqual([unit.spoken_text for unit in plan.units], [
-            "crisper can help.",
-            "crisper remains source text.",
+            "crisper can help. crisper remains source text.",
         ])
         applications = [application for unit in plan.units for application in unit.applied_overrides]
         self.assertEqual(len(applications), 2)
@@ -248,10 +246,10 @@ class PronunciationOverrideTests(unittest.TestCase):
                 PronunciationOverride("two", "sonara", "sona-ra"),
             ])
 
-    def test_override_cannot_silently_span_sentence_or_block_boundary(self):
+    def test_override_can_span_sentences_but_not_source_block_boundaries(self):
         document = make_document(("paragraph", "poppler_block", "Read Sonara. Then continue."))
-        with self.assertRaisesRegex(NarrationError, "did not match source text"):
-            build_narration_plan(document, [PronunciationOverride("cross", "Sonara. Then", "changed")])
+        plan = build_narration_plan(document, [PronunciationOverride("cross", "Sonara. Then", "changed")])
+        self.assertEqual(plan.units[0].spoken_text, "Read changed continue.")
         two_blocks = make_document(
             ("paragraph", "poppler_block", "Read Sonara."),
             ("paragraph", "poppler_block", "Then continue."),

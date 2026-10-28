@@ -19,6 +19,7 @@ import {
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+  onPolishChange?: (enabled: boolean) => void;
   session: FrontendSession | null;
   playbackRate: number;
   onSpeedChange: (speed: number) => void;
@@ -47,6 +48,7 @@ const SPEED_PRESETS = [
 export const SettingsModal: FC<Props> = ({
   isOpen,
   onClose,
+  onPolishChange,
   session,
   playbackRate,
   onSpeedChange,
@@ -141,6 +143,7 @@ export const SettingsModal: FC<Props> = ({
 
   const handlePolishToggle = (enabled: boolean) => {
     setPolishEnabled(enabled);
+    onPolishChange?.(enabled);
     try {
       localStorage.setItem(AI_NARRATION_POLISH_STORAGE_KEY, String(enabled));
     } catch {
