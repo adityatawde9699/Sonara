@@ -9,6 +9,9 @@ import {
   loadStoredLlmConfig,
   saveStoredLlmConfig,
   llmTestConnection,
+  llmChooseModel,
+  llmDiscoverModels,
+  llmModelStatus,
   AI_NARRATION_POLISH_STORAGE_KEY,
 } from "../lib/tauri";
 
@@ -60,6 +63,9 @@ export const SettingsModal: FC<Props> = ({
   const [showApiKey, setShowApiKey] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<LlmTestResult | null>(null);
+  const [modelState, setModelState] = useState("UNLOADED");
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [isDiscoveringModels, setIsDiscoveringModels] = useState(false);
   const [polishEnabled, setPolishEnabled] = useState<boolean>(() => {
     try {
       return localStorage.getItem(AI_NARRATION_POLISH_STORAGE_KEY) === "true";
@@ -80,6 +86,15 @@ export const SettingsModal: FC<Props> = ({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
 
+  useEffect(() => {
+    if (!isOpen || llmConfig.provider !== "embedded_llama_cpp") return;
+    let active = true;
+    llmModelStatus(llmConfig).then((status) => {
+      if (active && status.ok) setModelState(status.state);
+    }).catch(() => { if (active) setModelState("UNAVAILABLE"); });
+    return () => { active = false; };
+  }, [isOpen, llmConfig.provider]);
+
   if (!isOpen) return null;
 
   const activeVoiceId = selectedVoice || (voices.find((v) => v.isDefault)?.id ?? "en_US-ryan-medium");
@@ -90,6 +105,9 @@ export const SettingsModal: FC<Props> = ({
     if (provider === "llama_cpp") {
       defaultEndpoint = "http://127.0.0.1:9931/v1";
       defaultModel = "local-model";
+    } else if (provider === "embedded_llama_cpp") {
+      defaultEndpoint = "";
+      defaultModel = "GGUF model";
     } else if (provider === "openai") {
       defaultEndpoint = "https://api.openai.com/v1";
       defaultModel = "gpt-4o-mini";
@@ -106,6 +124,7 @@ export const SettingsModal: FC<Props> = ({
     setLlmConfig(updated);
     saveStoredLlmConfig(updated);
     setTestResult(null);
+    if (provider === "embedded_llama_cpp") setModelState("UNLOADED");
   };
 
   const handleConfigUpdate = (patch: Partial<LlmConfig>) => {
@@ -128,8 +147,13 @@ export const SettingsModal: FC<Props> = ({
     setIsTesting(true);
     setTestResult(null);
     try {
+      if (llmConfig.provider === "embedded_llama_cpp") setModelState("LOADING");
       const result = await llmTestConnection(llmConfig);
       setTestResult(result);
+      if (llmConfig.provider === "embedded_llama_cpp") {
+        const error = result.error?.toLowerCase() || "";
+        setModelState(result.ok ? (result.modelState || "IDLE") : !llmConfig.modelPath ? "NOT_CONFIGURED" : error.includes("runtime is unavailable") ? "RUNTIME_UNAVAILABLE" : error.includes("not found") || error.includes("not readable") ? "MODEL_MISSING" : "FAILED");
+      }
     } catch (err: unknown) {
       setTestResult({
         ok: false,
@@ -137,6 +161,28 @@ export const SettingsModal: FC<Props> = ({
       });
     } finally {
       setIsTesting(false);
+    }
+  };
+
+  const handleChooseModel = async () => {
+    try {
+      const path = await llmChooseModel();
+      if (path) handleConfigUpdate({ modelPath: path });
+    } catch (error) {
+      setTestResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  const handleDiscoverModels = async () => {
+    setIsDiscoveringModels(true);
+    try {
+      const result = await llmDiscoverModels(llmConfig);
+      setDiscoveredModels(result.models || []);
+      if (!result.models?.length) setTestResult({ ok: false, error: "No GGUF files found in the configured directory or Sonara model folders." });
+    } catch (error) {
+      setTestResult({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setIsDiscoveringModels(false);
     }
   };
 
@@ -283,11 +329,11 @@ export const SettingsModal: FC<Props> = ({
           <div className="settings-section-head">
             <h3 className="settings-section-title">AI Assistant & Smart Narration</h3>
             <span className="settings-badge" data-testid="llm-provider-badge">
-              {llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? "Local · loopback" : "Cloud API"}
+              {llmConfig.provider === "embedded_llama_cpp" ? "Local · embedded" : llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? "Local · loopback" : "Cloud API"}
             </span>
           </div>
           <p className="settings-section-desc">
-            Use local Ollama or llama.cpp for on-device assistance. Cloud providers receive the document context included with your request. API keys stay in memory for this app session and are not saved in WebView storage.
+            Embedded llama.cpp loads a selected GGUF directly in Sonara and unloads it after inactivity. Ollama and the legacy llama.cpp server remain separate HTTP providers. Cloud providers receive document context included with your request.
           </p>
 
           <div className="llm-form-grid">
@@ -303,13 +349,42 @@ export const SettingsModal: FC<Props> = ({
                 onChange={(e) => handleProviderChange(e.target.value as LlmConfig["provider"])}
               >
                 <option value="ollama">Ollama (Local & Private · Recommended)</option>
-                <option value="llama_cpp">llama.cpp server (Local · GGUF)</option>
+                <option value="embedded_llama_cpp">llama.cpp embedded (Local · GGUF, no server)</option>
+                <option value="llama_cpp">llama.cpp server (Legacy HTTP · GGUF)</option>
                 <option value="gemini">Google Gemini (Gemini 1.5 Flash)</option>
                 <option value="openai">OpenAI (GPT-4o mini)</option>
                 <option value="custom">Custom (OpenAI-Compatible / LM Studio)</option>
               </select>
             </div>
 
+            {llmConfig.provider === "embedded_llama_cpp" ? <>
+              <div className="llm-field">
+                <label htmlFor="llm-model-path" className="llm-label">GGUF model file</label>
+                <div className="llm-test-bar">
+                  <input id="llm-model-path" type="text" className="llm-input" value={llmConfig.modelPath || ""} onChange={(e) => handleConfigUpdate({ modelPath: e.target.value })} placeholder="Select a readable .gguf file" />
+                  <button type="button" className="button button-secondary" onClick={handleChooseModel}>Browse…</button>
+                </div>
+                <span className="llm-hint">Model weights are not downloaded automatically. Compatible chat templates are read from GGUF metadata when available.</span>
+                <span className="llm-hint">Embedded document chat currently uses a bounded text excerpt; it does not run vector embeddings or send requests to a server.</span>
+              </div>
+              <div className="llm-field">
+                <label htmlFor="llm-model-directory" className="llm-label">Additional model directory</label>
+                <input id="llm-model-directory" type="text" className="llm-input" value={llmConfig.modelDirectory || ""} onChange={(e) => handleConfigUpdate({ modelDirectory: e.target.value })} placeholder="Optional directory to search" />
+                <div className="llm-test-bar"><button type="button" className="button button-secondary" onClick={handleDiscoverModels} disabled={isDiscoveringModels}>{isDiscoveringModels ? "Searching…" : "Find GGUF models"}</button></div>
+                {discoveredModels.length > 0 && <select className="voice-select" aria-label="Discovered GGUF models" value={llmConfig.modelPath || ""} onChange={(e) => handleConfigUpdate({ modelPath: e.target.value })}><option value="">Choose a discovered model</option>{discoveredModels.map((path) => <option key={path} value={path}>{path}</option>)}</select>}
+              </div>
+              <div className="llm-form-grid">
+                <label className="llm-field"><span className="llm-label">Context size</span><input type="number" className="llm-input" min={512} max={131072} step={512} value={llmConfig.contextSize ?? 4096} onChange={(e) => handleConfigUpdate({ contextSize: Number(e.target.value) })} /></label>
+                <label className="llm-field"><span className="llm-label">CPU threads · 0 = automatic</span><input type="number" className="llm-input" min={0} max={256} value={llmConfig.threads ?? 0} onChange={(e) => handleConfigUpdate({ threads: Number(e.target.value) })} /></label>
+                <label className="llm-field"><span className="llm-label">Batch size</span><input type="number" className="llm-input" min={32} max={8192} step={32} value={llmConfig.batchSize ?? 512} onChange={(e) => handleConfigUpdate({ batchSize: Number(e.target.value) })} /></label>
+                <div className="llm-field"><label htmlFor="llm-idle-timeout" className="llm-label">Idle unload · seconds</label><input id="llm-idle-timeout" type="number" className="llm-input" min={0} max={86400} step={30} value={llmConfig.idleTimeoutSeconds ?? 300} onChange={(e) => handleConfigUpdate({ idleTimeoutSeconds: Number(e.target.value) })} /><span className="llm-hint">0 keeps the model loaded until Sonara closes.</span></div>
+              </div>
+              <div className="llm-test-result" role="status" data-testid="embedded-model-state">Model state: {{ NOT_CONFIGURED: "model not configured", MODEL_MISSING: "model file missing", RUNTIME_UNAVAILABLE: "runtime unavailable", UNLOADED: "not loaded", LOADING: "loading model", READY: "ready", IN_USE: "generating response", IDLE: "ready · idle", UNLOADING: "unloading model", FAILED: "inference failed", UNAVAILABLE: "runtime unavailable" }[modelState] || modelState.toLowerCase()}</div>
+              <div className="llm-form-grid">
+                <label className="llm-field"><span className="llm-label">Temperature</span><input type="number" className="llm-input" min={0} max={2} step={0.1} value={llmConfig.temperature ?? 0.7} onChange={(e) => handleConfigUpdate({ temperature: Number(e.target.value) })} /></label>
+                <label className="llm-field"><span className="llm-label">Maximum response tokens</span><input type="number" className="llm-input" min={1} max={32768} step={128} value={llmConfig.maxTokens ?? 1024} onChange={(e) => handleConfigUpdate({ maxTokens: Number(e.target.value) })} /></label>
+              </div>
+            </> : <>
             {/* Endpoint */}
             <div className="llm-field">
               <label htmlFor="llm-endpoint" className="llm-label">
@@ -345,6 +420,7 @@ export const SettingsModal: FC<Props> = ({
               <input id="llm-embedding-endpoint" type="text" className="llm-input" value={llmConfig.embeddingEndpoint || ""} onChange={(event) => handleConfigUpdate({ embeddingEndpoint: event.target.value })} placeholder="same server as chat" />
               <span className="llm-hint">Optional separate loopback server running an embedding model with --embedding.</span>
             </div>}
+            </>}
 
             {llmConfig.provider === "llama_cpp" && <div className="llm-field">
               <label htmlFor="llm-embedding-model" className="llm-label">Embedding model alias</label>
@@ -353,6 +429,7 @@ export const SettingsModal: FC<Props> = ({
             </div>}
 
             {/* API Key */}
+            {llmConfig.provider !== "embedded_llama_cpp" && <>
             <div className="llm-field">
               <div className="llm-field-head">
                 <label htmlFor="llm-api-key" className="llm-label">
@@ -379,6 +456,7 @@ export const SettingsModal: FC<Props> = ({
                 placeholder={llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? "Optional for local inference" : "sk-..."}
               />
             </div>
+            </>}
           </div>
 
           {/* Test Connection Button & Status */}

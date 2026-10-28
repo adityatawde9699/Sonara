@@ -6,7 +6,7 @@
 - `cd ui-react && npm test` — 46 passed across 11 test files.
 - `cd ui-react && npm run build` — passed (`tsc -b` and Vite production build).
 - `cd ui-react && npm run lint` — completed with four React hook/ref warnings in `App.tsx` and `hooks/useSonara.ts`; no lint errors.
-- `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline` — 9 Rust tests passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline` — 10 Rust tests passed, including persistent LLM worker reuse without model startup loading.
 - `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — passed.
 - `.venv/bin/python listening_eval.py --voice en_US-john-medium --output-dir /tmp/sonara-listening-evaluation --seed 20261027` — generated 24 WAV clips for 8 passages × 3 variation profiles.
 
@@ -224,3 +224,28 @@ Run Python test suite:
 ## Future benchmark protocol
 
 No performance results have been established. For later benchmarks, record machine/OS, model revision, runtime/provider, precision, input text length, generated duration, and cold/warm state. Measure process/model startup, time to first audio, RTF (`synthesis wall time / generated audio duration`), peak RSS and VRAM if available, CPU/GPU utilization, chunk-latency variation, and interruptions during extended playback. Re-run the same fixed corpus and report measurements rather than estimates.
+
+## Embedded llama.cpp validation (2026-10-28)
+
+The embedded provider has mock-backed unit coverage for provider distinction, direct rather than HTTP dispatch, model-path checks, lazy construction, instance reuse, serialized concurrent first use, idle release/reload, missing runtime, inference failure recovery, and bounded document-context fallback without the HTTP embeddings path. The Settings component covers GGUF selection fields, model parameters, state display, and absence of a server endpoint.
+
+Opt in to a real GGUF smoke test only when a small compatible chat model and `llama-cpp-python` are already available:
+
+```sh
+SONARA_LLM_TEST_MODEL=/path/to/small-chat-model.gguf \
+  .venv/bin/python -m unittest \
+  tests.test_llm_client.LlmClientTests.test_real_embedded_gguf_inference_reuses_and_reloads_without_server -v
+```
+
+This test does not download weights. It checks direct chat, loaded-instance reuse, idle expiration, and reload. The ordinary suite skips it unless `SONARA_LLM_TEST_MODEL` is set. Embedding-based retrieval is not enabled for the embedded provider; the no-server fallback is direct bounded context.
+
+### Results observed during implementation
+
+- `python3 -m py_compile llm_client.py tests/test_llm_client.py` — passed.
+- `python3 -m unittest discover -s tests -v` — 87 tests run, 80 passed and 7 opt-in tests skipped.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline` — 9 Rust tests passed.
+- From `ui-react/`, `npm test -- --run` — 47 tests passed; `npm run build` — strict TypeScript and Vite build passed.
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings` — did not pass because the existing `spawn_sonara_worker` function triggers `clippy::too_many_arguments` (10 arguments). No clippy warning was attributed to the new LLM code.
+- `llama-cpp-python` is not installed in either the system Python or project `.venv`, and no `SONARA_LLM_TEST_MODEL` was supplied. Therefore, actual GGUF loading, inference, RSS, cold load, latency, and memory release have not been verified in this environment. The opt-in real-model test remains to be run after installing `requirements-llm.txt` and selecting a local model.
+- The GUI and system model file-picker interaction were not run in this headless session. Cross-platform Python runtime/model packaging is not validated.

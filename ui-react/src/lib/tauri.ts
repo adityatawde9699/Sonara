@@ -189,7 +189,7 @@ export async function onSynthesisProgress(
 // ── LLM & AI Assistant APIs ──────────────────────────────────────────
 
 export interface LlmConfig {
-  provider: "ollama" | "llama_cpp" | "openai" | "gemini" | "custom";
+  provider: "ollama" | "llama_cpp" | "embedded_llama_cpp" | "openai" | "gemini" | "custom";
   endpoint?: string;
   model?: string;
   apiKey?: string;
@@ -197,6 +197,12 @@ export interface LlmConfig {
   maxTokens?: number;
   embeddingModel?: string;
   embeddingEndpoint?: string;
+  modelPath?: string;
+  modelDirectory?: string;
+  contextSize?: number;
+  threads?: number;
+  batchSize?: number;
+  idleTimeoutSeconds?: number;
 }
 
 export interface ChatMessage {
@@ -211,6 +217,7 @@ export interface LlmTestResult {
   latencyMs?: number;
   response?: string;
   error?: string;
+  modelState?: string;
 }
 
 export interface LlmChatResult {
@@ -250,6 +257,12 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
   apiKey: "",
   temperature: 0.7,
   maxTokens: 1024,
+  modelPath: "",
+  modelDirectory: "",
+  contextSize: 4096,
+  threads: 0,
+  batchSize: 512,
+  idleTimeoutSeconds: 300,
 };
 
 export const LLM_STORAGE_KEY = "sonara-llm-config-v1";
@@ -280,6 +293,18 @@ export function saveStoredLlmConfig(config: LlmConfig): void {
 
 export async function llmTestConnection(config: LlmConfig): Promise<LlmTestResult> {
   return invoke<LlmTestResult>("llm_test_connection", { config });
+}
+
+export async function llmModelStatus(config: LlmConfig): Promise<{ ok: boolean; state: string; model?: string; lastError?: string }> {
+  return invoke("llm_model_status", { config });
+}
+
+export async function llmDiscoverModels(config: LlmConfig): Promise<{ ok: boolean; models: string[] }> {
+  return invoke("llm_discover_models", { config });
+}
+
+export async function llmChooseModel(): Promise<string | null> {
+  return invoke("llm_choose_model");
 }
 
 export async function llmChat(

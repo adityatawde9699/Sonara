@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -39,6 +39,12 @@ pub struct LlmConfigInput {
     pub max_tokens: Option<u32>,
     pub embedding_model: Option<String>,
     pub embedding_endpoint: Option<String>,
+    pub model_path: Option<String>,
+    pub model_directory: Option<String>,
+    pub context_size: Option<u32>,
+    pub threads: Option<u32>,
+    pub batch_size: Option<u32>,
+    pub idle_timeout_seconds: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -57,6 +63,7 @@ pub struct LlmTestResult {
     pub latency_ms: Option<u64>,
     pub response: Option<String>,
     pub error: Option<String>,
+    pub model_state: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -103,6 +110,13 @@ struct AppState {
     selected_document: Mutex<Option<PathBuf>>,
     active: Mutex<Option<ActiveJob>>,
     session: Mutex<Option<ReaderSession>>,
+    llm_worker: Mutex<Option<LlmWorker>>,
+}
+
+struct LlmWorker {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
 }
 
 struct AudioServer {
@@ -302,67 +316,72 @@ async fn pick_document(
 }
 
 #[tauri::command]
-fn preview_narration(
-    state: State<'_, AppState>,
+async fn preview_narration(
+    app: AppHandle,
     voice: Option<String>,
     expand_dates: bool,
     expand_citations: bool,
 ) -> Result<serde_json::Value, String> {
-    let selected_path = state
-        .selected_document
-        .lock()
-        .map_err(|_| "Document selection state is unavailable.".to_owned())?
-        .clone()
-        .ok_or_else(|| "Choose a document before previewing narration.".to_owned())?;
-    let document = validate_document(&selected_path)?;
-    let runtime = resolve_runtime()?;
-    let available_voices = discover_voices(&runtime.model_dir)?;
-    let selected_voice = voice
-        .filter(|candidate| available_voices.iter().any(|item| item.id == *candidate))
-        .or_else(|| {
-            available_voices
-                .iter()
-                .find(|item| item.is_default)
-                .map(|item| item.id.clone())
-        })
-        .ok_or_else(|| "No installed Piper voice is available for preview.".to_owned())?;
-    let mut command = Command::new(&runtime.python);
-    let mut args = vec!["read", "--preview"];
-    if expand_dates {
-        args.push("--expand-dates");
-    }
-    if expand_citations {
-        args.push("--expand-citations");
-    }
-    let output = command
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", std::env::var_os("HOME").unwrap_or_default())
-        .env("LANG", std::env::var_os("LANG").unwrap_or_default())
-        .env("LC_ALL", std::env::var_os("LC_ALL").unwrap_or_default())
-        .current_dir(&runtime.project_root)
-        .arg(&runtime.script)
-        .args(args)
-        .arg(&document)
-        .arg("--voice")
-        .arg(&selected_voice)
-        .arg("--data-dir")
-        .arg(&runtime.model_dir)
-        .output()
-        .map_err(|error| format!("Could not preview narration: {error}"))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(if detail.is_empty() {
-            "Could not preview narration for this document.".to_owned()
-        } else {
-            detail
-        });
-    }
-    if output.stdout.len() > 2 * 1024 * 1024 {
-        return Err("Narration preview exceeded its response size limit.".to_owned());
-    }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("Narration preview returned invalid data: {error}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let selected_path = state
+            .selected_document
+            .lock()
+            .map_err(|_| "Document selection state is unavailable.".to_owned())?
+            .clone()
+            .ok_or_else(|| "Choose a document before previewing narration.".to_owned())?;
+        let document = validate_document(&selected_path)?;
+        let runtime = resolve_runtime()?;
+        let available_voices = discover_voices(&runtime.model_dir)?;
+        let selected_voice = voice
+            .filter(|candidate| available_voices.iter().any(|item| item.id == *candidate))
+            .or_else(|| {
+                available_voices
+                    .iter()
+                    .find(|item| item.is_default)
+                    .map(|item| item.id.clone())
+            })
+            .ok_or_else(|| "No installed Piper voice is available for preview.".to_owned())?;
+        let mut command = Command::new(&runtime.python);
+        let mut args = vec!["read", "--preview"];
+        if expand_dates {
+            args.push("--expand-dates");
+        }
+        if expand_citations {
+            args.push("--expand-citations");
+        }
+        let output = command
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", std::env::var_os("HOME").unwrap_or_default())
+            .env("LANG", std::env::var_os("LANG").unwrap_or_default())
+            .env("LC_ALL", std::env::var_os("LC_ALL").unwrap_or_default())
+            .current_dir(&runtime.project_root)
+            .arg(&runtime.script)
+            .args(args)
+            .arg(&document)
+            .arg("--voice")
+            .arg(&selected_voice)
+            .arg("--data-dir")
+            .arg(&runtime.model_dir)
+            .output()
+            .map_err(|error| format!("Could not preview narration: {error}"))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            return Err(if detail.is_empty() {
+                "Could not preview narration for this document.".to_owned()
+            } else {
+                detail
+            });
+        }
+        if output.stdout.len() > 2 * 1024 * 1024 {
+            return Err("Narration preview exceeded its response size limit.".to_owned());
+        }
+        serde_json::from_slice(&output.stdout)
+            .map_err(|error| format!("Narration preview returned invalid data: {error}"))
+    })
+    .await
+    .map_err(|e| format!("Preview narration task failed: {e}"))?
 }
 
 #[cfg(target_os = "linux")]
@@ -409,6 +428,101 @@ fn choose_document_path() -> Result<Option<PathBuf>, String> {
     } else {
         Ok(Some(PathBuf::from(selected)))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn choose_gguf_path() -> Result<Option<PathBuf>, String> {
+    let output = match Command::new("zenity")
+        .arg("--file-selection")
+        .arg("--title=Choose a GGUF model for Sonara")
+        .arg("--file-filter=GGUF Models | *.gguf")
+        .arg("--file-filter=All Files | *")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => Command::new("kdialog")
+            .arg("--getopenfilename")
+            .arg(".")
+            .arg("*.gguf|GGUF models\n*|All files (*)")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|error| format!("Could not open the model picker: {error}"))?,
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8(output.stdout)
+        .map_err(|_| "The model picker returned an invalid path.".to_owned())?;
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(PathBuf::from(value)))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn choose_gguf_path() -> Result<Option<PathBuf>, String> {
+    let output = Command::new("osascript").arg("-e")
+        .arg(r#"POSIX path of (choose file with prompt "Choose a GGUF model for Sonara" of type {"gguf"})"#)
+        .stdout(Stdio::piped()).stderr(Stdio::null()).output()
+        .map_err(|error| format!("Could not open macOS model picker: {error}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8(output.stdout)
+        .map_err(|_| "The model picker returned an invalid path.".to_owned())?;
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(PathBuf::from(value)))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn choose_gguf_path() -> Result<Option<PathBuf>, String> {
+    let script = r#"Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Filter = "GGUF models (*.gguf)|*.gguf|All files (*.*)|*.*"
+$dialog.Title = "Choose a GGUF model for Sonara"
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.FileName }"#;
+    let output = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| format!("Could not open Windows model picker: {error}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8(output.stdout)
+        .map_err(|_| "The model picker returned an invalid path.".to_owned())?;
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(PathBuf::from(value)))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn choose_gguf_path() -> Result<Option<PathBuf>, String> {
+    Err("Model file selection is not supported on this operating system.".to_owned())
+}
+
+#[tauri::command]
+async fn llm_choose_model() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        choose_gguf_path().map(|path| path.map(|value| value.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| format!("Choose model task failed: {e}"))?
 }
 
 #[cfg(target_os = "macos")]
@@ -784,160 +898,288 @@ fn save_progress(
     atomic_write_json(&path, &progress)
 }
 
-fn invoke_llm_rpc(request: &serde_json::Value) -> Result<serde_json::Value, String> {
+fn invoke_llm_rpc(
+    state: &AppState,
+    request: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let runtime = resolve_runtime()?;
     let llm_script = runtime.project_root.join("llm_client.py");
     if !llm_script.is_file() {
         return Err("LLM client script (llm_client.py) was not found in project root.".to_owned());
     }
-
-    let mut child = Command::new(&runtime.python)
-        .arg(&llm_script)
-        .arg("rpc")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn LLM client process: {e}"))?;
-
-    let stdin_payload = serde_json::to_vec(request)
-        .map_err(|e| format!("Failed to serialize LLM RPC request: {e}"))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(&stdin_payload)
-            .map_err(|e| format!("Failed to write to LLM client stdin: {e}"))?;
+    let mut worker_guard = state
+        .llm_worker
+        .lock()
+        .map_err(|_| "LLM worker state is unavailable.".to_owned())?;
+    if worker_guard
+        .as_mut()
+        .is_some_and(|worker| worker.child.try_wait().ok().flatten().is_some())
+    {
+        *worker_guard = None;
     }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("Failed waiting for LLM client: {e}"))?;
-
-    let stdout_str = String::from_utf8_lossy(&output.stdout);
-    if stdout_str.trim().is_empty() {
-        let stderr_str = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "LLM client produced no output. Stderr: {stderr_str}"
-        ));
+    if worker_guard.is_none() {
+        let child = Command::new(&runtime.python)
+            .arg(&llm_script)
+            .arg("worker")
+            .current_dir(&runtime.project_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Failed to start Sonara's local LLM worker: {error}"))?;
+        let mut child = child;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "LLM worker stdin was unavailable.".to_owned())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "LLM worker stdout was unavailable.".to_owned())?;
+        *worker_guard = Some(LlmWorker {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        });
     }
+    let worker = worker_guard.as_mut().expect("worker was started");
+    let mut request_line = serde_json::to_vec(request)
+        .map_err(|error| format!("Failed to serialize LLM request: {error}"))?;
+    if request_line.len() > 4 * 1024 * 1024 {
+        return Err("LLM request exceeded the 4 MiB limit.".to_owned());
+    }
+    request_line.push(b'\n');
+    worker
+        .stdin
+        .write_all(&request_line)
+        .and_then(|_| worker.stdin.flush())
+        .map_err(|error| format!("Could not send request to Sonara's local LLM worker: {error}"))?;
 
-    let result: serde_json::Value = serde_json::from_str(stdout_str.trim()).map_err(|e| {
-        format!("Failed to parse LLM client response JSON: {e}. Raw stdout: {stdout_str}")
-    })?;
-
-    Ok(result)
+    const MAX_LLM_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+    let mut response_line = Vec::new();
+    let bytes_read = (&mut worker.stdout)
+        .take(MAX_LLM_RESPONSE_BYTES + 1)
+        .read_until(b'\n', &mut response_line)
+        .map_err(|error| {
+            format!("Could not read response from Sonara's local LLM worker: {error}")
+        })?;
+    if bytes_read == 0 {
+        return Err("Sonara's local LLM worker exited without a response.".to_owned());
+    }
+    if bytes_read as u64 > MAX_LLM_RESPONSE_BYTES {
+        if let Some(mut worker) = worker_guard.take() {
+            let _ = worker.child.kill();
+            let _ = worker.child.wait();
+        }
+        return Err("LLM response exceeded the 16 MiB limit.".to_owned());
+    }
+    match serde_json::from_slice(&response_line) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            if let Some(mut worker) = worker_guard.take() {
+                let _ = worker.child.kill();
+                let _ = worker.child.wait();
+            }
+            Err(format!(
+                "Sonara's local LLM worker returned invalid JSON: {error}"
+            ))
+        }
+    }
 }
 
 #[tauri::command]
-fn llm_test_connection(config: LlmConfigInput) -> Result<LlmTestResult, String> {
+async fn llm_test_connection(
+    app: AppHandle,
+    config: LlmConfigInput,
+) -> Result<LlmTestResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        llm_test_connection_inner(&state, config)
+    })
+    .await
+    .map_err(|e| format!("LLM test connection task failed: {e}"))?
+}
+
+fn llm_test_connection_inner(
+    state: &AppState,
+    config: LlmConfigInput,
+) -> Result<LlmTestResult, String> {
     let req = serde_json::json!({
         "action": "test_connection",
         "config": config,
     });
-    let val = invoke_llm_rpc(&req)?;
+    let val = invoke_llm_rpc(state, &req)?;
     let result: LlmTestResult = serde_json::from_value(val)
         .map_err(|e| format!("Failed to decode LLM test connection response: {e}"))?;
     Ok(result)
 }
 
 #[tauri::command]
-fn llm_chat(
+async fn llm_chat(
+    app: AppHandle,
     config: LlmConfigInput,
     question: String,
     context: Option<String>,
     history: Option<Vec<ChatMessageInput>>,
 ) -> Result<LlmChatResult, String> {
-    let req = serde_json::json!({
-        "action": "chat",
-        "config": config,
-        "question": question,
-        "context": context.unwrap_or_default(),
-        "history": history.unwrap_or_default(),
-    });
-    let val = invoke_llm_rpc(&req)?;
-    let result: LlmChatResult = serde_json::from_value(val)
-        .map_err(|e| format!("Failed to decode LLM chat response: {e}"))?;
-    Ok(result)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let req = serde_json::json!({
+            "action": "chat",
+            "config": config,
+            "question": question,
+            "context": context.unwrap_or_default(),
+            "history": history.unwrap_or_default(),
+        });
+        let val = invoke_llm_rpc(&state, &req)?;
+        let result: LlmChatResult = serde_json::from_value(val)
+            .map_err(|e| format!("Failed to decode LLM chat response: {e}"))?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("LLM chat task failed: {e}"))?
 }
 
 #[tauri::command]
-fn llm_summarize(
+async fn llm_summarize(
+    app: AppHandle,
     config: LlmConfigInput,
     text: String,
     mode: Option<String>,
 ) -> Result<LlmSummarizeResult, String> {
-    let req = serde_json::json!({
-        "action": "summarize",
-        "config": config,
-        "text": text,
-        "mode": mode.unwrap_or_else(|| "summary".to_string()),
-    });
-    let val = invoke_llm_rpc(&req)?;
-    let result: LlmSummarizeResult = serde_json::from_value(val)
-        .map_err(|e| format!("Failed to decode LLM summarize response: {e}"))?;
-    Ok(result)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let req = serde_json::json!({
+            "action": "summarize",
+            "config": config,
+            "text": text,
+            "mode": mode.unwrap_or_else(|| "summary".to_string()),
+        });
+        let val = invoke_llm_rpc(&state, &req)?;
+        let result: LlmSummarizeResult = serde_json::from_value(val)
+            .map_err(|e| format!("Failed to decode LLM summarize response: {e}"))?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("LLM summarize task failed: {e}"))?
 }
 
 #[tauri::command]
-fn llm_enhance_script(config: LlmConfigInput, text: String) -> Result<LlmEnhanceResult, String> {
-    let req = serde_json::json!({
-        "action": "enhance_narration",
-        "config": config,
-        "text": text,
-    });
-    let val = invoke_llm_rpc(&req)?;
-    let result: LlmEnhanceResult = serde_json::from_value(val)
-        .map_err(|e| format!("Failed to decode LLM narration enhance response: {e}"))?;
-    Ok(result)
-}
-
-#[tauri::command]
-fn get_document_text(
+async fn llm_enhance_script(
     app: AppHandle,
-    state: State<'_, AppState>,
+    config: LlmConfigInput,
+    text: String,
+) -> Result<LlmEnhanceResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let req = serde_json::json!({
+            "action": "enhance_narration",
+            "config": config,
+            "text": text,
+        });
+        let val = invoke_llm_rpc(&state, &req)?;
+        let result: LlmEnhanceResult = serde_json::from_value(val)
+            .map_err(|e| format!("Failed to decode LLM narration enhance response: {e}"))?;
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("LLM enhance script task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn llm_model_status(
+    app: AppHandle,
+    config: LlmConfigInput,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let req = serde_json::json!({"action": "model_status", "config": config});
+        invoke_llm_rpc(&state, &req)
+    })
+    .await
+    .map_err(|e| format!("LLM model status task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn llm_discover_models(
+    app: AppHandle,
+    config: LlmConfigInput,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let req = serde_json::json!({"action": "discover_models", "config": config});
+        invoke_llm_rpc(&state, &req)
+    })
+    .await
+    .map_err(|e| format!("LLM discover models task failed: {e}"))?
+}
+
+fn shutdown_llm_worker(state: &AppState) {
+    let Ok(mut guard) = state.llm_worker.lock() else {
+        return;
+    };
+    let Some(mut worker) = guard.take() else {
+        return;
+    };
+    let shutdown = b"{\"action\":\"shutdown\",\"config\":{\"provider\":\"embedded_llama_cpp\"}}\n";
+    let _ = worker.stdin.write_all(shutdown);
+    let _ = worker.stdin.flush();
+    let mut response = Vec::new();
+    let _ = worker.stdout.read_until(b'\n', &mut response);
+    let _ = worker.child.wait();
+}
+
+#[tauri::command]
+async fn get_document_text(
+    app: AppHandle,
     path: Option<String>,
 ) -> Result<String, String> {
-    let target = if let Some(p) = path.filter(|s| !s.trim().is_empty()) {
-        p
-    } else {
-        let reader_dir = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("Could not get app data dir: {e}"))?
-            .join("reader-output");
-        let txt_file = reader_dir.join("document_text.txt");
-        if txt_file.is_file() {
-            reader_dir.to_string_lossy().into_owned()
-        } else if let Ok(guard) = state.selected_document.lock() {
-            if let Some(selected) = guard.as_ref() {
-                selected.to_string_lossy().into_owned()
-            } else {
-                return Err("No document is currently loaded or selected.".to_owned());
-            }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let target = if let Some(p) = path.filter(|s| !s.trim().is_empty()) {
+            p
         } else {
-            return Err("Document state unavailable.".to_owned());
-        }
-    };
+            let reader_dir = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|e| format!("Could not get app data dir: {e}"))?
+                .join("reader-output");
+            let txt_file = reader_dir.join("document_text.txt");
+            if txt_file.is_file() {
+                reader_dir.to_string_lossy().into_owned()
+            } else if let Ok(guard) = state.selected_document.lock() {
+                if let Some(selected) = guard.as_ref() {
+                    selected.to_string_lossy().into_owned()
+                } else {
+                    return Err("No document is currently loaded or selected.".to_owned());
+                }
+            } else {
+                return Err("Document state unavailable.".to_owned());
+            }
+        };
 
-    let req = serde_json::json!({
-        "action": "get_document_text",
-        "path": target,
-    });
-    let val = invoke_llm_rpc(&req)?;
-    if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        let text = val
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        Ok(text)
-    } else {
-        let err = val
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown error retrieving document text");
-        Err(err.to_string())
-    }
+        let req = serde_json::json!({
+            "action": "get_document_text",
+            "path": target,
+        });
+        let val = invoke_llm_rpc(&state, &req)?;
+        if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let text = val
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(text)
+        } else {
+            let err = val
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error retrieving document text");
+            Err(err.to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("Get document text task failed: {e}"))?
 }
 
 fn monitor_worker(
@@ -1888,6 +2130,9 @@ pub fn run() {
             llm_chat,
             llm_summarize,
             llm_enhance_script,
+            llm_model_status,
+            llm_discover_models,
+            llm_choose_model,
             get_document_text
         ])
         .setup(|app| {
@@ -1907,6 +2152,7 @@ pub fn run() {
             if matches!(event, WindowEvent::CloseRequested { .. }) {
                 let app = window.app_handle();
                 app.state::<AudioServer>().stop();
+                shutdown_llm_worker(app.state::<AppState>().inner());
                 if let Ok(mut active) = app.state::<AppState>().active.lock() {
                     if let Some(job) = active.take() {
                         job.cancelled.store(true, Ordering::SeqCst);
@@ -2092,10 +2338,51 @@ mod tests {
             max_tokens: Some(100),
             embedding_model: None,
             embedding_endpoint: None,
+            model_path: None,
+            model_directory: None,
+            context_size: None,
+            threads: None,
+            batch_size: None,
+            idle_timeout_seconds: None,
         };
-        let result =
-            llm_test_connection(config).expect("IPC invocation should return a structured result");
+        let state = AppState::default();
+        let result = llm_test_connection_inner(&state, config)
+            .expect("IPC invocation should return a structured result");
+        shutdown_llm_worker(&state);
         assert!(!result.ok);
         assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn embedded_llm_worker_is_reused_without_startup_model_load() {
+        let state = AppState::default();
+        let request = serde_json::json!({
+            "action": "model_status",
+            "config": {"provider": "embedded_llama_cpp"}
+        });
+        let first = invoke_llm_rpc(&state, &request).expect("status request should complete");
+        assert_eq!(first["state"], "UNLOADED");
+        let first_pid = state
+            .llm_worker
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .child
+            .id();
+
+        let second =
+            invoke_llm_rpc(&state, &request).expect("second status request should complete");
+        let second_pid = state
+            .llm_worker
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .child
+            .id();
+        assert_eq!(second["state"], "UNLOADED");
+        assert_eq!(first_pid, second_pid);
+        shutdown_llm_worker(&state);
     }
 }

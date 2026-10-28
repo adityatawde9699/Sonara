@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SettingsModal } from "./SettingsModal";
 import type { FrontendSession } from "../lib/tauri";
 
@@ -45,7 +45,7 @@ describe("SettingsModal component", () => {
     expect(screen.getByText("1.2×")).toBeInTheDocument();
     expect(screen.getByText("en_US-john-medium")).toBeInTheDocument();
     expect(screen.getByText("22050 Hz · Mono · 16-bit PCM")).toBeInTheDocument();
-    expect(screen.getByText(/100% Offline/)).toBeInTheDocument();
+    expect(screen.getByText(/Narration stays local/)).toBeInTheDocument();
   });
 
   it("calls onSpeedChange when clicking a preset", () => {
@@ -62,6 +62,29 @@ describe("SettingsModal component", () => {
 
     fireEvent.click(screen.getByText("1.2×"));
     expect(onSpeedChange).toHaveBeenCalledWith(1.2);
+  });
+
+  it("offers an embedded GGUF provider without an HTTP endpoint field", async () => {
+    localStorage.clear();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__TAURI__ = { core: { invoke: vi.fn().mockResolvedValue({ ok: true, state: "UNLOADED" }) } };
+    render(
+      <SettingsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        session={mockSession}
+        playbackRate={1.0}
+        onSpeedChange={vi.fn()}
+      />
+    );
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "embedded_llama_cpp" } });
+    expect(screen.getByLabelText("GGUF model file")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Browse…" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Context size")).toHaveValue(4096);
+    expect(screen.getByLabelText("Idle unload · seconds")).toHaveValue(300);
+    expect(screen.getByTestId("embedded-model-state")).toHaveTextContent("not loaded");
+    expect(screen.queryByLabelText("API Endpoint URL")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("embedded-model-state")).toHaveTextContent("not loaded"));
   });
 
   it("renders voice options and triggers onVoiceChange when selecting a different voice", () => {

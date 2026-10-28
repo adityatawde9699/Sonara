@@ -1,5 +1,11 @@
 # Decisions
 
+## 2026-10-28: Embedded llama.cpp inference in a supervised worker
+
+Add `embedded_llama_cpp` as a new provider using the lazy `llama-cpp-python` binding, following Amadeus-chat's direct `Llama(model_path=...)` pattern. Keep `llama_cpp` as the existing HTTP server provider so saved configurations retain their meaning. A single Python manager owns one model instance, serializes requests, reads chat formatting from GGUF metadata via llama-cpp-python's default selection, and unloads after an adjustable idle timeout. Tauri owns one long-lived JSON-lines worker process and shuts it down on application close; this keeps prompts out of process arguments and avoids loading weights at app startup.
+
+Keep `llama-cpp-python` optional and pinned separately from the default Piper requirements because it includes native code with OS/Python-specific wheel and build behavior. Do not bundle model weights or runtime until packaging and license obligations have been reviewed. Embedded mode does not assume the chat model supports embeddings. Until a separate direct embedding model path is designed and tested, pass bounded document context directly; keep the existing embeddings endpoint behavior only for legacy server-based llama.cpp configurations. Embedded inference never falls back to HTTP or cloud providers.
+
 ## 2026-10-27: Piper defaults, reversible narration, and listening evaluation
 
 Leave Piper `noise_scale` and `noise_w_scale` unspecified in the default worker request so the selected voice config supplies its own synthesis defaults. Optional `less`/`more` profiles are relative experiments (0.85×/1.10×, capped at 1.0); retain voice defaults unless a blinded, loudness-matched listening evaluation demonstrates a clear improvement. These parameters describe generator noise and phoneme-width variation, not pitch or emotion.

@@ -24,6 +24,16 @@ interface MessageItem {
   timestamp: number;
 }
 
+export function stripThinking(raw: string): string {
+  if (!raw) return "";
+  let text = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  if (text.includes("<think>")) {
+    const before = text.split(/<think>/i)[0].trim();
+    text = before ? before : text.replace(/<\/?think>/gi, "").trim();
+  }
+  return text.replace(/<\/?think>/gi, "").trim();
+}
+
 export const AssistantDrawer: FC<Props> = ({
   isOpen,
   onClose,
@@ -225,7 +235,7 @@ export const AssistantDrawer: FC<Props> = ({
   };
 
   const handleCopy = (id: string, text: string) => {
-    navigator.clipboard.writeText(text).then(() => {
+    navigator.clipboard.writeText(stripThinking(text)).then(() => {
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
     });
@@ -237,7 +247,8 @@ export const AssistantDrawer: FC<Props> = ({
 
   // Helper to format text with lightweight Markdown styling
   const renderFormattedContent = (content: string) => {
-    const lines = content.split("\n");
+    const cleanContent = stripThinking(content);
+    const lines = cleanContent.split("\n");
     return lines.map((line, idx) => {
       if (line.startsWith("### ")) {
         return (

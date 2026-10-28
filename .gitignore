@@ -33,6 +33,7 @@ test-results/
 !/models/kokoro/
 /models/kokoro/*
 !/models/kokoro/README.md
+*.gguf
 sonara-reading/
 reader-output/
 .sonara-audio-cache/

@@ -1,0 +1,5 @@
+# Optional direct, embedded GGUF inference for the Sonara LLM worker.
+# This compiles/installs native llama.cpp bindings; it is intentionally separate
+# from the small default narration requirements.
+-r requirements.txt
+llama-cpp-python==0.3.36

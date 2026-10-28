@@ -69,6 +69,18 @@ cd ui-react && npm run dev
 
 The default runtime expects `.venv/bin/python`, `sonara.py`, and `models/piper/en_US-john-medium.onnx` in this checkout. Override those locations with `SONARA_PROJECT_ROOT`, `SONARA_PYTHON`, and `SONARA_MODEL_DIR` when needed.
 
+### Embedded llama.cpp assistant
+
+Sonara can run a local GGUF directly through the optional `llama-cpp-python` runtime. It does not start or contact `llama-server`. Install the pinned optional dependency into the Python environment selected by `SONARA_PYTHON`:
+
+```sh
+.venv/bin/python -m pip install -r requirements-llm.txt
+```
+
+In **Settings → AI Assistant & Smart Narration**, choose **llama.cpp embedded**, browse to a readable `.gguf` model, and use **Test Connection**. That test loads the model and runs a short completion. The model is loaded lazily, reused by subsequent requests, and unloaded after the configured idle timeout (five minutes by default). Context size, CPU threads, batch size, temperature, token limit, and idle timeout are configurable there. `0` CPU threads delegates thread selection to llama.cpp; `0` idle timeout keeps the model until the app closes.
+
+The legacy **llama.cpp server** provider remains an HTTP integration and still requires its configured local service. Existing `llama_cpp` settings are not migrated to embedded mode. Embedded chat does not assume that its generation model provides embeddings: without vector retrieval configured, Sonara passes a bounded document excerpt directly to the model. No model weights are downloaded or bundled; review model and runtime licenses before redistribution. The optional native binding and app bundle have not been validated across Windows, macOS, and Linux.
+
 ## Performance Benchmark & Packaging
 
 - **Performance Benchmarks**: See [Benchmark Report](docs/BENCHMARKS.md) for multi-voice latency, Time to First Audio (TTFA), and Real-Time Factor (RTF) figures on CPU execution.

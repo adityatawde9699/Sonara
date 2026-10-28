@@ -1,8 +1,7 @@
-"""Universal OpenAI-compatible LLM client for local (Ollama) and cloud (Gemini, OpenAI) models.
+"""Sonara LLM client for embedded llama.cpp, local HTTP, and cloud providers.
 
-Zero extra dependencies — uses standard-library urllib and json.
-Supports Ollama (default local), OpenAI, Google Gemini (via OpenAI-compatible endpoint),
-OpenRouter, LocalAI, and LM Studio.
+HTTP providers use standard-library urllib/json. The optional llama-cpp-python native
+runtime is imported lazily only when an embedded GGUF request needs it.
 """
 
 from __future__ import annotations
@@ -25,11 +24,12 @@ DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434/v1"
 DEFAULT_OPENAI_ENDPOINT = "https://api.openai.com/v1"
 DEFAULT_GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_LLAMA_CPP_ENDPOINT = "http://127.0.0.1:9931/v1"
+DEFAULT_EMBEDDED_MODEL_DIRECTORY = Path.home() / ".cache" / "sonara" / "models"
 
 
 @dataclass(frozen=True)
 class LlmConfig:
-    provider: str = "ollama"  # "ollama" | "llama_cpp" | "openai" | "gemini" | "custom"
+    provider: str = "ollama"  # embedded_llama_cpp is direct inference; llama_cpp is legacy HTTP.
     endpoint: str = DEFAULT_OLLAMA_ENDPOINT  # e.g. "http://localhost:11434/v1"
     model: str = "llama3.2"  # e.g. "llama3.2", "gpt-4o-mini", "gemini-1.5-flash"
     api_key: str = ""
@@ -37,6 +37,12 @@ class LlmConfig:
     max_tokens: int = 1024
     embedding_model: str = ""
     embedding_endpoint: str = ""
+    model_path: str = ""
+    model_directory: str = ""
+    context_size: int = 4096
+    threads: int = 0
+    batch_size: int = 512
+    idle_timeout_seconds: int = 300
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LlmConfig:
@@ -53,6 +59,9 @@ class LlmConfig:
         elif provider == "llama_cpp":
             default_endpoint = DEFAULT_LLAMA_CPP_ENDPOINT
             default_model = "local-model"
+        elif provider == "embedded_llama_cpp":
+            default_endpoint = ""
+            default_model = "GGUF model"
 
         endpoint = str(data.get("endpoint") or default_endpoint).rstrip("/")
         model = str(data.get("model") or default_model)
@@ -61,6 +70,12 @@ class LlmConfig:
         max_tokens = int(data.get("maxTokens") or data.get("max_tokens") or 1024)
         embedding_model = str(data.get("embeddingModel") or data.get("embedding_model") or "")
         embedding_endpoint = str(data.get("embeddingEndpoint") or data.get("embedding_endpoint") or "")
+        model_path = str(data.get("modelPath") or data.get("model_path") or "").strip()
+        model_directory = str(data.get("modelDirectory") or data.get("model_directory") or "").strip()
+        context_size = _bounded_int(data.get("contextSize", data.get("context_size", 4096)), 4096, 512, 131072)
+        threads = _bounded_int(data.get("threads", data.get("nThreads", 0)), 0, 0, 256)
+        batch_size = _bounded_int(data.get("batchSize", data.get("batch_size", 512)), 512, 32, 8192)
+        idle_timeout_seconds = _bounded_int(data.get("idleTimeoutSeconds", data.get("idle_timeout_seconds", 300)), 300, 0, 86400)
 
         return cls(
             provider=provider,
@@ -71,6 +86,12 @@ class LlmConfig:
             max_tokens=max_tokens,
             embedding_model=embedding_model,
             embedding_endpoint=embedding_endpoint,
+            model_path=model_path,
+            model_directory=model_directory,
+            context_size=context_size,
+            threads=threads,
+            batch_size=batch_size,
+            idle_timeout_seconds=idle_timeout_seconds,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -81,7 +102,233 @@ class LlmConfig:
             "apiKey": self.api_key,
             "temperature": self.temperature,
             "maxTokens": self.max_tokens,
+            "modelPath": self.model_path,
+            "modelDirectory": self.model_directory,
+            "contextSize": self.context_size,
+            "threads": self.threads,
+            "batchSize": self.batch_size,
+            "idleTimeoutSeconds": self.idle_timeout_seconds,
         }
+
+
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def strip_thinking_tags(text: str) -> str:
+    """Strip <think>...</think> reasoning blocks, unclosed thinking tags, and stray artifacts."""
+    if not text:
+        return ""
+    import re
+
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+    if "<think>" in cleaned:
+        before = cleaned.split("<think>", 1)[0].strip()
+        cleaned = before if before else re.sub(r"</?think>", "", cleaned).strip()
+    return re.sub(r"</?think>", "", cleaned).strip()
+
+
+class EmbeddedModelManager:
+    """Own one lazily-loaded llama-cpp-python model and serialize its use."""
+
+    def __init__(self, model_factory: Any = None):
+        import threading
+        self._lock = threading.RLock()
+        self._model: Any = None
+        self._signature: tuple[Any, ...] | None = None
+        self._state = "UNLOADED"
+        self._last_error = ""
+        self._last_used = 0.0
+        self._timer: Any = None
+        self._model_factory = model_factory
+
+    def _validated_path(self, config: LlmConfig) -> Path:
+        if not config.model_path:
+            raise RuntimeError("Choose a local GGUF model file in Settings to use embedded llama.cpp.")
+        path = Path(config.model_path).expanduser()
+        try:
+            path = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(f"GGUF model file was not found or is inaccessible: {config.model_path}") from exc
+        if not path.is_file() or path.suffix.lower() != ".gguf":
+            raise RuntimeError("The selected model must be a readable .gguf file.")
+        if not os.access(path, os.R_OK):
+            raise RuntimeError(f"GGUF model file is not readable: {path}")
+        try:
+            with path.open("rb") as model_file:
+                if model_file.read(4) != b"GGUF":
+                    raise RuntimeError("The selected file does not have a GGUF model header.")
+        except OSError as exc:
+            raise RuntimeError(f"GGUF model file could not be read: {path}") from exc
+        return path
+
+    def _factory(self) -> Any:
+        if self._model_factory is not None:
+            return self._model_factory
+        try:
+            from llama_cpp import Llama
+        except ImportError as exc:
+            raise RuntimeError(
+                "Embedded llama.cpp runtime is unavailable. Install Sonara's optional llama-cpp-python dependency."
+            ) from exc
+        return Llama
+
+    def _signature_for(self, config: LlmConfig, path: Path) -> tuple[Any, ...]:
+        return (str(path), config.context_size, config.threads, config.batch_size)
+
+    def _cancel_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _unload_locked(self) -> None:
+        model, self._model = self._model, None
+        self._signature = None
+        if model is None:
+            self._state = "UNLOADED"
+            return
+        self._state = "UNLOADING"
+        try:
+            close = getattr(model, "close", None)
+            if callable(close):
+                close()
+            del model
+            import gc
+            gc.collect()
+            self._state = "UNLOADED"
+            self._last_error = ""
+        except Exception as exc:
+            self._state = "UNLOADED"
+            self._last_error = f"Model release failed ({type(exc).__name__})."
+            self._log_event("release_failed", type(exc).__name__)
+
+    def _schedule_unload_locked(self, timeout: int) -> None:
+        self._cancel_timer()
+        if timeout <= 0 or self._model is None:
+            self._state = "IDLE" if self._model is not None else "UNLOADED"
+            return
+        self._state = "IDLE"
+        import threading
+        self._timer = threading.Timer(timeout, self._expire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _expire(self) -> None:
+        with self._lock:
+            if self._model is not None and self._state == "IDLE":
+                self._unload_locked()
+
+    def _ensure_loaded_locked(self, config: LlmConfig) -> Any:
+        path = self._validated_path(config)
+        signature = self._signature_for(config, path)
+        if self._model is not None and self._signature != signature:
+            self._unload_locked()
+        if self._model is None:
+            self._state = "LOADING"
+            self._last_error = ""
+            try:
+                factory = self._factory()
+                kwargs: dict[str, Any] = {
+                    "model_path": str(path), "n_ctx": config.context_size,
+                    "n_batch": config.batch_size, "use_mmap": True,
+                    "use_mlock": False, "verbose": False,
+                    "n_gpu_layers": -1,
+                }
+                if config.threads > 0:
+                    kwargs["n_threads"] = config.threads
+                    kwargs["n_threads_batch"] = config.threads
+                self._model = factory(**kwargs)
+                self._signature = signature
+                self._state = "READY"
+            except Exception as exc:
+                self._model = None
+                self._signature = None
+                self._state = "FAILED"
+                message = str(exc).strip()
+                self._last_error = message[:500] if message else type(exc).__name__
+                self._log_event("load_failed", type(exc).__name__)
+                if isinstance(exc, RuntimeError) and "llama-cpp-python" in str(exc):
+                    raise
+                raise RuntimeError(f"Could not load GGUF model {path.name}: {self._last_error}") from exc
+        return self._model
+
+    def complete(self, config: LlmConfig, messages: list[dict[str, str]], *, max_tokens: int | None = None) -> str:
+        with self._lock:
+            self._cancel_timer()
+            model = self._ensure_loaded_locked(config)
+            self._state = "IN_USE"
+            try:
+                result = model.create_chat_completion(
+                    messages=messages,
+                    temperature=config.temperature,
+                    max_tokens=max_tokens or config.max_tokens,
+                )
+                choices = result.get("choices") or []
+                if not choices:
+                    raise RuntimeError("Embedded llama.cpp returned no completion choices.")
+                content = str(choices[0].get("message", {}).get("content", ""))
+                return strip_thinking_tags(content)
+            except Exception as exc:
+                self._last_error = f"Inference failed ({type(exc).__name__})."
+                self._log_event("inference_failed", type(exc).__name__)
+                if isinstance(exc, RuntimeError):
+                    raise
+                raise RuntimeError(f"Embedded llama.cpp inference failed: {type(exc).__name__}.") from exc
+            finally:
+                self._last_used = time.monotonic()
+                self._schedule_unload_locked(config.idle_timeout_seconds)
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return {"state": self._state, "model": Path(self._signature[0]).name if self._signature else "",
+                    "lastError": self._last_error}
+
+    @staticmethod
+    def _log_event(event: str, error_type: str) -> None:
+        """Write only event and exception type; never record prompts, keys, or model output."""
+        try:
+            root = Path(os.environ.get("SONARA_CACHE_DIR", Path.home() / ".cache" / "sonara"))
+            root.mkdir(parents=True, exist_ok=True)
+            with (root / "llm-worker.log").open("a", encoding="utf-8") as log_file:
+                log_file.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {event} {error_type}\n")
+        except OSError:
+            pass
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._cancel_timer()
+            self._unload_locked()
+
+
+_embedded_model_manager = EmbeddedModelManager()
+
+
+def discover_gguf_models(config: LlmConfig) -> list[str]:
+    """List only direct .gguf children in explicitly configured and standard Sonara model directories."""
+    roots: list[Path] = []
+    if config.model_directory:
+        roots.append(Path(config.model_directory).expanduser())
+    roots.extend([DEFAULT_EMBEDDED_MODEL_DIRECTORY, Path.home() / ".local" / "share" / "sonara" / "models", Path.home() / "Sonara" / "models"])
+    found: set[str] = set()
+    for root in roots:
+        try:
+            resolved = root.resolve(strict=True)
+            if resolved.is_dir():
+                found.update(str(item.resolve()) for item in resolved.glob("*.gguf") if item.is_file() and os.access(item, os.R_OK))
+        except (OSError, RuntimeError):
+            continue
+    if config.model_path:
+        try:
+            selected = Path(config.model_path).expanduser().resolve(strict=True)
+            if selected.is_file() and selected.suffix.lower() == ".gguf" and os.access(selected, os.R_OK):
+                found.add(str(selected))
+        except (OSError, RuntimeError):
+            pass
+    return sorted(found)
 
 
 def chat_completion(
@@ -91,7 +338,9 @@ def chat_completion(
     timeout: float = 60.0,
     max_tokens: int | None = None,
 ) -> str:
-    """Send an OpenAI-compatible /chat/completions request via standard library urllib."""
+    """Complete through the selected provider without changing the public client API."""
+    if config.provider == "embedded_llama_cpp":
+        return _embedded_model_manager.complete(config, messages, max_tokens=max_tokens)
     if config.provider in {"llama_cpp", "ollama"} and not _is_loopback_endpoint(config.endpoint):
         raise RuntimeError(f"{config.provider} provider only accepts a local loopback endpoint.")
     url = f"{config.endpoint}/chat/completions"
@@ -120,7 +369,7 @@ def chat_completion(
             if not choices or not isinstance(choices, list):
                 raise ValueError("LLM response did not contain choices")
             content = choices[0].get("message", {}).get("content", "")
-            return content.strip()
+            return strip_thinking_tags(content)
     except urllib.error.HTTPError as exc:
         err_msg = ""
         try:
@@ -172,6 +421,7 @@ def test_connection(config: LlmConfig) -> dict[str, Any]:
             "provider": config.provider,
             "latencyMs": latency_ms,
             "response": response,
+            "modelState": _embedded_model_manager.status()["state"] if config.provider == "embedded_llama_cpp" else None,
         }
     except Exception as exc:
         return {
@@ -179,6 +429,7 @@ def test_connection(config: LlmConfig) -> dict[str, Any]:
             "error": str(exc),
             "model": config.model,
             "provider": config.provider,
+            "modelState": _embedded_model_manager.status()["state"] if config.provider == "embedded_llama_cpp" else None,
         }
 
 
@@ -191,10 +442,11 @@ def ask_document(
     """Answer a user question grounded in the open document text."""
     system_prompt = (
         "You are Sonara's AI Reading Assistant. You help users understand, explore, "
-        "and discuss documents while they listen to the audiobook. "
-        "Give clear, concise, well-structured answers using clean Markdown. "
-        "Ground your answers in the provided document context whenever applicable. "
-        "If the document doesn't mention the answer, clearly state so."
+        "and discuss documents while they listen to the audiobook.\n"
+        "Instructions:\n"
+        "- Answer directly and concisely in 2 to 4 bullet points or short paragraphs.\n"
+        "- Do NOT output internal thinking monologue, chain-of-thought, or <think> tags.\n"
+        "- Ground your answer strictly in the provided document context."
     )
     if config.provider == "llama_cpp":
         system_prompt += " Cite supporting retrieved excerpts with their labels, such as [Passage 2]. Do not invent citations."
@@ -210,8 +462,8 @@ def ask_document(
     if context_text.strip():
         if config.provider == "llama_cpp":
             context_text = retrieve_relevant_context(config, question, context_text)
-        # Truncate context to ~12,000 characters to prevent context window overflow
-        safe_context = context_text.strip()[:12000]
+        # Truncate context to ~6,000 characters to prevent high prefill latency
+        safe_context = context_text.strip()[:6000]
         user_content = (
             f"--- DOCUMENT CONTEXT ---\n"
             f"{safe_context}\n"
@@ -220,7 +472,7 @@ def ask_document(
         )
 
     messages.append({"role": "user", "content": user_content})
-    return chat_completion(config, messages)
+    return chat_completion(config, messages, max_tokens=max(config.max_tokens, 1024))
 
 
 def _is_loopback_endpoint(endpoint: str) -> bool:
@@ -253,8 +505,10 @@ def _embedding(config: LlmConfig, text: str) -> list[float]:
         return [float(value) for value in vector]
     except Exception as exc:
         raise RuntimeError(
-            f"Local embeddings unavailable at {endpoint}. Start llama.cpp with --embedding "
-            f"and configure its embedding model. Details: {exc}"
+            f"Local embeddings unavailable at {endpoint}. This is the legacy HTTP llama.cpp provider; "
+            f"it requires a running server started with --embedding and a configured embedding model. "
+            f"For direct inference without a server, select 'llama.cpp embedded' in Sonara Settings "
+            f"(embedded chat currently uses bounded document context without vector embeddings). Details: {exc}"
         ) from exc
 
 
@@ -325,35 +579,40 @@ def summarize_document(
     mode: str = "summary",
 ) -> str:
     """Generate an executive summary, key takeaways, or passage explanation."""
-    safe_text = doc_text.strip()[:16000]
+    safe_text = doc_text.strip()[:6000]
+    token_budget = max(config.max_tokens, 1024)
     if mode == "takeaways":
         prompt = (
-            "Extract the 4 to 6 most important key takeaways from the following document. "
-            "Format as clean Markdown bullet points with bold titles and brief actionable explanations.\n\n"
+            "Extract exactly 3 to 5 key takeaways from the following document. "
+            "Format as concise Markdown bullets with bold titles. "
+            "Do NOT output <think> tags or preface — start directly with the bullet points:\n\n"
             f"{safe_text}"
         )
     elif mode == "explain_passage":
         prompt = (
-            "Explain the following passage in clear, accessible language. "
-            "Highlight the main idea, clarify difficult terminology, and explain context.\n\n"
+            "Explain the central concepts of this document in 2 concise paragraphs. "
+            "Do NOT output <think> tags or preface — provide only the clear explanation:\n\n"
             f"{safe_text}"
         )
     else:
         prompt = (
-            "Provide a comprehensive, easy-to-listen summary of the following document. "
-            "Include: 1) Executive Overview (2-3 sentences), 2) Core Themes / Narrative Arc, "
-            "3) Key Takeaways. Use clean Markdown formatting.\n\n"
+            "Provide a concise executive summary of this document in under 150 words. "
+            "Include: 1) Brief Overview (2 sentences), 2) Top 3 Takeaways (bullet points). "
+            "Do NOT output <think> tags or preface — start directly with the summary:\n\n"
             f"{safe_text}"
         )
 
     messages = [
         {
             "role": "system",
-            "content": "You are Sonara's executive document summarizer. Be accurate, informative, and concise.",
+            "content": (
+                "You are Sonara's executive document summarizer. "
+                "Be direct, accurate, and concise. Never output internal chain-of-thought or <think> tags."
+            ),
         },
         {"role": "user", "content": prompt},
     ]
-    return chat_completion(config, messages)
+    return chat_completion(config, messages, max_tokens=token_budget)
 
 
 def enhance_narration_script(
@@ -437,7 +696,7 @@ def extract_text_from_target(target_path: str) -> dict[str, Any]:
                 "source": str(p),
             }
         try:
-            from document import extract_document
+            from sonara import extract_document
 
             doc = extract_document(p)
             return {"ok": True, "text": doc.text, "source": str(p)}
@@ -480,12 +739,45 @@ def rpc_handler(request: dict[str, Any]) -> dict[str, Any]:
         path = str(request.get("path", ""))
         return extract_text_from_target(path)
 
+    if action == "model_status":
+        if config.provider != "embedded_llama_cpp":
+            return {"ok": True, "state": "NOT_APPLICABLE", "model": "", "lastError": ""}
+        return {"ok": True, **_embedded_model_manager.status()}
+
+    if action == "discover_models":
+        return {"ok": True, "models": discover_gguf_models(config)}
+
+    if action == "shutdown":
+        _embedded_model_manager.shutdown()
+        return {"ok": True, "state": "UNLOADED"}
+
     return {"ok": False, "error": f"Unknown LLM action: {action}"}
 
 
 def main() -> int:
     """CLI entrypoint for testing and Tauri child-process RPC."""
     import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "worker":
+        # One owned child per Tauri application. Requests and responses are bounded JSON lines.
+        try:
+            for line in sys.stdin:
+                payload: Any = None
+                if len(line) > 4 * 1024 * 1024:
+                    result = {"ok": False, "error": "LLM worker request exceeded the 4 MiB limit."}
+                else:
+                    try:
+                        payload = json.loads(line)
+                        result = rpc_handler(payload)
+                    except Exception as exc:
+                        result = {"ok": False, "error": str(exc)[:1000]}
+                sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+                sys.stdout.flush()
+                if isinstance(payload, dict) and payload.get("action") == "shutdown":
+                    break
+        finally:
+            _embedded_model_manager.shutdown()
+        return 0
 
     if len(sys.argv) > 1 and sys.argv[1] == "rpc":
         # Read JSON from stdin, write JSON to stdout

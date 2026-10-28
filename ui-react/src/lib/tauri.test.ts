@@ -188,7 +188,8 @@ describe("Tauri bindings", () => {
     });
     const loadedCfg = loadStoredLlmConfig();
     expect(loadedCfg.provider).toBe("openai");
-    expect(loadedCfg.apiKey).toBe("sk-test");
+    expect(loadedCfg.apiKey).toBe("");
+    expect(localStorage.getItem("sonara-llm-config-v1")).not.toContain("sk-test");
 
     // Invoke mock
     const mockInvoke = vi.fn().mockImplementation((cmd, args) => {
