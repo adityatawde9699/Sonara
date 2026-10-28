@@ -2,6 +2,8 @@
 
 **Planning status:** updated 2026-10-27 from repository inspection and checks recorded in `docs/TESTING.md`. This file is the project roadmap. It distinguishes implemented behavior from pending desktop acceptance and subjective listening evidence.
 
+**Resource-efficiency update (2026-10-29):** a measured local baseline, bounded TTS profile selection, embedding-cache cap, and child-RSS-aware benchmark reporting are now implemented. The broader adaptive resource objective remains partial: custom profile controls, shared LLM/TTS workload arbitration, resource-monitoring UI, and concurrent/cancellation/shutdown workload measurements remain open. See `docs/BENCHMARKS.md` and `docs/TESTING.md`.
+
 ## A. Product objective
 
 Sonara is intended to turn a document into a listenable, navigable reading session while preserving the document's wording, order, and structure. The long-term product may support PDF, DOCX, EPUB, and TXT; OCR; pronunciation overrides; multiple languages and voices; narration styles; sentence-level synchronization; local progress; and CPU or compatible GPU inference.

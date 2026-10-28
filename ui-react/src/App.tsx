@@ -254,6 +254,8 @@ export default function App() {
         onVoiceChange={(voiceId) => sonara.setSelectedVoice(voiceId)}
         speechEngine={sonara.speechEngine}
         onSpeechEngineChange={sonara.setSpeechEngine}
+        resourceProfile={sonara.resourceProfile}
+        onResourceProfileChange={sonara.setResourceProfile}
         piperVariation={sonara.piperVariation}
         onVariationChange={sonara.setPiperVariation}
         expandDates={sonara.expandDates}

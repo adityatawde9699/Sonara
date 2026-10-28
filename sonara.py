@@ -31,6 +31,7 @@ from document import (
 )
 from narration import NarrationError, build_narration_plan
 from tts_engine import KokoroEngine, PiperEngine, SynthesisStream, TtsError
+from resource_policy import get_resource_profile
 
 
 class SonaraError(RuntimeError):
@@ -385,9 +386,14 @@ def read_document(args: argparse.Namespace) -> Path:
             variation=getattr(args, "variation", "voice_default"),
             engine_name="kokoro",
             kokoro_dir=getattr(args, "kokoro_dir", Path("models/kokoro")),
+            resource_profile=getattr(args, "resource_profile", "standard"),
         )
     elif _piper_python_api_available(args.piper):
-        manifest = _synthesize_plan(plan, args.voice, data_dir, speech, variation=getattr(args, "variation", "voice_default"))
+        manifest = _synthesize_plan(
+            plan, args.voice, data_dir, speech,
+            variation=getattr(args, "variation", "voice_default"),
+            resource_profile=getattr(args, "resource_profile", "standard"),
+        )
     else:
         # Keep explicit executable overrides and the PATH fallback working.
         synthesize(" ".join(unit.spoken_text for unit in plan.units), args.voice, data_dir, speech, args.piper)
@@ -459,9 +465,11 @@ def _synthesize_plan(
     variation: str = "voice_default",
     engine_name: str = "piper",
     kokoro_dir: Path = Path("models/kokoro"),
+    resource_profile: str = "standard",
 ) -> dict[str, Any]:
     """Generate mapped unit WAVs with one worker and return a playback manifest."""
     try:
+        policy = get_resource_profile(resource_profile)
         if engine_name == "kokoro":
             engine = KokoroEngine(kokoro_dir, voice=voice)
         else:
@@ -495,8 +503,9 @@ def _synthesize_plan(
             with SynthesisStream(
                 engine,
                 plan,
-                prefetch_chunks=2,
+                prefetch_chunks=policy.tts_prefetch_chunks,
                 cache_dir=output.parent / ".sonara-audio-cache",
+                cache_max_bytes=policy.audio_cache_bytes,
             ) as chunks:
                 for chunk in chunks:
                     chunk_name = f"chunk-{chunk.sequence:06d}.wav"
@@ -693,6 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
     read.add_argument("document", type=Path, metavar="DOCUMENT", help="Path to document (.pdf, .txt, .text, .md, .docx, .epub)")
     read.add_argument("--voice", required=True, help="installed Piper voice model name or Kokoro voice id")
     read.add_argument("--engine", choices=("piper", "kokoro"), default="piper", help="local speech engine")
+    read.add_argument("--resource-profile", choices=("low_resource", "standard", "high_performance"), default="standard", help="resource policy; does not change the selected model or voice")
     read.add_argument("--kokoro-dir", type=Path, default=Path("models/kokoro"), help="directory containing Kokoro ONNX and voice files")
     read.add_argument(
         "--variation",

@@ -68,6 +68,7 @@ describe("Tauri bindings", () => {
       variation: undefined,
       expandDates: false,
       expandCitations: false,
+      resourceProfile: "standard",
     });
     await previewNarration("en_US-ryan-medium", true, false);
     expect(mockInvoke).toHaveBeenCalledWith("preview_narration", {

@@ -249,3 +249,22 @@ This test does not download weights. It checks direct chat, loaded-instance reus
 - `cargo clippy --manifest-path src-tauri/Cargo.toml --locked --offline --all-targets -- -D warnings` — did not pass because the existing `spawn_sonara_worker` function triggers `clippy::too_many_arguments` (10 arguments). No clippy warning was attributed to the new LLM code.
 - `llama-cpp-python` is not installed in either the system Python or project `.venv`, and no `SONARA_LLM_TEST_MODEL` was supplied. Therefore, actual GGUF loading, inference, RSS, cold load, latency, and memory release have not been verified in this environment. The opt-in real-model test remains to be run after installing `requirements-llm.txt` and selecting a local model.
 - The GUI and system model file-picker interaction were not run in this headless session. Cross-platform Python runtime/model packaging is not validated.
+# Resource baseline and regression run (2026-10-29)
+
+Environment: Linux x86_64, Python 3.14.4 in `.venv`, Piper 1.8.0, ONNX Runtime 1.31.0 CPU provider. Kokoro uses its separate Python 3.12.14 environment and local ONNX/voice files. Measurements and unavailable workload entries are recorded in `BENCHMARKS.md`; they are not GPU or whole-desktop measurements.
+
+Commands run for this change:
+
+- `.venv/bin/python -m unittest discover -s tests -v` — passed, 90 tests; 7 opt-in integration tests skipped.
+- `SONARA_RUN_INTEGRATION=1 .venv/bin/python -m unittest discover -s tests -p 'test_integration_*.py' -v` — passed, 6 integration tests, including generated PDF extraction, real Piper worker synthesis/cancellation/WAV mapping, and complete PDF-to-player output.
+- `.venv/bin/python benchmark.py --voice en_US-john-medium --trials 2 --json` — completed; results in `BENCHMARKS.md`.
+- Kokoro single-passage local synthesis — completed; one trial only, result in `BENCHMARKS.md`.
+
+Post-change cross-language suite results:
+
+- `.venv/bin/python -m unittest discover -s tests -v` — passed, 90 tests; 7 opt-in integration skips.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — passed, 10 Rust tests.
+- `npm test -- --run` — passed, 47 frontend tests.
+- `npm run build` — passed (TypeScript build and Vite production build).
+
+Graphical playback and audio-device acceptance remain unavailable in the headless session. The new profile propagation is covered by the UI binding suite and Rust build/tests; there is not yet a dedicated Rust command test asserting the profile argument reaches the child process.

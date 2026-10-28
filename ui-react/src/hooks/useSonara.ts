@@ -5,6 +5,7 @@ import {
   type VoiceInfo,
   type PiperVariation,
   type SpeechEngine,
+  type ResourceProfile,
   type NarrationPreview,
   pickDocument,
   currentSession,
@@ -63,6 +64,16 @@ export function useSonara() {
   const [speechEngine, setSpeechEngine] = useState<SpeechEngine>(() => {
     try { return localStorage.getItem("sonara_speech_engine") === "kokoro" ? "kokoro" : "piper"; } catch { return "piper"; }
   });
+  const [resourceProfile, setResourceProfile] = useState<ResourceProfile>(() => {
+    try {
+      const value = localStorage.getItem("sonara_resource_profile");
+      return value === "low_resource" || value === "high_performance" ? value : "standard";
+    } catch { return "standard"; }
+  });
+  const handleResourceProfileChange = useCallback((value: ResourceProfile) => {
+    setResourceProfile(value);
+    try { localStorage.setItem("sonara_resource_profile", value); } catch { /* storage may be unavailable */ }
+  }, []);
   const [selectedVoice, setSelectedVoice] = useState<string>(() => {
     try {
       const selected = localStorage.getItem("sonara_selected_voice");
@@ -520,12 +531,12 @@ export function useSonara() {
     setPhase("synthesizing");
     setStatusText(`Preparing speech with the local ${speechEngine === "kokoro" ? "Kokoro" : "Piper"} voice…`);
     try {
-      await startReading(selectedVoice, piperVariation, expandDates, expandCitations, speechEngine);
+      await startReading(selectedVoice, piperVariation, expandDates, expandCitations, speechEngine, resourceProfile);
     } catch (error) {
       setPhase("selected");
       setErrorText(String(error));
     }
-  }, [selectedVoice, piperVariation, expandDates, expandCitations, speechEngine]);
+  }, [selectedVoice, piperVariation, expandDates, expandCitations, speechEngine, resourceProfile]);
 
   const previewCurrentNarration = useCallback((): Promise<NarrationPreview> => {
     return fetchNarrationPreview(speechEngine === "kokoro" ? "en_US-ryan-medium" : selectedVoice, expandDates, expandCitations);
@@ -779,6 +790,8 @@ export function useSonara() {
     voices,
     speechEngine,
     setSpeechEngine: handleSpeechEngineChange,
+    resourceProfile,
+    setResourceProfile: handleResourceProfileChange,
     selectedVoice,
     setSelectedVoice: handleVoiceChange,
     piperVariation,

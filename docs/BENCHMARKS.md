@@ -1,5 +1,15 @@
 # Sonara — Performance and Multi-Voice Benchmark Report
 
+## Reproducible baseline run (2026-10-29)
+
+This workspace was measured on Linux x86_64, kernel 7.0.0-31-generic, Python 3.14.4, Piper 1.8.0, and ONNX Runtime 1.31.0. The host reports 16 logical CPUs and 22 GiB RAM (15 GiB available during the snapshot). ORT reports `CPUExecutionProvider` and `AzureExecutionProvider`; no GPU device or provider was available. Models: Piper `en_US-john-medium.onnx` (Float32, 22,050 Hz) and Kokoro `kokoro-v1.0.onnx` / `voices-v1.0.bin`.
+
+Commands: `.venv/bin/python benchmark.py --voice en_US-john-medium --trials 2 --json` and a one-passage direct `KokoroEngine` synthesis using `.cache/kokoro-venv` (Python 3.12.14). The Piper run generated about 115.5 seconds of audio over 16 passage trials: mean per-passage RTF 0.0408, mean TTFA 0.1924 s. The first short-phrase cold trial was 1.294 s (RTF 0.336); subsequent short-phrase warm trial was 0.082 s (RTF 0.021). The original benchmark only measured parent RSS; these first-run memory numbers are therefore excluded.
+
+After correcting RSS reporting, a separate one-trial Piper run measured parent peak RSS 28.0 MiB and completed worker peak RSS 349.0 MiB. It measured 1.289 s on the first short phrase and 0.019–0.023 RTF on the remaining warmed passages. A single cold Kokoro passage measured 0.690 s wall time, 3.071 s audio, 0.225 RTF, and 525.3 MiB process peak RSS (mono, 16-bit, 24 kHz). These are observations, not comparative quality evidence; the Kokoro result has one passage/trial.
+
+PDF extraction was exercised through the opt-in generated-corpus integration suite (six fixtures); it passed. Per-task RSS, CPU utilization, cache growth, and total desktop-process memory were not sampled. No active llama.cpp endpoint or selected GGUF was available, so LLM inference and embeddings are unavailable measurements. Playback is an HTML/Tauri UI workload and was not launched; no concurrent workload, GPU, idle, or shutdown performance profile was measured. Historical tables below predate this run and should not be compared directly: their recorded process RSS excluded the child inference process, and the old benchmark timed engine construction rather than first model load.
+
 **Protocol Conformance:** Sonara `docs/ROADMAP.md` Section G (Performance Targets and Benchmark Protocol).  
 **Test Date:** October 26, 2026.  
 **Hardware & System:**  

@@ -555,14 +555,23 @@ def retrieve_relevant_context(config: LlmConfig, question: str, document_text: s
     except (OSError, ValueError, AttributeError):
         pass
     if len(vectors) != len(chunks):
+        # Keep requests bounded and predictable: one passage per embedding call.
         vectors = [
             _embedding(config, f"search_document: {chunk}" if use_nomic_prefixes else chunk)
             for chunk in chunks
         ]
         root.mkdir(parents=True, exist_ok=True)
-        temp = cache.with_suffix(".tmp")
-        temp.write_text(json.dumps({"chunks": chunks, "vectors": vectors}), encoding="utf-8")
-        os.replace(temp, cache)
+        temp = cache.with_name(f".{cache.name}.{os.getpid()}.tmp")
+        try:
+            temp.write_text(json.dumps({"chunks": chunks, "vectors": vectors}), encoding="utf-8")
+            os.replace(temp, cache)
+        finally:
+            temp.unlink(missing_ok=True)
+        try:
+            budget = int(os.environ.get("SONARA_EMBEDDING_CACHE_MAX_BYTES", 256 * 1024 * 1024))
+        except ValueError:
+            budget = 256 * 1024 * 1024
+        _prune_embedding_cache(root, max(1, budget), protected=cache)
     query_text = f"search_query: {question}" if "nomic-embed-text" in embedding_model.lower() else question
     query = _embedding(config, query_text)
     def similarity(vector: list[float]) -> float:
@@ -571,6 +580,35 @@ def retrieve_relevant_context(config: LlmConfig, question: str, document_text: s
         return dot / norm if norm else 0.0
     ranked = sorted(enumerate(vectors), key=lambda item: similarity(item[1]), reverse=True)[:top_k]
     return "\n\n".join(f"[Passage {index + 1}]\n{chunks[index]}" for index, _ in ranked)
+
+
+def _prune_embedding_cache(root: Path, max_bytes: int, *, protected: Path | None = None) -> int:
+    """Prune only content-addressed cache entries, preserving the current write."""
+    if not root.is_dir():
+        return 0
+    entries: list[tuple[float, Path, int]] = []
+    for path in root.glob("*.json"):
+        if len(path.stem) != 64 or any(char not in "0123456789abcdef" for char in path.stem):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        entries.append((stat.st_mtime, path, stat.st_size))
+    total = sum(size for _, _, size in entries)
+    removed = 0
+    for _, path, size in sorted(entries):
+        if total <= max_bytes:
+            break
+        if protected is not None and path == protected:
+            continue
+        try:
+            path.unlink()
+            total -= size
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def summarize_document(

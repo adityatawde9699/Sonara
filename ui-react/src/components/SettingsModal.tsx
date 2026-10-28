@@ -6,6 +6,7 @@ import {
   type LlmTestResult,
   type PiperVariation,
   type SpeechEngine,
+  type ResourceProfile,
   loadStoredLlmConfig,
   saveStoredLlmConfig,
   llmTestConnection,
@@ -28,6 +29,8 @@ interface Props {
   onVariationChange?: (value: PiperVariation) => void;
   speechEngine?: SpeechEngine;
   onSpeechEngineChange?: (value: SpeechEngine) => void;
+  resourceProfile?: ResourceProfile;
+  onResourceProfileChange?: (value: ResourceProfile) => void;
   expandDates?: boolean;
   onExpandDatesChange?: (enabled: boolean) => void;
   expandCitations?: boolean;
@@ -54,6 +57,8 @@ export const SettingsModal: FC<Props> = ({
   onVariationChange,
   speechEngine = "piper",
   onSpeechEngineChange,
+  resourceProfile = "standard",
+  onResourceProfileChange,
   expandDates = false,
   onExpandDatesChange,
   expandCitations = false,
@@ -322,6 +327,19 @@ export const SettingsModal: FC<Props> = ({
             />
             <span className="llm-toggle-text"><strong>Read bracketed numeric citations</strong><span className="llm-toggle-sub">For example, [12, 14] becomes “references twelve and fourteen.”</span></span>
           </label>
+        </div>
+
+        <div className="settings-section">
+          <h3 className="settings-section-title">Resource profile</h3>
+          <p className="settings-section-desc">Controls Sonara's TTS prefetch and audio cache limits. It does not change your selected model or configure an external llama.cpp server.</p>
+          <div className="llm-field">
+            <label htmlFor="resource-profile" className="llm-label">Inference and cache policy</label>
+            <select id="resource-profile" className="llm-input" value={resourceProfile} onChange={(event) => onResourceProfileChange?.(event.target.value as ResourceProfile)}>
+              <option value="low_resource">Low resource · one pending audio chunk, 128 MiB cache</option>
+              <option value="standard">Standard · Piper defaults, 512 MiB cache</option>
+              <option value="high_performance">High performance · larger prefetch, 1 GiB cache</option>
+            </select>
+          </div>
         </div>
 
         {/* AI Assistant & Smart Narration */}

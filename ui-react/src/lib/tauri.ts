@@ -37,6 +37,7 @@ export interface VoiceInfo {
 
 export type PiperVariation = "voice_default" | "less" | "more";
 export type SpeechEngine = "piper" | "kokoro";
+export type ResourceProfile = "low_resource" | "standard" | "high_performance";
 
 export interface NarrationPreviewChange {
   overrideId: string;
@@ -133,9 +134,10 @@ export async function startReading(
   variation?: PiperVariation,
   expandDates = false,
   expandCitations = false,
-  engine: SpeechEngine = "piper"
+  engine: SpeechEngine = "piper",
+  resourceProfile: ResourceProfile = "standard"
 ): Promise<string> {
-  const args: Record<string, unknown> = { voice, variation, expandDates, expandCitations };
+  const args: Record<string, unknown> = { voice, variation, expandDates, expandCitations, resourceProfile };
   if (engine !== "piper") args.engine = engine;
   return invoke<string>("start_reading", args);
 }

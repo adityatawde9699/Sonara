@@ -694,6 +694,7 @@ fn start_reading(
     expand_dates: Option<bool>,
     expand_citations: Option<bool>,
     engine: Option<String>,
+    resource_profile: Option<String>,
 ) -> Result<String, String> {
     let selected_path = state
         .selected_document
@@ -718,6 +719,10 @@ fn start_reading(
     let selected_engine = engine.unwrap_or_else(|| "piper".to_owned());
     if !["piper", "kokoro"].contains(&selected_engine.as_str()) {
         return Err("Choose Piper or Kokoro as the speech engine.".to_owned());
+    }
+    let selected_profile = resource_profile.unwrap_or_else(|| "standard".to_owned());
+    if !["low_resource", "standard", "high_performance"].contains(&selected_profile.as_str()) {
+        return Err("Choose a valid resource profile.".to_owned());
     }
     let selected_voice = match voice.as_deref() {
         Some(v) if !v.trim().is_empty() => {
@@ -795,6 +800,7 @@ fn start_reading(
         &selected_engine,
         expand_dates.unwrap_or(false),
         expand_citations.unwrap_or(false),
+        &selected_profile,
         log,
         error_log,
     )
@@ -1496,6 +1502,7 @@ fn spawn_sonara_worker(
     engine: &str,
     expand_dates: bool,
     expand_citations: bool,
+    resource_profile: &str,
     stdout: File,
     stderr: File,
 ) -> std::io::Result<Child> {
@@ -1531,6 +1538,8 @@ fn spawn_sonara_worker(
         .arg(variation)
         .arg("--engine")
         .arg(engine)
+        .arg("--resource-profile")
+        .arg(resource_profile)
         .arg("--data-dir")
         .arg(&runtime.model_dir)
         .arg("--kokoro-dir")

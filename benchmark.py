@@ -70,6 +70,15 @@ def get_peak_rss_mb() -> float:
     return usage.ru_maxrss / 1024.0
 
 
+def get_peak_child_rss_mb() -> float | None:
+    """Peak RSS of completed inference children (Linux/macOS getrusage units)."""
+    if resource is None:
+        return None
+    value = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    # Linux reports KiB; macOS reports bytes.
+    return value / (1024.0 if sys.platform.startswith("linux") else 1024.0 * 1024.0)
+
+
 def make_benchmark_document(text: str) -> Document:
     box = SourceBox(page=1, page_width=612.0, page_height=792.0, x_min=54.0, y_min=54.0, x_max=558.0, y_max=738.0)
     block = DocumentBlock("b-bench-001", "paragraph", "benchmark", 0, text, box)
@@ -132,10 +141,10 @@ def benchmark_voice(
 
     # Measure cold startup
     rss_before = get_peak_rss_mb()
+    child_rss_before = get_peak_child_rss_mb()
     t_load_start = time.perf_counter()
     engine = PiperEngine(model_path, config_path)
-    cold_load_seconds = time.perf_counter() - t_load_start
-    rss_after_load = get_peak_rss_mb()
+    engine_construct_seconds = time.perf_counter() - t_load_start
 
     with tempfile.TemporaryDirectory(prefix="sonara-bench-") as temp_dir:
         temp_path = Path(temp_dir)
@@ -162,16 +171,19 @@ def benchmark_voice(
 
     engine.close()
     rss_final = get_peak_rss_mb()
+    child_rss_after = get_peak_child_rss_mb()
 
     overall_rtfs = [p["avg_rtf"] for p in passage_results]
     overall_ttfas = [p["avg_ttfa_seconds"] for p in passage_results]
 
     return {
         "voice": voice,
-        "cold_model_load_seconds": round(cold_load_seconds, 4),
+        "engine_construct_seconds": round(engine_construct_seconds, 4),
+        "first_audio_seconds_includes_cold_load": passage_results[0]["trials"][0]["ttfa_seconds"],
         "peak_rss_mb_start": round(rss_before, 2),
-        "peak_rss_mb_loaded": round(rss_after_load, 2),
         "peak_rss_mb_final": round(rss_final, 2),
+        "peak_child_rss_mb": round(child_rss_after, 2) if child_rss_after is not None else None,
+        "child_rss_measurement_available": child_rss_before is not None and child_rss_after is not None,
         "mean_rtf": round(statistics.mean(overall_rtfs), 4),
         "mean_ttfa_seconds": round(statistics.mean(overall_ttfas), 4),
         "passages": passage_results,
@@ -224,18 +236,19 @@ def main() -> int:
             print(f"{'Voice':<24} | {'Cold Load':<10} | {'Mean TTFA':<10} | {'Mean RTF':<10} | {'Peak RAM':<10}")
             print("-" * 76)
             for r in reports:
-                print(f"{r['voice']:<24} | {r['cold_model_load_seconds']:>8.3f} s | {r['mean_ttfa_seconds']:>8.3f} s | {r['mean_rtf']:>8.3f}   | {r['peak_rss_mb_loaded']:>7.1f} MB")
+                print(f"{r['voice']:<24} | {r['first_audio_seconds_includes_cold_load']:>8.3f} s | {r['mean_ttfa_seconds']:>8.3f} s | {r['mean_rtf']:>8.3f}   | {str(r['peak_child_rss_mb']):>7} MB")
             print("=" * 76)
         else:
             report = reports[0]
             print("\n" + "=" * 65)
             print(f"SONARA PERFORMANCE BENCHMARK REPORT: {report['voice']}")
             print("=" * 65)
-            print(f"• Cold Model Load Time : {report['cold_model_load_seconds']} s")
+            print(f"• Engine construction  : {report['engine_construct_seconds']} s (model loads on first synthesis)")
+            print(f"• First audio (cold)   : {report['first_audio_seconds_includes_cold_load']} s")
             print(f"• Mean Time to First Audio (TTFA): {report['mean_ttfa_seconds']} s")
             print(f"• Mean Real-Time Factor (RTF)    : {report['mean_rtf']} (RTF < 1.0 is required for real-time)")
-            print(f"• Peak Memory RSS (Post-load)    : {report['peak_rss_mb_loaded']} MB")
-            print(f"• Peak Memory RSS (Final)        : {report['peak_rss_mb_final']} MB")
+            print(f"• Parent peak RSS                 : {report['peak_rss_mb_final']} MB")
+            print(f"• Inference child peak RSS         : {report['peak_child_rss_mb']} MB")
             print("\nPassage Breakdown:")
             print(f"{'Passage':<22} | {'Audio Duration':<14} | {'TTFA':<10} | {'RTF':<8}")
             print("-" * 65)
