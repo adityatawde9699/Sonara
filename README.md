@@ -2,6 +2,34 @@
 
 Sonara is a local document-to-speech reader with a Python CLI and a Tauri 2 desktop app featuring an accessible React + TypeScript interface. The desktop app and CLI extract PDF, plain text (`.txt`/`.text`), Markdown (`.md`), Word (`.docx`), and e-book (`.epub`) files, then generate mapped WAV chunks with a local Piper TTS worker. Native document selection, speech synthesis lifecycle, real-time chunk progress, audio playback, passage navigation, speed adjustment, keyboard shortcuts, document history, and Rust-owned reading progress are implemented.
 
+> **Project status:** Sonara is an actively developed prototype. The Tauri bundle is disabled, no tagged application releases are recorded, and cross-platform installers are not available. The repository currently has **no confirmed project license**; public source availability alone does not grant permission to reuse or redistribute it. See [license status](#license-status) before contributing code for redistribution or packaging.
+
+## Screenshots
+
+These are captures of the current application, not marketing mockups:
+
+<p>
+  <img src="Screenshots/Screenshot%20From%202026-10-29%2017-15-51.png" alt="Sonara desktop home screen in dark mode" width="720">
+</p>
+
+<p>
+  <img src="Screenshots/Screenshot%20From%202026-10-29%2017-16-00.png" alt="Sonara desktop My Library view with search, favorites, and prepared documents" width="720">
+</p>
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Development setup](docs/DEVELOPMENT.md)
+- [Build status and prerequisites](docs/BUILDING.md)
+- [Configuration](docs/CONFIGURATION.md)
+- [Testing and current evidence](docs/TESTING.md)
+- [Privacy and data handling](docs/PRIVACY.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Release process](docs/RELEASE_PROCESS.md)
+- [Contribution guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+
 ## Prerequisites
 
 - Python with versions matching the available `piper-tts` and ONNX Runtime wheels. Python 3.14.4 is the environment tested for this baseline; other Python versions are not verified here.
@@ -11,7 +39,7 @@ Sonara is a local document-to-speech reader with a Python CLI and a Tauri 2 desk
 
 ## Environment setup
 
-Create an isolated environment and install only the pinned Python runtime dependencies:
+Create an isolated environment and install the declared default Python dependencies:
 
 ```sh
 python3 -m venv .venv
@@ -46,6 +74,8 @@ The desktop application is a single-window Tauri 2 app with an accessible React 
 
 The desktop app accepts **PDF, TXT/TEXT, Markdown (`.md`), Word (`.docx`), and EPUB** documents. Extraction and speech generation run locally with the Python document adapters and Piper.
 
+Piper is the default, locally exercised engine. An optional Kokoro ONNX adapter is also implemented and exposed in the CLI and desktop UI, but it requires a separate compatible Python environment and model assets; Sonara does not download those assets automatically. The current development host has a Kokoro setup, but desktop playback and cross-platform packaging have not been verified. See [Kokoro setup](docs/KOKORO_SETUP.md) and the [roadmap evaluation status](docs/ROADMAP.md).
+
 When a prepared desktop session is active, the listening workspace also shows its locally extracted text. The reading view supports paragraph-based paging, in-document search, and adjustable text size. It is limited to the active session: original document page layout, heading navigation, durable library reopening, and synchronized text/audio highlighting are not currently provided by the backend.
 
 ### Run the desktop app
@@ -60,7 +90,7 @@ When a prepared desktop session is active, the listening workspace also shows it
    cargo run --manifest-path src-tauri/Cargo.toml --locked
    ```
 
-The application embeds the production frontend assets from `ui-react/dist/` directly, requiring no external dev server or network connections.
+The application embeds the production frontend assets from `ui-react/dist/`, so ordinary development builds do not need an external frontend server. Optional assistant providers may make local or remote network requests according to the provider configuration; document extraction and ordinary local Piper narration do not require a remote service.
 
 For frontend development with live hot-reloading:
 ```sh
@@ -81,10 +111,10 @@ In **Settings → AI Assistant & Smart Narration**, choose **llama.cpp embedded*
 
 The legacy **llama.cpp server** provider remains an HTTP integration and still requires its configured local service. Existing `llama_cpp` settings are not migrated to embedded mode. Embedded chat does not assume that its generation model provides embeddings: without vector retrieval configured, Sonara passes a bounded document excerpt directly to the model. No model weights are downloaded or bundled; review model and runtime licenses before redistribution. The optional native binding and app bundle have not been validated across Windows, macOS, and Linux.
 
-## Performance Benchmark & Packaging
+## Performance Benchmarks & Packaging
 
 - **Performance Benchmarks**: See [Benchmark Report](docs/BENCHMARKS.md) for multi-voice latency, Time to First Audio (TTFA), and Real-Time Factor (RTF) figures on CPU execution.
-- **Packaging & Bundling**: See [Packaging Guide](docs/PACKAGING.md) for instructions on creating standalone `.deb`, `AppImage`, and desktop bundles.
+- **Packaging:** [Packaging notes](docs/PACKAGING.md) describe exploratory options only. The Tauri bundle is currently disabled; no installer workflow is verified.
 
 ```sh
 # Benchmark single voice
@@ -130,6 +160,20 @@ See [testing instructions and current evidence](docs/TESTING.md). Node.js syntax
 - A blinded listening-pack generator is available as `.venv/bin/python listening_eval.py --voice en_US-john-medium --output-dir /tmp/sonara-listening-evaluation`. It generates randomized, RMS-level-matched samples for voice-default/less/more variation and separates participant sheets from the facilitator key. A pack was generated successfully, but no human listening result is claimed until participants rate the samples.
 - The Tauri UI has compiled but has not been opened interactively here: GTK initialization fails because this environment has no usable display. The earlier generated HTML player also remains without browser verification. Historical performance benchmark results are documented separately; they are not human listening results.
 - The installed model and config have recorded hashes and upstream revision; runtime, model, phonemizer, and application licensing must be assessed separately before distribution.
-- Git metadata is unavailable in this workspace (`.git/` is empty).
+- This repository has no tagged application releases in the current history. Build and test evidence is recorded in [docs/TESTING.md](docs/TESTING.md); see the dated entries there for environment-specific limitations.
 
 Sonara has a desktop development prototype, not a distributable desktop release. See [the roadmap](docs/ROADMAP.md) for the staged plan.
+
+## License status
+
+No root `LICENSE` file or confirmed project license is present. Do not infer a license from dependency licenses, the public GitHub repository, or an old packaging note. The maintainer must choose a license and add its required text before describing Sonara itself as open source or authorizing redistribution. Third-party dependencies, native tools, and voice models have separate terms.
+
+## Community
+
+- [Report a bug or propose a feature](https://github.com/adityatawde9699/Sonara/issues)
+- [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+- [Security reporting](SECURITY.md)
+- [Repository](https://github.com/adityatawde9699/Sonara)
+
+No release download link is shown because no published application release has been verified.

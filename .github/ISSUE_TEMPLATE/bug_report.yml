@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible problem in Sonara.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not upload private documents, credentials, voice weights, or logs containing document text."
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Include the release version or Git commit.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Distribution and version, macOS version, or Windows version
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Relevant hardware and runtime
+      description: Include CPU, memory, GPU/runtime, or voice engine only if relevant.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Reproduction frequency
+      options: [Every time, Sometimes, Happened once, Not sure]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Remove personal data, document contents, tokens, and local usernames or paths where possible.

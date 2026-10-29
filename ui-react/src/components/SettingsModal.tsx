@@ -80,6 +80,7 @@ export const SettingsModal: FC<Props> = ({
       return false;
     }
   });
+  const llmProvider = llmConfig.provider;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -94,13 +95,13 @@ export const SettingsModal: FC<Props> = ({
   }, [isOpen, onClose]);
 
   useEffect(() => {
-    if (!isOpen || llmConfig.provider !== "embedded_llama_cpp") return;
+    if (!isOpen || llmProvider !== "embedded_llama_cpp") return;
     let active = true;
-    llmModelStatus(llmConfig).then((status) => {
+    llmModelStatus({ provider: llmProvider }).then((status) => {
       if (active && status.ok) setModelState(status.state);
     }).catch(() => { if (active) setModelState("UNAVAILABLE"); });
     return () => { active = false; };
-  }, [isOpen, llmConfig.provider]);
+  }, [isOpen, llmProvider]);
 
   if (!isOpen) return null;
 

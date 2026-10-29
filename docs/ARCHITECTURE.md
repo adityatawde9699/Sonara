@@ -22,15 +22,15 @@ The Rust core returns session metadata and a local media URL base to the fronten
 
 The Linux Cargo build and Rust unit tests pass. A user reported WebKit media error 4 for the former custom URI audio source; the desktop player now uses the token-scoped loopback HTTP listener. The new playback path awaits a graphical retest. This execution environment cannot connect to its advertised display sockets, so the window and audible playback cannot be launched here. Native picker implementations exist for Linux, macOS, and Windows, but only Linux is currently exercised. Tauri installer bundling is disabled; Python, ONNX Runtime, and model files remain external prerequisites.
 
-## Target component boundaries
+## Component boundaries and current scope
 
-- Rust/Tauri: current one-window application lifecycle, selected-document orchestration, child process cancellation, range-limited local audio serving, and JSON progress persistence. Library/history and cross-platform file picking remain future work.
+- Rust/Tauri: current one-window application lifecycle, selected-document orchestration, child process cancellation, range-limited local audio serving, JSON progress persistence, and native file picking implementations for Linux, macOS, and Windows. The pickers are implemented, but only Linux has been exercised in this environment. Durable library reopening remains limited; this is not a full document-management database.
 - Document adapters: PDF, DOCX, EPUB, TXT parsing into stable blocks and source locations. The current PDF adapter and schema are in Python; Rust ownership is deferred until the desktop core is introduced.
 - Analysis and narration planning: `narration.py` provides deterministic segmentation, structure-aware pause metadata, and reversible spoken-text changes without rewriting source content; preview and synthesis consume the same source-mapped plan.
 - TTS adapter: `tts_engine.py` defines capability/audio/chunk contracts. The default Piper adapter runs `piper_worker.py` as one persistent local process per session. JSON-line requests carry text over stdin; audio stays in bounded, temporary WAV chunk files. Cancellation terminates the worker process, including in-flight inference. The CLI cache is keyed by source hash, planner/schema version, runtime/model/config hashes, voice, speed, unit ID and source/spoken text. LRU cleanup removes inactive hash WAVs toward a 512 MiB budget; current-plan entries are protected and may temporarily exceed it.
 - Audio: synthesis uses bounded prefetch and temporary chunks; the generated HTML and desktop shell schedule persisted mapped WAVs with a single audio element. The desktop's loopback HTTP handler serves one requested range at a time with a 64 MiB response cap. This avoids holding the whole document's PCM in the frontend, but does not provide synthesis/playback overlap or native device controls. The combined WAV remains for compatibility.
-- React/TypeScript: listening workspace, player, history, and settings. The UI requests desktop capabilities through explicit Tauri commands rather than arbitrary filesystem access. A searchable document library remains future work.
-- Python: optional isolated AI experimentation/worker only where a tested model integration justifies the boundary.
+- React/TypeScript: listening workspace, player, recent-document history, and settings. The UI requests desktop capabilities through explicit Tauri commands rather than arbitrary filesystem access. A durable, searchable library with document reopening remains future work.
+- Python: primary document-processing, narration-planning, and local TTS worker runtime. A separate worker also hosts optional LLM integrations. The optional `llama-cpp-python` binding is not part of the default Piper requirements.
 
 ## Data and ownership
 

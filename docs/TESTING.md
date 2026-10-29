@@ -129,7 +129,7 @@ Player HTML structure and JavaScript parsing have unit-level assertions only. Th
 - Fast suite: `.venv/bin/python -m unittest discover -s tests -v` — 46 tests run, 41 passed, 5 opt-in integration tests skipped. `node --check` runs against the player script when Node is present and passed here.
 - Opt-in real suite: `SONARA_RUN_INTEGRATION=1 .venv/bin/python -W error::ResourceWarning -m unittest discover -s tests -p 'test_integration_*.py' -v` — 5 tests passed, no failures or skips. This includes actual Poppler extraction, actual local Piper synthesis, worker cancellation/corrupt-model checks, audio format/mapping validation, and a generated player referencing each persisted chunk.
 - Separate CLI smoke used `tests/fixtures/pdf_fixture.py` and the real installed Poppler/Piper path. Extraction exactly matched the expected text; CLI exited 0; five persisted chunks were present and referenced by the player; combined WAV was mono PCM16 at 22,050 Hz with 352,000 frames. Temporary smoke outputs were removed on process exit.
-- `.venv/bin/python -m pip check` passed. CLI help describes the persistent active-Python worker and the executable/PATH fallback. Git status cannot be inspected because this workspace has an empty/unavailable Git repository; no Git metadata was changed.
+- `.venv/bin/python -m pip check` passed. CLI help describes the persistent active-Python worker and the executable/PATH fallback. At the time of that historical run, Git metadata was unavailable in its execution workspace; the repository now has active Git metadata and this audit uses `git status` and `git diff`.
 - Browser verification remains blocked. A bounded `timeout 12s /usr/bin/firefox --headless --screenshot /tmp/sonara-firefox-check.png about:blank` attempt exited 1 with Snap's `snap-confine ... Refusing to continue` error. Therefore actual playback, pause/resume, seeking, rate behavior, storage round-trip/reload, missing-media recovery, and audible output remain unverified. The Playwright wrapper also remains unavailable in this environment. The existing manual checklist above is still required; Node syntax parsing does not substitute for a browser test.
 
 ### Phase 4 manual browser checklist
@@ -258,6 +258,16 @@ Commands run for this change:
 - `.venv/bin/python -m unittest discover -s tests -v` — passed, 90 tests; 7 opt-in integration tests skipped.
 - `SONARA_RUN_INTEGRATION=1 .venv/bin/python -m unittest discover -s tests -p 'test_integration_*.py' -v` — passed, 6 integration tests, including generated PDF extraction, real Piper worker synthesis/cancellation/WAV mapping, and complete PDF-to-player output.
 - `.venv/bin/python benchmark.py --voice en_US-john-medium --trials 2 --json` — completed; results in `BENCHMARKS.md`.
+
+# Repository quality and archive limits (2026-10-29)
+
+- `.venv/bin/python -m unittest discover -s tests -v` — 94 tests run; all 87 non-opt-in tests passed and 7 model/tool integration tests skipped as designed. New DOCX/EPUB cases cover expanded member sizes, cumulative EPUB chapter text, and archive entry counts.
+- `SONARA_RUN_INTEGRATION=1 .venv/bin/python -m unittest discover -s tests -p 'test_integration_*.py' -v` — all 6 opt-in Poppler/Piper integration tests passed using the already installed local tools and voice model; no model downloads were performed.
+- From `ui-react/`, `npm test` — 52 tests passed across 11 files; `npm run lint` — passed without diagnostics; `npm run build` — strict TypeScript and Vite production build passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline` — 10 Rust tests passed; `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — passed.
+- `python3 -m compileall -q benchmark.py document.py listening_eval.py llm_client.py narration.py ocr.py piper_worker.py resource_policy.py sonara.py tts_engine.py tests` — passed for the Python source and test modules included in CI.
+- `git diff --check` — passed.
+- GitHub Actions was added but cannot be exercised locally as a hosted workflow. No GUI or packaged installer acceptance was performed in this pass. No dependency advisory database scan was run.
 - Kokoro single-passage local synthesis — completed; one trial only, result in `BENCHMARKS.md`.
 
 Post-change cross-language suite results:

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import {
   type FrontendSession,
   type Progress,
@@ -48,15 +48,28 @@ export interface PlayerState {
   canSkip: boolean;
 }
 
+function getChunkStarts(chunks: FrontendSession["chunks"]): number[] {
+  const starts: number[] = [];
+  let total = 0;
+  for (const chunk of chunks) {
+    starts.push(total);
+    total += chunk.durationSeconds;
+  }
+  return starts;
+}
+
 // ── Hook ─────────────────────────────────────────────────────────────
 
 export function useSonara() {
+  const tauriAvailable = isTauriAvailable();
   const [phase, setPhase] = useState<AppPhase>("idle");
   const [documentName, setDocumentName] = useState("");
   const [statusText, setStatusText] = useState("Your file stays on this device.");
-  const [errorText, setErrorText] = useState("");
+  const [errorText, setErrorText] = useState(
+    tauriAvailable ? "" : "Sonara desktop APIs are unavailable. Start the application through Tauri.",
+  );
   const [session, setSession] = useState<FrontendSession | null>(null);
-  const [tauriReady, setTauriReady] = useState(false);
+  const [tauriReady] = useState(tauriAvailable);
   const [recentDocs, setRecentDocs] = useState<RecentDocument[]>(() => getRecentDocuments());
 
   // Voice selection state
@@ -162,6 +175,7 @@ export function useSonara() {
   const resumeAfterErrorRef = useRef(false);
   const sessionRef = useRef<FrontendSession | null>(null);
   const startsRef = useRef<number[]>([]);
+  const chunkStarts = useMemo(() => getChunkStarts(session?.chunks ?? []), [session]);
   const totalDurationRef = useRef(0);
 
   // Narration pause state
@@ -700,6 +714,7 @@ export function useSonara() {
     isShortcutsOpen,
     isSettingsOpen,
     isHistoryOpen,
+    isAssistantOpen,
     pausePlayback,
     startPlayback,
     seekRelative,
@@ -710,11 +725,7 @@ export function useSonara() {
   // ── Initialize ──────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!isTauriAvailable()) {
-      setErrorText("Sonara desktop APIs are unavailable. Start the application through Tauri.");
-      return;
-    }
-    setTauriReady(true);
+    if (!tauriAvailable) return;
 
     let unlistenFn: (() => void) | null = null;
     let unlistenProgressFn: (() => void) | null = null;
@@ -771,7 +782,7 @@ export function useSonara() {
       unlistenFn?.();
       unlistenProgressFn?.();
     };
-  }, [showSession]);
+  }, [showSession, tauriAvailable]);
 
   return {
     // State
@@ -783,7 +794,7 @@ export function useSonara() {
     playerState,
     tauriReady,
     audioRef,
-    chunkStarts: startsRef.current,
+    chunkStarts,
     recentDocs,
 
     // Voice

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from document import (
     extract_txt_document,
@@ -172,6 +173,15 @@ class DocumentFormatsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not a valid DOCX zip archive"):
                 extract_docx_document(docx_path)
 
+    def test_docx_rejects_oversized_expanded_xml_member(self):
+        data = create_minimal_docx([("x" * 4096, None)])
+        with tempfile.TemporaryDirectory() as temp:
+            docx_path = Path(temp) / "expanded.docx"
+            docx_path.write_bytes(data)
+            with patch("document.MAX_ARCHIVE_MEMBER_BYTES", 1024):
+                with self.assertRaisesRegex(ValueError, "Archive member exceeds"):
+                    extract_docx_document(docx_path)
+
     def test_epub_extraction_valid(self):
         data = create_minimal_epub([
             ("chapter_one.xhtml", "<h1>Introduction</h1><p>Audiobook synthesis begins here.</p>"),
@@ -199,6 +209,38 @@ class DocumentFormatsTests(unittest.TestCase):
             epub_path.write_bytes(buf.getvalue())
             with self.assertRaisesRegex(ValueError, "missing META-INF/container.xml"):
                 extract_epub_document(epub_path)
+
+    def test_epub_rejects_expanded_chapter_over_member_limit(self):
+        data = create_minimal_epub([("chapter.xhtml", "<p>" + ("x" * 4096) + "</p>")])
+        with tempfile.TemporaryDirectory() as temp:
+            epub_path = Path(temp) / "expanded.epub"
+            epub_path.write_bytes(data)
+            with patch("document.MAX_ARCHIVE_MEMBER_BYTES", 1024):
+                with self.assertRaisesRegex(ValueError, "Archive member exceeds"):
+                    extract_epub_document(epub_path)
+
+    def test_epub_rejects_cumulative_chapter_expansion_over_limit(self):
+        data = create_minimal_epub([
+            ("one.xhtml", "<p>" + ("a" * 700) + "</p>"),
+            ("two.xhtml", "<p>" + ("b" * 700) + "</p>"),
+        ])
+        with tempfile.TemporaryDirectory() as temp:
+            epub_path = Path(temp) / "expanded.epub"
+            epub_path.write_bytes(data)
+            with patch("document.MAX_ARCHIVE_MEMBER_BYTES", 4096), patch(
+                "document.MAX_ARCHIVE_TEXT_BYTES", 1500
+            ):
+                with self.assertRaisesRegex(ValueError, "Archive text exceeds"):
+                    extract_epub_document(epub_path)
+
+    def test_docx_rejects_archive_with_excessive_entry_count(self):
+        data = create_minimal_docx()
+        with tempfile.TemporaryDirectory() as temp:
+            docx_path = Path(temp) / "many-entries.docx"
+            docx_path.write_bytes(data)
+            with patch("document.MAX_ARCHIVE_ENTRIES", 1):
+                with self.assertRaisesRegex(ValueError, "more than 1 entries"):
+                    extract_docx_document(docx_path)
 
 
 if __name__ == "__main__":

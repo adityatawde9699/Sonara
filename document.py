@@ -318,10 +318,7 @@ def _read_bounded_zip_member(
     total_read: int = 0,
 ) -> bytes:
     """Read an archive member without trusting its declared uncompressed size."""
-    try:
-        info = archive.getinfo(name)
-    except KeyError:
-        raise
+    info = archive.getinfo(name)
     if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
         raise ValueError(
             f"Archive member exceeds {MAX_ARCHIVE_MEMBER_BYTES // (1024 * 1024)} MiB limit: {name}"

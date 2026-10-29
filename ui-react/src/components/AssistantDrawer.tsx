@@ -24,7 +24,7 @@ interface MessageItem {
   timestamp: number;
 }
 
-export function stripThinking(raw: string): string {
+function stripThinking(raw: string): string {
   if (!raw) return "";
   let text = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   if (text.includes("<think>")) {
