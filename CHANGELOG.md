@@ -1,6 +1,17 @@
 # Changelog
 
-This file records notable user-facing changes. The repository has no tagged releases as of 2026-10-29, so there are no published version entries to reproduce here. Historical implementation notes and validation evidence remain in `docs/TESTING.md` and `docs/ROADMAP.md`.
+This file records notable user-facing changes. The `v1.0.0` GitHub release exists but has no installer assets. Historical implementation notes and validation evidence remain in `docs/TESTING.md` and `docs/ROADMAP.md`.
+
+## v1.0.1 - 2026-10-30
+
+### Added
+
+- Added native GitHub Actions packaging, installed-app smoke checks, and release asset publishing for supported Windows, Linux, and macOS targets.
+- Added automatic operating-system and architecture detection, manual platform selection, and latest-release asset lookup to the marketing site's download section.
+
+### Fixed
+
+- Prepared the Tauri resource directory during Rust CI so tests work from a clean checkout.
 
 ## Unreleased
 
