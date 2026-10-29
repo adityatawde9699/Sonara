@@ -2,7 +2,7 @@
 
 Sonara is a local document-to-speech reader with a Python CLI and a Tauri 2 desktop app featuring an accessible React + TypeScript interface. The desktop app and CLI extract PDF, plain text (`.txt`/`.text`), Markdown (`.md`), Word (`.docx`), and e-book (`.epub`) files, then generate mapped WAV chunks with a local Piper TTS worker. Native document selection, speech synthesis lifecycle, real-time chunk progress, audio playback, passage navigation, speed adjustment, keyboard shortcuts, document history, and Rust-owned reading progress are implemented.
 
-> **Project status:** Sonara is an actively developed prototype. The Tauri bundle is disabled, no tagged application releases are recorded, and cross-platform installers are not available. Sonara's original project code and documentation are licensed under [GPL-3.0-only](LICENSE). Third-party runtimes, models, fonts, and media retain their own terms.
+> **Project status:** Sonara is an actively developed prototype. The Tauri bundle is disabled, no tagged application releases are recorded, and cross-platform installers are not available. Sonara-authored source code and documentation in this repository are licensed under [GPL-3.0-only](LICENSE). Third-party dependencies, runtimes, models, fonts, and media retain their own licenses.
 
 ## Screenshots
 
@@ -166,7 +166,7 @@ Sonara has a desktop development prototype, not a distributable desktop release.
 
 ## License status
 
-Sonara's original project code and documentation are licensed under the [GNU General Public License version 3](LICENSE), without the “or later” option. This license does not relicense third-party dependencies, system tools, voice models, or separately owned material that may appear in screenshots. Review each component's notices and terms before bundling or redistributing it.
+Sonara-authored source code and documentation in this repository are licensed under the [GNU General Public License version 3 only](LICENSE) (SPDX: `GPL-3.0-only`), without the “or later” option. This covers Sonara's own work; it does not change the licenses for third-party dependencies, runtimes, system tools, voice models, fonts, media, or separately owned material that may appear in screenshots. Check the relevant notices and terms before bundling or redistributing those components. The Rust package metadata uses the same `GPL-3.0-only` identifier.
 
 ## Community
 
