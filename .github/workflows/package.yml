@@ -32,6 +32,8 @@ jobs:
     name: Test application and release metadata
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      package_matrix: ${{ steps.release-matrix.outputs.package_matrix }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -75,11 +77,17 @@ jobs:
         run: mkdir -p packaging/staging/sonara && touch packaging/staging/sonara/.ci-placeholder
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Select native release targets
+        id: release-matrix
+        env:
+          RELEASE_TARGET: ${{ inputs.target || 'all' }}
+        run: |
+          matrix="$(python packaging/release_matrix.py "$RELEASE_TARGET")"
+          echo "package_matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   package:
     name: Build ${{ matrix.label }} installer
     needs: validate
-    if: ${{ inputs.target == '' || inputs.target == 'all' || inputs.target == matrix.platform }}
     env:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -89,28 +97,7 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - label: Windows x86_64
-            os: windows-latest
-            platform: windows
-            arch: x86_64
-            bundle: nsis
-          - label: Linux x86_64
-            os: ubuntu-24.04
-            platform: linux
-            arch: x86_64
-            bundle: deb,appimage
-          - label: macOS aarch64
-            os: macos-15
-            platform: macos
-            arch: aarch64
-            bundle: dmg
-          - label: macOS x86_64
-            os: macos-15-intel
-            platform: macos
-            arch: x86_64
-            bundle: dmg
+      matrix: ${{ fromJSON(needs.validate.outputs.package_matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     steps:
@@ -192,28 +179,10 @@ jobs:
 
   smoke:
     name: Clean-runner install check · ${{ matrix.label }}
-    needs: package
-    if: ${{ inputs.target == '' || inputs.target == 'all' || inputs.target == matrix.platform }}
+    needs: [validate, package]
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - label: Windows x86_64
-            os: windows-latest
-            platform: windows
-            arch: x86_64
-          - label: Linux x86_64
-            os: ubuntu-24.04
-            platform: linux
-            arch: x86_64
-          - label: macOS aarch64
-            os: macos-15
-            platform: macos
-            arch: aarch64
-          - label: macOS x86_64
-            os: macos-15-intel
-            platform: macos
-            arch: x86_64
+      matrix: ${{ fromJSON(needs.validate.outputs.package_matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

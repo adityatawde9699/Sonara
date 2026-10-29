@@ -25,6 +25,7 @@ release_assets = load_module("sonara_release_assets", "packaging/prepare_release
 asset_verifier = load_module("sonara_release_asset_verifier", "packaging/verify_release_assets.py")
 runtime_check = load_module("sonara_frozen_runtime_check", "packaging/check_frozen_runtime.py")
 build_architecture = load_module("sonara_build_architecture", "packaging/check_build_architecture.py")
+release_matrix = load_module("sonara_release_matrix", "packaging/release_matrix.py")
 
 
 class ReleasePackagingTests(unittest.TestCase):
@@ -90,6 +91,12 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertEqual(build_architecture.normalize_architecture("AMD64"), "x86_64")
         self.assertEqual(build_architecture.normalize_architecture("arm64"), "aarch64")
         self.assertEqual(build_architecture.normalize_architecture("unknown"), "")
+
+    def test_release_matrix_selects_only_requested_platform(self):
+        selected = release_matrix.release_matrix("linux")["include"]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["platform"], "linux")
+        self.assertEqual(len(release_matrix.release_matrix("all")["include"]), 4)
 
 
 if __name__ == "__main__":
