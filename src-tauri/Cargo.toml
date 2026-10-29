@@ -5,6 +5,7 @@ description = "Local-first Sonara document reader"
 authors = ["Sonara contributors"]
 edition = "2021"
 rust-version = "1.90"
+license = "GPL-3.0-only"
 
 [build-dependencies]
 tauri-build = { version = "=2.5.6", features = [] }

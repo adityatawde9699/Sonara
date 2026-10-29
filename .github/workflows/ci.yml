@@ -41,6 +41,11 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: ui-react/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
       - uses: dtolnay/rust-toolchain@1.90.0
         with:
           components: rustfmt
@@ -51,6 +56,11 @@ jobs:
       - name: Install frontend dependencies
         working-directory: ui-react
         run: npm ci
+      - name: Prepare Python runtime for Rust worker tests
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/python -m pip check
       - name: Run frontend tests
         working-directory: ui-react
         run: npm test

@@ -23,6 +23,6 @@
 - No online vulnerability advisory scan was run. Lockfiles are present, but that alone does not establish dependency safety.
 - npm and Cargo have lockfiles; `requirements.txt` pins direct Python dependencies but does not lock all transitive versions. Repeatable Python environments and full dependency audits remain open work.
 - No private vulnerability intake was verified. See root [SECURITY.md](../SECURITY.md); maintainers should enable GitHub private reporting or publish a monitored private channel.
-- The project has no root `LICENSE` file. Distribution and reuse rights for Sonara remain unresolved.
+- Sonara's original project code and documentation carry GPL-3.0-only. This does not resolve distribution rights for runtimes, models, native tools, or media assets; those need a separate review.
 
 Revisit this review when document parsers, IPC capabilities, provider handling, model acquisition, or packaging changes.

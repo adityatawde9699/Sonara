@@ -15,7 +15,7 @@ The current checkout is run from source; it relies on local Python, Rust, Node f
 
 ## Work required before distribution
 
-- Select and add a license for Sonara. There is no root `LICENSE` file, so packaging and redistribution rights for Sonara are unresolved.
+- Sonara's original project code and documentation use GPL-3.0-only. This does not grant redistribution rights to third-party runtimes, native tools, voice models, screenshot content, or other separately licensed assets.
 - Inventory and preserve notices for Rust, Python, Node, native, and system dependencies.
 - Review the Piper runtime license and each voice/model card separately. Do not infer model redistribution rights from runtime licensing or source-audio provenance.
 - Decide how Python runtimes, native libraries, Poppler, Tesseract, and model files will be acquired or bundled for each target operating system.

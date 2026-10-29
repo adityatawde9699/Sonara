@@ -17,5 +17,6 @@
 - [Release process](RELEASE_PROCESS.md)
 - [Contributing](../CONTRIBUTING.md)
 - [Security reporting](../SECURITY.md)
+- [GPL-3.0-only license](../LICENSE)
 
 Historical implementation and benchmark records are retained in [the roadmap](ROADMAP.md), [benchmarks](BENCHMARKS.md), and [decisions](DECISIONS.md). Dated records describe the state and environment at that time; use current source and the latest dated section for current behavior.

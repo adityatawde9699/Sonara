@@ -16,11 +16,22 @@ Opening `index.html` directly also works for basic review, but an HTTP server is
 
 ## Build and deployment
 
-There is no build step. Publish the contents of `site/` to any static hosting provider; no desktop runtime, backend, database, authentication, or environment variables are required. For GitHub Pages, configure the Pages source to publish the `/site` directory if the repository's deployment setup supports it, or copy these static files into a dedicated deployment artifact. No application workflow has been changed by adding this site.
+There is no build step. The website does not need the desktop runtime, backend, database, authentication, or environment variables.
+
+### GitHub Pages
+
+GitHub's [branch-based Pages source](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site) only offers the repository root or `/docs`, so `site/` will not appear in that folder picker. This repository includes [a Pages workflow](../.github/workflows/pages.yml) that uploads the `site/` directory as the Pages artifact.
+
+1. Push the workflow and website files to the `master` branch.
+2. In GitHub, open **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**. Do not select “Deploy from a branch.”
+3. The workflow deploys after a push that changes `site/`. You can also run **Deploy Sonara website to GitHub Pages** manually from the Actions tab while on `master`.
+4. GitHub displays the published URL in the workflow run and Pages settings. No custom domain is assumed.
+
+The Pages workflow only publishes `site/`; it does not copy website assets into the desktop application or alter its build.
 
 ## Product links and content
 
-The repository and documentation links in `index.html` point to the verified project at `https://github.com/adityatawde9699/Sonara`. The site intentionally has no installer, release, canonical-domain, license, or contact links because none are configured in the repository. When real destinations become available, update the relevant links in `index.html`; keep navigation destinations anchored to sections that exist.
+The repository, documentation, and [GPL-3.0-only license](../LICENSE) links in `index.html` point to the verified project at `https://github.com/adityatawde9699/Sonara`. The site intentionally has no installer, release, canonical-domain, or contact links because none are configured in the repository. When real destinations become available, update the relevant links in `index.html`; keep navigation destinations anchored to sections that exist.
 
 Before changing a product claim, verify it against the desktop implementation and project documentation. In particular, engine and voice availability depends on local runtimes and model files; optional assistant providers are configured separately and may be remote. Keep authentic screenshots labeled as captures and illustrative UI fragments labeled as examples.
 

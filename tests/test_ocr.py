@@ -165,6 +165,7 @@ class OcrTests(unittest.TestCase):
                 patch("ocr.render_pdf_page_to_png", side_effect=lambda p, num, prefix, **kw: Path(tmp) / f"page_{num}.png"),
                 patch("ocr.run_tesseract_tsv", side_effect=fake_tess),
                 patch("ocr.subprocess.run") as mock_info,
+                patch("ocr.shutil.which", return_value="/usr/bin/pdfinfo"),
             ):
                 mock_info.return_value = MagicMock(stdout=b"Pages: 2\n")
                 doc = extract_scanned_pdf(pdf_path, use_cache=False)

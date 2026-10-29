@@ -42,4 +42,4 @@ See [Kokoro setup](KOKORO_SETUP.md) for the optional Kokoro runtime. Availabilit
 
 ## Packaging limitations
 
-Packaging notes in [PACKAGING.md](PACKAGING.md) are planning material, not tested distribution instructions. Do not distribute a bundle until runtime inclusion, operating-system requirements, signatures, dependencies, voice/model licenses, and Sonara's own license have been reviewed. No release pipeline is configured.
+Packaging notes in [PACKAGING.md](PACKAGING.md) are planning material, not tested distribution instructions. Do not distribute a bundle until runtime inclusion, operating-system requirements, signatures, dependencies, voice/model licenses, and compatibility with Sonara's GPL-3.0-only terms have been reviewed. No release pipeline is configured.

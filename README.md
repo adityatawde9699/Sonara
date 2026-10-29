@@ -2,7 +2,7 @@
 
 Sonara is a local document-to-speech reader with a Python CLI and a Tauri 2 desktop app featuring an accessible React + TypeScript interface. The desktop app and CLI extract PDF, plain text (`.txt`/`.text`), Markdown (`.md`), Word (`.docx`), and e-book (`.epub`) files, then generate mapped WAV chunks with a local Piper TTS worker. Native document selection, speech synthesis lifecycle, real-time chunk progress, audio playback, passage navigation, speed adjustment, keyboard shortcuts, document history, and Rust-owned reading progress are implemented.
 
-> **Project status:** Sonara is an actively developed prototype. The Tauri bundle is disabled, no tagged application releases are recorded, and cross-platform installers are not available. The repository currently has **no confirmed project license**; public source availability alone does not grant permission to reuse or redistribute it. See [license status](#license-status) before contributing code for redistribution or packaging.
+> **Project status:** Sonara is an actively developed prototype. The Tauri bundle is disabled, no tagged application releases are recorded, and cross-platform installers are not available. Sonara's original project code and documentation are licensed under [GPL-3.0-only](LICENSE). Third-party runtimes, models, fonts, and media retain their own terms.
 
 ## Screenshots
 
@@ -166,7 +166,7 @@ Sonara has a desktop development prototype, not a distributable desktop release.
 
 ## License status
 
-No root `LICENSE` file or confirmed project license is present. Do not infer a license from dependency licenses, the public GitHub repository, or an old packaging note. The maintainer must choose a license and add its required text before describing Sonara itself as open source or authorizing redistribution. Third-party dependencies, native tools, and voice models have separate terms.
+Sonara's original project code and documentation are licensed under the [GNU General Public License version 3](LICENSE), without the “or later” option. This license does not relicense third-party dependencies, system tools, voice models, or separately owned material that may appear in screenshots. Review each component's notices and terms before bundling or redistributing it.
 
 ## Community
 
@@ -174,6 +174,7 @@ No root `LICENSE` file or confirmed project license is present. Do not infer a l
 - [Contributing](CONTRIBUTING.md)
 - [Support](SUPPORT.md)
 - [Security reporting](SECURITY.md)
+- [Marketing site and GitHub Pages deployment](site/README.md)
 - [Repository](https://github.com/adityatawde9699/Sonara)
 
 No release download link is shown because no published application release has been verified.
