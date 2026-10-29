@@ -12,6 +12,15 @@
 
 These checks validate planner behavior, command wiring, builds, and pack generation. They do not provide participant judgments of naturalness or intelligibility. The GUI itself was not launched in this restricted display environment.
 
+## Desktop acceptance attempt (2026-10-29)
+
+- The user reports manually using the desktop app and confirms it works as intended for every supported document format: PDF, TXT/TEXT, Markdown, DOCX, and EPUB. Record this as user-reported manual acceptance; detailed per-format steps, environment, and artifacts were not provided.
+- The user also reports that the vocals sound fine. This is individual qualitative feedback, not a listening study; no participant count, protocol, or ratings were provided.
+- The user reports that the assistant works well. This is user-reported feedback; provider, configuration, and scenario coverage were not provided.
+- In this session, `cargo run --manifest-path src-tauri/Cargo.toml --locked` compiled and started the Tauri executable, but the X display was inaccessible (`xdpyinfo` could not open `:0`) and desktop capture failed. The reported manual acceptance was therefore not independently repeated here.
+- As a backend fallback, generated the standard-library PDF fixture in `/tmp/sonara-desktop-acceptance/sample.pdf` and ran `sonara.py read` with the installed `en_US-john-medium` voice. The complete local PDF extraction and Piper synthesis path exited successfully and wrote `document_text.txt`, `extracted_document.json`, `audio_chunks.json`, three passage WAV chunks, `speech.wav`, and `index.html`.
+- The combined WAV was mono, 16-bit PCM, 22,050 Hz, and 349,812 frames (about 15.9 seconds). This confirms the CLI backend path; desktop UI behavior is supported by the user's manual report above.
+
 ## Narration variation listening evaluation
 
 The repeatable comparison generator synthesizes the expanded corpus using Piper voice defaults, `less`, and `more` variation settings. Randomized clip IDs and row order are placed in a participant pack; the mapping and synthesis metadata are kept under a separate `facilitator-only/` directory. Do not share the facilitator key with listeners during rating. Whole-clip RMS is matched to a target with a peak ceiling; this is a practical level match, not perceptual LUFS normalization.
