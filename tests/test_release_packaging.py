@@ -29,18 +29,23 @@ build_architecture = load_module("sonara_build_architecture", "packaging/check_b
 
 class ReleasePackagingTests(unittest.TestCase):
     def test_release_tag_matches_both_desktop_version_files(self):
-        self.assertEqual(release_version.check_release_version("v0.1.0"), "0.1.0")
+        cargo = release_version.tomllib.loads((ROOT / "src-tauri/Cargo.toml").read_text(encoding="utf-8"))
+        current_version = cargo["package"]["version"]
+        self.assertEqual(release_version.check_release_version(f"v{current_version}"), current_version)
         with self.assertRaisesRegex(ValueError, "does not match"):
             release_version.check_release_version("v99.0.0")
 
     def test_prepares_expected_linux_files_with_stable_names(self):
+        version = release_version.tomllib.loads(
+            (ROOT / "src-tauri/Cargo.toml").read_text(encoding="utf-8")
+        )["package"]["version"]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             bundle = root / "bundle"
             (bundle / "deb").mkdir(parents=True)
             (bundle / "appimage").mkdir()
-            (bundle / "deb/Sonara_0.1.0_amd64.deb").write_bytes(b"deb")
-            (bundle / "appimage/Sonara_0.1.0_amd64.AppImage").write_bytes(b"appimage")
+            (bundle / f"deb/Sonara_{version}_amd64.deb").write_bytes(b"deb")
+            (bundle / f"appimage/Sonara_{version}_amd64.AppImage").write_bytes(b"appimage")
 
             prepared = release_assets.prepare_assets(bundle, "linux", "x86_64", root / "assets")
             self.assertEqual(
