@@ -17,7 +17,7 @@
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
     <link rel="stylesheet" href="styles/main.css">
     <script src="scripts/theme.js"></script>
-    <script src="scripts/main.js" defer></script>
+    <script type="module" src="scripts/main.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
@@ -53,10 +53,42 @@
           <h1 id="hero-title">Your documents,<br>ready to be heard.</h1>
           <p>Sonara turns the files you already read into a focused desktop listening session, with speech prepared on your device.</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#how-it-works">See how it works <span aria-hidden="true">↓</span></a>
+            <a class="button button-primary" href="#download">Download Sonara <span aria-hidden="true">↓</span></a>
             <a class="text-link" href="https://github.com/adityatawde9699/Sonara" target="_blank" rel="noopener noreferrer">Explore the project <span aria-hidden="true">↗</span></a>
           </div>
-          <p class="hero-note">A desktop prototype. No installer has been published yet.</p>
+          <section class="download-card" id="download" aria-labelledby="download-title" data-ui>
+            <div class="download-heading">
+              <span class="download-eyebrow">SONARA DESKTOP</span>
+              <h2 id="download-title">Get the right build.</h2>
+              <p id="download-status" role="status" aria-live="polite">Checking the latest release…</p>
+            </div>
+            <div class="download-controls">
+              <div class="download-selects">
+                <label>
+                  <span>Platform</span>
+                  <select id="download-platform" autocomplete="off">
+                    <option value="">Choose platform</option>
+                    <option value="windows">Windows</option>
+                    <option value="linux">Linux</option>
+                    <option value="macos">macOS</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Architecture</span>
+                  <select id="download-arch" autocomplete="off">
+                    <option value="auto">Detected / choose</option>
+                    <option value="x86_64">x86_64 · Intel / AMD</option>
+                    <option value="aarch64">ARM64</option>
+                  </select>
+                </label>
+              </div>
+              <div class="download-actions">
+                <a class="button button-primary download-button" id="download-button" href="https://github.com/adityatawde9699/Sonara/releases" aria-describedby="download-status">Browse releases <span aria-hidden="true">↗</span></a>
+                <a class="text-link" id="latest-release-link" href="https://github.com/adityatawde9699/Sonara/releases/latest" target="_blank" rel="noopener noreferrer">Latest GitHub Release <span aria-hidden="true">↗</span></a>
+              </div>
+            </div>
+            <p class="download-meta" id="download-meta">Installer details will appear here.</p>
+          </section>
         </div>
 
         <figure class="product-window actual-product-shot" aria-labelledby="preview-label">
@@ -270,11 +302,11 @@
           </details>
           <details>
             <summary>Is there an installer for my computer?</summary>
-            <p>The repository describes a desktop prototype, not a published installer. Platform picker code exists, but packaged builds and interactive behavior have not been verified across operating systems.</p>
+            <p>The tagged-release workflow is configured to build installers for Windows, Linux, and macOS. A platform download appears above after a release is published; check the release page for all available files.</p>
           </details>
           <details>
             <summary>Where can I get Sonara?</summary>
-            <p>No release download is configured in this project yet. You can inspect the source and setup instructions on GitHub.</p>
+            <p>Use the download selector above to find the latest build for your platform and architecture, or open the latest GitHub Release to browse every installer.</p>
           </details>
         </div>
       </section>
@@ -285,8 +317,8 @@
             <h2 id="closing-title">Keep the page.<br>Take the sound.</h2>
           </div>
           <div class="closing-action">
-            <p>Sonara is in active prototype development. Explore the source for setup details and current limitations.</p>
-            <a class="button button-light" href="https://github.com/adityatawde9699/Sonara" target="_blank" rel="noopener noreferrer">Explore Sonara on GitHub <span aria-hidden="true">↗</span></a>
+            <p>Choose your platform above for the current installer, or explore the source and release notes on GitHub.</p>
+            <a class="button button-light" href="https://github.com/adityatawde9699/Sonara/releases/latest" target="_blank" rel="noopener noreferrer">Open the latest release <span aria-hidden="true">↗</span></a>
           </div>
         </div>
       </section>

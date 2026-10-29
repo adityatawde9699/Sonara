@@ -4,6 +4,8 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as WindowsCommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -331,7 +333,7 @@ async fn preview_narration(
             .clone()
             .ok_or_else(|| "Choose a document before previewing narration.".to_owned())?;
         let document = validate_document(&selected_path)?;
-        let runtime = resolve_runtime()?;
+        let runtime = resolve_runtime(Some(&app))?;
         let available_voices = discover_voices(&runtime.model_dir)?;
         let selected_voice = voice
             .filter(|candidate| available_voices.iter().any(|item| item.id == *candidate))
@@ -350,9 +352,8 @@ async fn preview_narration(
         if expand_citations {
             args.push("--expand-citations");
         }
-        let output = command
+        command
             .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", std::env::var_os("HOME").unwrap_or_default())
             .env("LANG", std::env::var_os("LANG").unwrap_or_default())
             .env("LC_ALL", std::env::var_os("LC_ALL").unwrap_or_default())
@@ -364,6 +365,9 @@ async fn preview_narration(
             .arg(&selected_voice)
             .arg("--data-dir")
             .arg(&runtime.model_dir)
+            .args(pdf_tool_args(&runtime));
+        configure_runtime_command(&mut command, &runtime);
+        let output = command
             .output()
             .map_err(|error| format!("Could not preview narration: {error}"))?;
         if !output.status.success() {
@@ -599,8 +603,8 @@ fn current_session(
 }
 
 #[tauri::command]
-fn list_voices() -> Result<Vec<VoiceInfo>, String> {
-    let runtime = resolve_runtime()?;
+fn list_voices(app: AppHandle) -> Result<Vec<VoiceInfo>, String> {
+    let runtime = resolve_runtime(Some(&app))?;
     if !runtime.model_dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -715,7 +719,7 @@ fn start_reading(
         );
     }
 
-    let runtime = resolve_runtime()?;
+    let runtime = resolve_runtime(Some(&app))?;
     let selected_engine = engine.unwrap_or_else(|| "piper".to_owned());
     if !["piper", "kokoro"].contains(&selected_engine.as_str()) {
         return Err("Choose Piper or Kokoro as the speech engine.".to_owned());
@@ -905,11 +909,12 @@ fn save_progress(
 }
 
 fn invoke_llm_rpc(
+    app: Option<&AppHandle>,
     state: &AppState,
     request: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let runtime = resolve_runtime()?;
-    let llm_script = runtime.project_root.join("llm_client.py");
+    let runtime = resolve_runtime(app)?;
+    let llm_script = runtime.llm_script.clone();
     if !llm_script.is_file() {
         return Err("LLM client script (llm_client.py) was not found in project root.".to_owned());
     }
@@ -924,13 +929,16 @@ fn invoke_llm_rpc(
         *worker_guard = None;
     }
     if worker_guard.is_none() {
-        let child = Command::new(&runtime.python)
+        let mut command = Command::new(&runtime.python);
+        command
             .arg(&llm_script)
             .arg("worker")
             .current_dir(&runtime.project_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        configure_runtime_command(&mut command, &runtime);
+        let child = command
             .spawn()
             .map_err(|error| format!("Failed to start Sonara's local LLM worker: {error}"))?;
         let mut child = child;
@@ -1000,13 +1008,14 @@ async fn llm_test_connection(
 ) -> Result<LlmTestResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        llm_test_connection_inner(&state, config)
+        llm_test_connection_inner(Some(&app), &state, config)
     })
     .await
     .map_err(|e| format!("LLM test connection task failed: {e}"))?
 }
 
 fn llm_test_connection_inner(
+    app: Option<&AppHandle>,
     state: &AppState,
     config: LlmConfigInput,
 ) -> Result<LlmTestResult, String> {
@@ -1014,7 +1023,7 @@ fn llm_test_connection_inner(
         "action": "test_connection",
         "config": config,
     });
-    let val = invoke_llm_rpc(state, &req)?;
+    let val = invoke_llm_rpc(app, state, &req)?;
     let result: LlmTestResult = serde_json::from_value(val)
         .map_err(|e| format!("Failed to decode LLM test connection response: {e}"))?;
     Ok(result)
@@ -1037,7 +1046,7 @@ async fn llm_chat(
             "context": context.unwrap_or_default(),
             "history": history.unwrap_or_default(),
         });
-        let val = invoke_llm_rpc(&state, &req)?;
+        let val = invoke_llm_rpc(Some(&app), &state, &req)?;
         let result: LlmChatResult = serde_json::from_value(val)
             .map_err(|e| format!("Failed to decode LLM chat response: {e}"))?;
         Ok(result)
@@ -1061,7 +1070,7 @@ async fn llm_summarize(
             "text": text,
             "mode": mode.unwrap_or_else(|| "summary".to_string()),
         });
-        let val = invoke_llm_rpc(&state, &req)?;
+        let val = invoke_llm_rpc(Some(&app), &state, &req)?;
         let result: LlmSummarizeResult = serde_json::from_value(val)
             .map_err(|e| format!("Failed to decode LLM summarize response: {e}"))?;
         Ok(result)
@@ -1083,7 +1092,7 @@ async fn llm_enhance_script(
             "config": config,
             "text": text,
         });
-        let val = invoke_llm_rpc(&state, &req)?;
+        let val = invoke_llm_rpc(Some(&app), &state, &req)?;
         let result: LlmEnhanceResult = serde_json::from_value(val)
             .map_err(|e| format!("Failed to decode LLM narration enhance response: {e}"))?;
         Ok(result)
@@ -1100,7 +1109,7 @@ async fn llm_model_status(
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let req = serde_json::json!({"action": "model_status", "config": config});
-        invoke_llm_rpc(&state, &req)
+        invoke_llm_rpc(Some(&app), &state, &req)
     })
     .await
     .map_err(|e| format!("LLM model status task failed: {e}"))?
@@ -1114,7 +1123,7 @@ async fn llm_discover_models(
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let req = serde_json::json!({"action": "discover_models", "config": config});
-        invoke_llm_rpc(&state, &req)
+        invoke_llm_rpc(Some(&app), &state, &req)
     })
     .await
     .map_err(|e| format!("LLM discover models task failed: {e}"))?
@@ -1165,7 +1174,7 @@ async fn get_document_text(app: AppHandle, path: Option<String>) -> Result<Strin
             "action": "get_document_text",
             "path": target,
         });
-        let val = invoke_llm_rpc(&state, &req)?;
+        let val = invoke_llm_rpc(Some(&app), &state, &req)?;
         if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
             let text = val
                 .get("text")
@@ -1482,12 +1491,17 @@ fn validate_document(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+#[derive(Clone, Debug)]
 struct RuntimePaths {
     project_root: PathBuf,
     python: PathBuf,
     kokoro_python: PathBuf,
     script: PathBuf,
+    llm_script: PathBuf,
     model_dir: PathBuf,
+    kokoro_dir: PathBuf,
+    tools_dir: PathBuf,
+    packaged: bool,
 }
 
 fn spawn_sonara_worker(
@@ -1517,7 +1531,6 @@ fn spawn_sonara_worker(
     let mut command = Command::new(python);
     command
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", std::env::var_os("HOME").unwrap_or_default())
         .env("LANG", std::env::var_os("LANG").unwrap_or_default())
         .env("LC_ALL", std::env::var_os("LC_ALL").unwrap_or_default())
@@ -1540,13 +1553,15 @@ fn spawn_sonara_worker(
         .arg("--data-dir")
         .arg(&runtime.model_dir)
         .arg("--kokoro-dir")
-        .arg(runtime.project_root.join("models/kokoro"))
+        .arg(&runtime.kokoro_dir)
         .arg("--output-dir")
         .arg(output_dir)
+        .args(pdf_tool_args(runtime))
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .env("PYTHONUNBUFFERED", "1");
+    configure_runtime_command(&mut command, runtime);
     if expand_dates {
         command.arg("--expand-dates");
     }
@@ -1558,59 +1573,260 @@ fn spawn_sonara_worker(
     command.spawn()
 }
 
-fn resolve_runtime() -> Result<RuntimePaths, String> {
-    let repo_root = std::env::var_os("SONARA_PROJECT_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."));
-    let root = repo_root
+fn resolve_runtime(app: Option<&AppHandle>) -> Result<RuntimePaths, String> {
+    let data_root = if let Some(app) = app {
+        app.path()
+            .app_local_data_dir()
+            .map_err(|error| format!("Could not locate Sonara's user data directory: {error}"))?
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.sonara-test-data")
+    };
+
+    let explicit_root = std::env::var_os("SONARA_PROJECT_ROOT").map(PathBuf::from);
+    let (root, packaged) = if let Some(root) = explicit_root {
+        (root, false)
+    } else if cfg!(debug_assertions) {
+        (PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."), false)
+    } else if let Some(app) = app {
+        let resources = app
+            .path()
+            .resource_dir()
+            .map_err(|error| format!("Could not locate Sonara's installed resources: {error}"))?;
+        (resources.join("sonara"), true)
+    } else {
+        return Err("Installed Sonara resources are unavailable.".to_owned());
+    };
+
+    let mut runtime = resolve_runtime_layout(&root, &data_root, packaged, cfg!(windows))?;
+    if let Some(python) = std::env::var_os("SONARA_PYTHON") {
+        runtime.python = resolve_override_path(&runtime.project_root, PathBuf::from(python));
+        if packaged {
+            runtime.kokoro_python = runtime.python.clone();
+        }
+    }
+    if let Some(kokoro_python) = std::env::var_os("SONARA_KOKORO_PYTHON") {
+        runtime.kokoro_python =
+            resolve_override_path(&runtime.project_root, PathBuf::from(kokoro_python));
+    }
+    if let Some(model_dir) = std::env::var_os("SONARA_MODEL_DIR") {
+        runtime.model_dir = resolve_override_path(&runtime.project_root, PathBuf::from(model_dir));
+    }
+    Ok(runtime)
+}
+
+fn resolve_runtime_layout(
+    root: &Path,
+    data_root: &Path,
+    packaged: bool,
+    windows: bool,
+) -> Result<RuntimePaths, String> {
+    let root = root
         .canonicalize()
-        .map_err(|error| format!("Could not locate the Sonara project directory: {error}"))?;
+        .map_err(|error| format!("Could not locate Sonara runtime resources: {error}"))?;
     let script = root.join("sonara.py");
-    if !script.is_file() {
-        return Err(
-            "The Sonara Python engine is missing. Set SONARA_PROJECT_ROOT to the project checkout."
-                .to_owned(),
-        );
+    let llm_script = root.join("llm_client.py");
+    if !script.is_file() || !llm_script.is_file() {
+        return Err(format!(
+            "Sonara backend resources are incomplete in {}.",
+            root.display()
+        ));
     }
-    let python = std::env::var_os("SONARA_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join(".venv/bin/python"));
+
+    let python = if packaged {
+        root.join(if windows {
+            "sonara-runtime.exe"
+        } else {
+            "sonara-runtime"
+        })
+    } else if windows {
+        root.join(".venv/Scripts/python.exe")
+    } else {
+        root.join(".venv/bin/python")
+    };
     if !python.is_file() {
-        return Err(format!("Python environment was not found at {}. Set SONARA_PYTHON to the environment's Python executable.", python.display()));
+        return Err(if packaged {
+            format!("Bundled Sonara runtime is missing: {}", python.display())
+        } else {
+            format!("Python environment was not found at {}. Set SONARA_PYTHON to the environment's Python executable.", python.display())
+        });
     }
-    let kokoro_python = std::env::var_os("SONARA_KOKORO_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join(".cache/kokoro-venv/bin/python"));
-    // Keep the venv's `bin/python` symlink intact: resolving it to the system
-    // interpreter discards the virtual environment's site-packages.
-    let python = if python.is_absolute() {
-        python
+
+    let data_root = if packaged {
+        data_root.to_path_buf()
     } else {
-        std::env::current_dir()
-            .map_err(|error| {
-                format!("Could not resolve the configured Python executable: {error}")
-            })?
-            .join(python)
+        root.clone()
     };
-    let model_dir = std::env::var_os("SONARA_MODEL_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("models/piper"));
-    let model_dir = if model_dir.is_dir() {
-        model_dir.canonicalize().map_err(|error| {
-            format!("Could not access the configured Piper voice directory: {error}")
-        })?
-    } else if model_dir.is_absolute() {
-        model_dir
+    let model_dir = data_root.join("models/piper");
+    let kokoro_dir = data_root.join("models/kokoro");
+    let kokoro_python = if packaged {
+        python.clone()
+    } else if windows {
+        root.join(".cache/kokoro-venv/Scripts/python.exe")
     } else {
-        root.join(model_dir)
+        root.join(".cache/kokoro-venv/bin/python")
     };
+
     Ok(RuntimePaths {
-        project_root: root,
+        project_root: root.clone(),
         python,
         kokoro_python,
         script,
+        llm_script,
         model_dir,
+        kokoro_dir,
+        tools_dir: root.join("tools"),
+        packaged,
     })
+}
+
+fn resolve_override_path(root: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    }
+}
+
+fn runtime_search_path(runtime: &RuntimePaths) -> std::ffi::OsString {
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![runtime.tools_dir.join("bin"), runtime.tools_dir.clone()];
+    paths.extend(std::env::split_paths(&existing));
+    std::env::join_paths(paths).unwrap_or(existing)
+}
+
+fn pdftotext_path(runtime: &RuntimePaths) -> PathBuf {
+    let executable = if cfg!(windows) {
+        "pdftotext.exe"
+    } else {
+        "pdftotext"
+    };
+    let nested = runtime.tools_dir.join("bin").join(executable);
+    if nested.is_file() {
+        nested
+    } else {
+        runtime.tools_dir.join(executable)
+    }
+}
+
+fn pdf_tool_args(runtime: &RuntimePaths) -> Vec<std::ffi::OsString> {
+    if runtime.packaged {
+        vec![
+            "--pdftotext".into(),
+            pdftotext_path(runtime).into_os_string(),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+fn configure_runtime_command(command: &mut Command, runtime: &RuntimePaths) {
+    command.env("PATH", runtime_search_path(runtime));
+    if runtime.packaged {
+        command.env("TESSDATA_PREFIX", runtime.tools_dir.join("tessdata"));
+        command.env("POPPLER_DATADIR", runtime.tools_dir.join("share/poppler"));
+        #[cfg(target_os = "linux")]
+        {
+            let existing = std::env::var_os("LD_LIBRARY_PATH").unwrap_or_default();
+            let paths = std::iter::once(runtime.tools_dir.join("lib"))
+                .chain(std::env::split_paths(&existing))
+                .collect::<Vec<_>>();
+            if let Ok(joined) = std::env::join_paths(paths) {
+                command.env("LD_LIBRARY_PATH", joined);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        for name in [
+            "SystemRoot",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            command.env("HOME", profile);
+        }
+        command.creation_flags(0x0800_0000);
+    }
+}
+
+fn verify_installed_runtime(app: &AppHandle) -> Result<(), String> {
+    let runtime = resolve_runtime(Some(app))?;
+    if !runtime.packaged {
+        return Err("Installed-runtime check did not resolve packaged resources.".to_owned());
+    }
+    let mut runtime_command = Command::new(&runtime.python);
+    runtime_command.arg("--self-check");
+    configure_runtime_command(&mut runtime_command, &runtime);
+    let runtime_output = runtime_command
+        .output()
+        .map_err(|error| format!("Could not start the bundled inference runtime: {error}"))?;
+    if !runtime_output.status.success() {
+        return Err(format!(
+            "Bundled inference runtime failed its self-check: {}",
+            String::from_utf8_lossy(&runtime_output.stderr).trim()
+        ));
+    }
+    let report: serde_json::Value =
+        serde_json::from_slice(&runtime_output.stdout).map_err(|error| {
+            format!("Bundled inference runtime returned invalid status JSON: {error}")
+        })?;
+    if report.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err(format!(
+            "Bundled inference runtime reports unavailable engines: {report}"
+        ));
+    }
+
+    for (name, executable, args) in [
+        ("pdftotext", pdftotext_path(&runtime), vec!["-v"]),
+        (
+            "pdftoppm",
+            runtime.tools_dir.join("bin").join(if cfg!(windows) {
+                "pdftoppm.exe"
+            } else {
+                "pdftoppm"
+            }),
+            vec!["-v"],
+        ),
+    ] {
+        let mut command = Command::new(executable);
+        command.args(args);
+        configure_runtime_command(&mut command, &runtime);
+        let output = command
+            .output()
+            .map_err(|error| format!("Could not run bundled {name}: {error}"))?;
+        if !output.status.success() {
+            return Err(format!("Bundled {name} failed its startup check."));
+        }
+    }
+
+    let mut tesseract = Command::new(runtime.tools_dir.join("bin").join(if cfg!(windows) {
+        "tesseract.exe"
+    } else {
+        "tesseract"
+    }));
+    tesseract.arg("--list-langs");
+    configure_runtime_command(&mut tesseract, &runtime);
+    let output = tesseract
+        .output()
+        .map_err(|error| format!("Could not run bundled Tesseract: {error}"))?;
+    if !output.status.success()
+        || !String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.trim() == "eng")
+    {
+        return Err(
+            "Bundled Tesseract or its English language data failed the startup check.".to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn progress_path(app: &AppHandle, source_sha256: &str) -> Result<PathBuf, String> {
@@ -2142,6 +2358,11 @@ pub fn run() {
             get_document_text
         ])
         .setup(|app| {
+            if std::env::args().any(|argument| argument == "--sonara-smoke-check") {
+                verify_installed_runtime(app.handle()).map_err(std::io::Error::other)?;
+                app.handle().exit(0);
+                return Ok(());
+            }
             let audio_server = AudioServer::start(app.handle().clone())?;
             app.manage(audio_server);
             let output_dir = app.path().app_local_data_dir()?.join("reader-output");
@@ -2334,6 +2555,69 @@ mod tests {
     }
 
     #[test]
+    fn packaged_runtime_uses_installed_resources_and_user_data() {
+        let base = std::env::temp_dir().join(format!("sonara-runtime-paths-{}", make_job_id()));
+        let resource_root = base.join("Program Files/Sonara/resources/sonara");
+        let user_data = base.join("User Data/Sonara");
+        fs::create_dir_all(&resource_root).unwrap();
+        fs::create_dir_all(&user_data).unwrap();
+        fs::write(resource_root.join("sonara.py"), b"backend entry").unwrap();
+        fs::write(resource_root.join("llm_client.py"), b"llm entry").unwrap();
+        fs::write(resource_root.join("sonara-runtime"), b"runtime").unwrap();
+
+        let runtime = resolve_runtime_layout(&resource_root, &user_data, true, false).unwrap();
+        assert_eq!(runtime.project_root, resource_root.canonicalize().unwrap());
+        assert_eq!(runtime.python, runtime.project_root.join("sonara-runtime"));
+        assert_eq!(runtime.model_dir, user_data.join("models/piper"));
+        assert_eq!(runtime.kokoro_dir, user_data.join("models/kokoro"));
+        assert_eq!(runtime.tools_dir, runtime.project_root.join("tools"));
+        fs::create_dir_all(runtime.tools_dir.join("bin")).unwrap();
+        fs::write(runtime.tools_dir.join("bin/pdftotext"), b"poppler").unwrap();
+        assert_eq!(
+            pdftotext_path(&runtime),
+            runtime.tools_dir.join("bin/pdftotext")
+        );
+        assert_eq!(pdf_tool_args(&runtime).len(), 2);
+        assert_eq!(
+            PathBuf::from(&pdf_tool_args(&runtime)[1]),
+            runtime.tools_dir.join("bin/pdftotext")
+        );
+        assert!(!runtime.model_dir.starts_with(&runtime.project_root));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn packaged_runtime_selects_windows_executable_name() {
+        let base = std::env::temp_dir().join(format!("sonara-runtime-windows-{}", make_job_id()));
+        let resource_root = base.join("resources/sonara");
+        fs::create_dir_all(&resource_root).unwrap();
+        fs::write(resource_root.join("sonara.py"), b"backend entry").unwrap();
+        fs::write(resource_root.join("llm_client.py"), b"llm entry").unwrap();
+        fs::write(resource_root.join("sonara-runtime.exe"), b"runtime").unwrap();
+
+        let runtime =
+            resolve_runtime_layout(&resource_root, &base.join("data"), true, true).unwrap();
+        assert_eq!(
+            runtime.python,
+            runtime.project_root.join("sonara-runtime.exe")
+        );
+        assert_eq!(runtime.kokoro_python, runtime.python);
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn packaged_runtime_reports_missing_files_without_falling_back_to_source_checkout() {
+        let base = std::env::temp_dir().join(format!("sonara-runtime-missing-{}", make_job_id()));
+        fs::create_dir_all(&base).unwrap();
+        let error = resolve_runtime_layout(&base, &base.join("data"), true, false)
+            .expect_err("an empty install resource directory is not a runtime");
+        assert!(error.contains("backend resources are incomplete"));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn llm_rpc_test_connection_offline_returns_error() {
         let config = LlmConfigInput {
             provider: "ollama".to_string(),
@@ -2352,7 +2636,7 @@ mod tests {
             idle_timeout_seconds: None,
         };
         let state = AppState::default();
-        let result = llm_test_connection_inner(&state, config)
+        let result = llm_test_connection_inner(None, &state, config)
             .expect("IPC invocation should return a structured result");
         shutdown_llm_worker(&state);
         assert!(!result.ok);
@@ -2366,7 +2650,7 @@ mod tests {
             "action": "model_status",
             "config": {"provider": "embedded_llama_cpp"}
         });
-        let first = invoke_llm_rpc(&state, &request).expect("status request should complete");
+        let first = invoke_llm_rpc(None, &state, &request).expect("status request should complete");
         assert_eq!(first["state"], "UNLOADED");
         let first_pid = state
             .llm_worker
@@ -2378,7 +2662,7 @@ mod tests {
             .id();
 
         let second =
-            invoke_llm_rpc(&state, &request).expect("second status request should complete");
+            invoke_llm_rpc(None, &state, &request).expect("second status request should complete");
         let second_pid = state
             .llm_worker
             .lock()

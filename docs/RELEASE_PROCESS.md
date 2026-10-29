@@ -1,22 +1,38 @@
 # Release process
 
-There are no tagged releases, release assets, or automated publishing workflows in the current repository history. The Tauri bundle is disabled. Treat the following as a readiness checklist, not evidence that Sonara is release-ready.
+## Automated tagged builds
 
-## Before proposing a release
+Pushing a tag matching `vMAJOR.MINOR.PATCH` starts `.github/workflows/package.yml`. The tag must match both `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`; update those version fields together before tagging.
 
-1. Resolve the project's license and document third-party runtime, voice, and model obligations.
-2. Define the supported operating systems and test a clean install/build on each one.
-3. Verify the Python runtime, external Poppler/OCR requirements, Piper/Kokoro runtime and model acquisition path, and cleanup/uninstall behavior.
-4. Build the frontend and desktop shell from a clean checkout; run Python, React, Rust, and relevant integration tests.
-5. Verify privacy wording, model provenance, dependency notices, and any external-service behavior.
-6. Prepare release notes and update `CHANGELOG.md` with the actual shipped changes.
-7. If artifacts are distributed, produce and publish checksums; evaluate signing/notarization requirements for each platform.
-8. Manually test installation and ordinary use on the target OS. A CI build alone does not establish a working desktop release.
+The workflow first runs Python, React, site-selector, Rust, and release metadata checks. Native jobs stage Poppler/Tesseract, build Windows x86_64 NSIS, Linux x86_64 `.deb` and AppImage, macOS Apple Silicon `.dmg`, and macOS Intel `.dmg` packages, then upload stable filenames. Separate hosted runners install each package, exercise bundled PDF extraction/OCR and runtime discovery, and check data retention. Windows and macOS checks also verify signatures and notarization. Publication waits for every smoke check and requires platform signing credentials.
 
-## Versioning and publishing
+The marketing site reads the latest published GitHub Release and matches its assets by those stable filenames. A release only becomes downloadable there after publication.
 
-The Rust package and Tauri configuration currently report `0.1.0`; this does not by itself imply a release. If maintainers adopt Semantic Versioning, coordinate version changes across package metadata and user-facing release notes, create a reviewed tag, and publish artifacts only after explicit maintainer approval. Do not publish from ordinary pull-request CI.
+## Creating a release
 
-## After publishing
+1. Update the version in `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` to the same stable version.
+2. Update `CHANGELOG.md` and review the runtime, dependency, and licensing notes.
+3. Run Python, frontend, and Rust checks locally. Check the Pages download selector with `node --test site/scripts/downloads.test.mjs`.
+4. Commit and push the changes, then create and push the matching annotated tag, for example `v0.2.0`.
+5. Wait for the complete **Build and publish desktop releases** workflow. Review all installer files and checksums on the created release and confirm the site reflects the release.
 
-Verify release page links and checksums, test downloads on a clean machine, monitor reported issues, and correct or withdraw artifacts if a material defect or licensing problem is found. No rollback automation is currently configured.
+Do not delete or replace an existing release tag to retry a failed build. Correct the underlying failure and use a new version tag after review.
+
+## Signing, notarization, and release gate
+
+Add these GitHub Actions repository secrets before pushing a release tag:
+
+- `SONARA_WINDOWS_PFX_BASE64`: base64 encoded Windows Authenticode PFX certificate.
+- `SONARA_WINDOWS_PFX_PASSWORD`: PFX password.
+- `APPLE_CERTIFICATE`: base64 encoded Developer ID Application certificate in `.p12` format.
+- `APPLE_CERTIFICATE_PASSWORD`: `.p12` password.
+- `APPLE_SIGNING_IDENTITY`: Developer ID Application identity name.
+- `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`: Apple notarization credentials (use an app-specific password).
+
+The Windows job signs the frozen Python runtime and staged native tools, and Tauri signs the app and NSIS installer. Tauri signs and notarizes the macOS app and disk image. The release job refuses publication if any required secret is absent. No signed/notarized release or successful clean-runner execution has been observed yet.
+
+Windows Poppler and Tesseract downloads are pinned and hash-checked. The pinned Tesseract installer is 5.5.3, while upstream 5.5.4 (released 2026-10-28) fixes security advisories. Update and validate this dependency before publishing Windows installers. License inventory and SBOM generation also remain outstanding.
+
+## Supported artifact matrix and limitations
+
+The current workflow targets Windows x86_64, Linux x86_64, macOS aarch64, and macOS x86_64. It does not currently build Windows ARM64 or Linux ARM64. Hosted runner install checks are configured but must pass on CI; they do not replace tests on fresh end-user VMs.

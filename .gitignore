@@ -24,6 +24,7 @@ test-results/
 /target/
 /src-tauri/target/
 /src-tauri/gen/
+/packaging/staging/
 
 # Local models and generated reading/audio output
 /models/*

@@ -29,9 +29,11 @@ GitHub's [branch-based Pages source](https://docs.github.com/en/pages/getting-st
 
 The Pages workflow only publishes `site/`; it does not copy website assets into the desktop application or alter its build.
 
-## Product links and content
+## Download selector and product links
 
-The repository, documentation, and [GPL-3.0-only license](../LICENSE) links in `index.html` point to the verified project at `https://github.com/adityatawde9699/Sonara`. The site intentionally has no installer, release, canonical-domain, or contact links because none are configured in the repository. When real destinations become available, update the relevant links in `index.html`; keep navigation destinations anchored to sections that exist.
+The download selector reads the latest published release from GitHub's public Releases API, detects the visitor's platform and architecture where browser client hints allow, and lets visitors override either choice. Installer asset names are shared with `packaging/prepare_release_assets.py`; update both if the release naming scheme changes. The Latest GitHub Release link remains available when the API is unavailable or the selected build does not exist. No release is shown as downloadable until GitHub publishes one.
+
+The repository, documentation, and [GPL-3.0-only license](../LICENSE) links in `index.html` point to `https://github.com/adityatawde9699/Sonara`. Keep navigation destinations anchored to sections that exist.
 
 Before changing a product claim, verify it against the desktop implementation and project documentation. In particular, engine and voice availability depends on local runtimes and model files; optional assistant providers are configured separately and may be remote. Keep authentic screenshots labeled as captures and illustrative UI fragments labeled as examples.
 
@@ -46,4 +48,4 @@ Replace or add optimized assets under `assets/`. Update the relative references 
 
 ## Theme and interactions
 
-The site has no package dependencies. Theme preference is stored in browser `localStorage` when available and otherwise follows the system preference. The mobile navigation and spoken-text sample tabs are implemented in `scripts/main.js`; theme behavior is in `scripts/theme.js`.
+The site has no runtime package dependencies. Theme preference is stored in browser `localStorage` when available and otherwise follows the system preference. The mobile navigation, spoken-text sample tabs, and release download selector are implemented in `scripts/main.js`; platform and asset mapping helpers are in `scripts/downloads.mjs`. Run the helper tests with `node --test site/scripts/downloads.test.mjs`. Theme behavior is in `scripts/theme.js`.

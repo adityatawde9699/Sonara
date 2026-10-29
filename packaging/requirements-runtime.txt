@@ -1,0 +1,7 @@
+# Keep the distributable runtime dependency set explicit and independent of
+# the caller's working directory.
+piper-tts==1.8.0
+onnxruntime==1.31.0
+kokoro-onnx==0.6.1
+llama-cpp-python==0.3.36
+pyinstaller==6.22.3

@@ -115,7 +115,25 @@ h1, h2 { font-family: var(--display); font-weight: 400; letter-spacing: -.045em;
 .hero h1 { max-width: 16ch; margin-bottom: 1.45rem; font-size: clamp(3rem, 4.8vw, 5rem); line-height: .99; }
 .hero-copy > p:not(.hero-note) { max-width: 34rem; margin-bottom: 1.8rem; color: var(--muted); font-size: clamp(1rem, 1.35vw, 1.12rem); line-height: 1.7; }
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1.35rem; }
-.hero-note { margin: 1.1rem 0 0; color: var(--quiet); font-size: .75rem; }
+.download-card {
+  max-width: 40rem; margin-top: 2rem; padding: 1.25rem;
+  border: 1px solid var(--line); border-radius: .45rem; background: var(--surface);
+  box-shadow: 0 1px 2px rgb(0 0 0 / .18), 0 12px 32px rgb(0 0 0 / .12), inset 0 1px 0 rgb(255 255 255 / .035);
+}
+.download-eyebrow { color: var(--quiet); font-size: .65rem; font-weight: 700; letter-spacing: .09em; }
+.download-heading h2 { margin: .2rem 0 .15rem; font-size: 1.5rem; letter-spacing: -.025em; }
+.download-heading p { min-height: 1.65em; margin: 0; color: var(--muted); font-size: .8rem; }
+.download-controls { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 1rem; margin-top: 1rem; }
+.download-selects { display: grid; grid-template-columns: 1fr 1fr; gap: .65rem; min-width: 0; }
+.download-selects label { display: grid; gap: .35rem; min-width: 0; color: var(--quiet); font-size: .68rem; }
+.download-selects select {
+  width: 100%; min-height: 2.85rem; padding: .55rem .65rem; border: 1px solid var(--line); border-radius: .28rem;
+  background: var(--raised); color: var(--ink); font: inherit; font-size: .75rem;
+}
+.download-actions { display: flex; flex-direction: column; align-items: flex-start; gap: .55rem; }
+.download-button { white-space: nowrap; }
+.download-actions .text-link { font-size: .73rem; }
+.download-meta { min-height: 1.5em; margin: .85rem 0 0; color: var(--quiet); font-size: .68rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 figure.product-window { overflow: hidden; margin: 0; background: var(--surface); }
 .preview-label { padding: .55rem .9rem; background: var(--raised); color: var(--quiet); font-size: .68rem; letter-spacing: .04em; }
 .actual-product-shot img { width: 100%; height: auto; }
@@ -229,6 +247,7 @@ figure.product-window { overflow: hidden; margin: 0; background: var(--surface);
 @media (max-width: 980px) {
   .hero { min-height: auto; grid-template-columns: 1fr; gap: 3rem; padding-top: 5rem; }
   .hero-copy { max-width: 42rem; }
+  .download-card { max-width: 42rem; }
   .product-window { width: min(100%, 47rem); justify-self: end; }
   .intro, .feature-section, .formats-inner, .engines, .privacy-inner, .product-story, .faq-section { grid-template-columns: 1fr 1fr; gap: 2rem; }
   .feature-heading { position: static; }
@@ -253,6 +272,9 @@ figure.product-window { overflow: hidden; margin: 0; background: var(--surface);
   .nav-links a { padding: .8rem 0; }
   .hero { padding-block: 4rem 3.5rem; gap: 2.4rem; }
   .hero h1 { font-size: clamp(2.8rem, 12vw, 4.2rem); }
+  .download-card { padding: 1rem; }
+  .download-controls { grid-template-columns: 1fr; }
+  .download-actions { flex-direction: row; flex-wrap: wrap; align-items: center; gap: .8rem 1rem; }
   .intro, .feature-section, .formats-inner, .engines, .privacy-inner, .product-story, .faq-section { grid-template-columns: 1fr; }
   .intro-copy { columns: 1; }
   .feature-list, .format-list, .format-note, .story-states { grid-column: auto; }
@@ -275,6 +297,7 @@ figure.product-window { overflow: hidden; margin: 0; background: var(--surface);
 }
 @media (max-width: 420px) {
   .hero-actions { align-items: flex-start; flex-direction: column; gap: 1rem; }
+  .download-selects { grid-template-columns: 1fr; }
   .format-list { grid-template-columns: repeat(2, 1fr); }
   .workflow-steps { grid-template-columns: 1fr; }
   .workflow-steps li, .workflow-steps li + li, .workflow-steps li:nth-child(3) { min-height: auto; padding: 1rem; }
