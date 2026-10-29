@@ -292,6 +292,11 @@ def _classify_block(text: str, line_heights: list[float], median_line_height: fl
 
 
 MAX_DOCUMENT_BYTES = 100 * 1024 * 1024
+# DOCX and EPUB are ZIP containers. The compressed-file limit above does not
+# protect against a small archive whose members expand to an enormous size.
+MAX_ARCHIVE_MEMBER_BYTES = 32 * 1024 * 1024
+MAX_ARCHIVE_TEXT_BYTES = 200 * 1024 * 1024
+MAX_ARCHIVE_ENTRIES = 10_000
 WORDS_PER_VIRTUAL_PAGE = 300
 DEFAULT_VIRTUAL_PAGE_WIDTH = 612.0
 DEFAULT_VIRTUAL_PAGE_HEIGHT = 792.0
@@ -304,6 +309,45 @@ def compute_file_sha256(path: Path) -> str:
         while chunk := handle.read(65_536):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _read_bounded_zip_member(
+    archive: zipfile.ZipFile,
+    name: str,
+    *,
+    total_read: int = 0,
+) -> bytes:
+    """Read an archive member without trusting its declared uncompressed size."""
+    try:
+        info = archive.getinfo(name)
+    except KeyError:
+        raise
+    if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+        raise ValueError(
+            f"Archive member exceeds {MAX_ARCHIVE_MEMBER_BYTES // (1024 * 1024)} MiB limit: {name}"
+        )
+    if total_read + info.file_size > MAX_ARCHIVE_TEXT_BYTES:
+        raise ValueError(
+            f"Archive text exceeds {MAX_ARCHIVE_TEXT_BYTES // (1024 * 1024)} MiB total limit."
+        )
+    with archive.open(info, "r") as member:
+        data = member.read(MAX_ARCHIVE_MEMBER_BYTES + 1)
+    if len(data) > MAX_ARCHIVE_MEMBER_BYTES:
+        raise ValueError(
+            f"Archive member exceeds {MAX_ARCHIVE_MEMBER_BYTES // (1024 * 1024)} MiB limit: {name}"
+        )
+    if total_read + len(data) > MAX_ARCHIVE_TEXT_BYTES:
+        raise ValueError(
+            f"Archive text exceeds {MAX_ARCHIVE_TEXT_BYTES // (1024 * 1024)} MiB total limit."
+        )
+    return data
+
+
+def _validate_zip_entry_count(archive: zipfile.ZipFile) -> list[str]:
+    names = archive.namelist()
+    if len(names) > MAX_ARCHIVE_ENTRIES:
+        raise ValueError(f"Archive contains more than {MAX_ARCHIVE_ENTRIES} entries.")
+    return names
 
 
 def extract_txt_document(txt_path: Path) -> Document:
@@ -367,9 +411,10 @@ def extract_docx_document(docx_path: Path) -> Document:
 
     try:
         with zipfile.ZipFile(docx_path, "r") as zf:
-            if "word/document.xml" not in zf.namelist():
+            names = _validate_zip_entry_count(zf)
+            if "word/document.xml" not in names:
                 raise ValueError("Invalid DOCX archive: missing word/document.xml")
-            xml_bytes = zf.read("word/document.xml")
+            xml_bytes = _read_bounded_zip_member(zf, "word/document.xml")
     except (zipfile.BadZipFile, KeyError, OSError) as exc:
         raise ValueError(f"Could not read DOCX archive: {exc}") from exc
 
@@ -503,9 +548,10 @@ def extract_epub_document(epub_path: Path) -> Document:
 
     try:
         with zipfile.ZipFile(epub_path, "r") as zf:
-            if "META-INF/container.xml" not in zf.namelist():
+            names = _validate_zip_entry_count(zf)
+            if "META-INF/container.xml" not in names:
                 raise ValueError("Invalid EPUB: missing META-INF/container.xml")
-            container_xml = zf.read("META-INF/container.xml")
+            container_xml = _read_bounded_zip_member(zf, "META-INF/container.xml")
 
             try:
                 container_root = ElementTree.fromstring(container_xml)
@@ -520,10 +566,10 @@ def extract_epub_document(epub_path: Path) -> Document:
                         break
             if not rootfile_path:
                 raise ValueError("Invalid EPUB: container.xml missing rootfile full-path")
-            if rootfile_path not in zf.namelist():
+            if rootfile_path not in names:
                 raise ValueError(f"Invalid EPUB: OPF rootfile not found in archive: {rootfile_path}")
 
-            opf_content = zf.read(rootfile_path)
+            opf_content = _read_bounded_zip_member(zf, rootfile_path)
             try:
                 opf_root = ElementTree.fromstring(opf_content)
             except ElementTree.ParseError as exc:
@@ -551,20 +597,24 @@ def extract_epub_document(epub_path: Path) -> Document:
                 ]
 
             blocks_data: list[tuple[str, str, str]] = []
+            total_text_bytes = len(container_xml) + len(opf_content)
             for idref in spine_idrefs:
                 href = manifest.get(idref)
                 if not href:
                     continue
                 full_href = f"{opf_dir}/{href}" if opf_dir and opf_dir != "." else href
                 normalized_href = Path(full_href).as_posix()
-                if normalized_href not in zf.namelist():
-                    matching = [name for name in zf.namelist() if name.endswith(href)]
+                if normalized_href not in names:
+                    matching = [name for name in names if name.endswith(href)]
                     if matching:
                         normalized_href = matching[0]
                     else:
                         continue
 
-                chapter_bytes = zf.read(normalized_href)
+                chapter_bytes = _read_bounded_zip_member(
+                    zf, normalized_href, total_read=total_text_bytes
+                )
+                total_text_bytes += len(chapter_bytes)
                 chapter_str = chapter_bytes.decode("utf-8", errors="replace")
                 parser = _EpubHtmlExtractor()
                 parser.feed(chapter_str)

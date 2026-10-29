@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#101010"/>
+  <path d="M0 540h1200" stroke="#343632"/>
+  <g fill="none" stroke="#A7C9BB" stroke-linecap="round" stroke-width="7">
+    <path d="M83 155v24m22-50v76m22-110v144m22-87v30m22-55v80m22-50v20"/>
+  </g>
+  <text x="235" y="185" fill="#F5F5F2" font-family="Arial,sans-serif" font-size="46" font-weight="600" letter-spacing="-2">sonara</text>
+  <text x="82" y="345" fill="#F5F5F2" font-family="Georgia,serif" font-size="83" letter-spacing="-3">Your documents,</text>
+  <text x="82" y="440" fill="#F5F5F2" font-family="Georgia,serif" font-size="83" letter-spacing="-3">ready to be heard.</text>
+  <text x="86" y="500" fill="#AAA9A2" font-family="Arial,sans-serif" font-size="24">A local-first desktop document listening experience.</text>
+  <text x="1090" y="580" text-anchor="end" fill="#A7C9BB" font-family="Arial,sans-serif" font-size="19" letter-spacing="4">SONARA</text>
+</svg>
