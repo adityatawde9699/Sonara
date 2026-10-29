@@ -142,7 +142,7 @@ jobs:
       - name: Smoke-check staged PDF and OCR tools
         run: python packaging/check_native_tools.py --tools packaging/staging/sonara/tools
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked
+        run: npm install --global @tauri-apps/cli@2.10.1
       - name: Install native Python runtime dependencies
         run: python -m pip install -r packaging/requirements-runtime.txt
       - name: Build frozen backend runtime
@@ -163,7 +163,7 @@ jobs:
         working-directory: ui-react
         run: npm run build
       - name: Build native installer
-        run: cargo tauri build --bundles ${{ matrix.bundle }}
+        run: tauri build --bundles ${{ matrix.bundle }}
       - name: Remove temporary macOS signing identity
         if: runner.os == 'macOS' && always()
         run: bash packaging/cleanup_macos_signing.sh
