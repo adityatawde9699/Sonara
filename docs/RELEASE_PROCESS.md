@@ -2,7 +2,7 @@
 
 ## Automated tagged builds
 
-Pushing a tag matching `vMAJOR.MINOR.PATCH` starts `.github/workflows/package.yml`. The tag must match both `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`; update those version fields together before tagging. The workflow can also be run manually with a release tag to retry packaging from the current branch and attach the installers to an existing release without moving its tag.
+Pushing a tag matching `vMAJOR.MINOR.PATCH` starts `.github/workflows/package.yml`. The tag must match both `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`; update those version fields together before tagging. The workflow can also be run manually with a release tag and platform selection to retry packaging from the current branch and attach installers to an existing release without moving its tag. A platform-specific run publishes only that platform's installer assets; run `all` for the complete matrix.
 
 The workflow first runs Python, React, site-selector, Rust, and release metadata checks. Native jobs stage Poppler/Tesseract, build Windows x86_64 NSIS, Linux x86_64 `.deb` and AppImage, macOS Apple Silicon `.dmg`, and macOS Intel `.dmg` packages, then upload stable filenames. Separate hosted runners install each package, exercise bundled PDF extraction/OCR and runtime discovery, and check data retention. Windows and macOS checks also verify signatures and notarization. Publication waits for every smoke check and requires platform signing credentials.
 

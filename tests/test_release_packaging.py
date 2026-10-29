@@ -60,6 +60,13 @@ class ReleasePackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Missing required installers"):
                 asset_verifier.verify_assets(root)
 
+    def test_platform_release_can_publish_its_complete_subset(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "Sonara-linux-x86_64.deb").write_bytes(b"deb")
+            (root / "Sonara-linux-x86_64.AppImage").write_bytes(b"appimage")
+            asset_verifier.verify_assets(root, "linux")
+
     def test_windows_setup_asset_must_be_unambiguous(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
