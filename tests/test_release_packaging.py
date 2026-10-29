@@ -26,6 +26,7 @@ asset_verifier = load_module("sonara_release_asset_verifier", "packaging/verify_
 runtime_check = load_module("sonara_frozen_runtime_check", "packaging/check_frozen_runtime.py")
 build_architecture = load_module("sonara_build_architecture", "packaging/check_build_architecture.py")
 release_matrix = load_module("sonara_release_matrix", "packaging/release_matrix.py")
+native_tools_check = load_module("sonara_native_tools_check", "packaging/check_native_tools.py")
 
 
 class ReleasePackagingTests(unittest.TestCase):
@@ -97,6 +98,12 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["platform"], "linux")
         self.assertEqual(len(release_matrix.release_matrix("all")["include"]), 4)
+
+    def test_poppler_bbox_output_is_compared_as_plain_text(self):
+        result = native_tools_check.normalize_bbox_text(
+            '<word xMin="1">Sonara</word><word>reads</word> local documents aloud.'
+        )
+        self.assertEqual(result, "Sonara reads local documents aloud.")
 
 
 if __name__ == "__main__":

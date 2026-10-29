@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import html
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,6 +15,10 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tests.fixtures.pdf_fixture import make_pdf  # noqa: E402
+
+
+def normalize_bbox_text(document: str) -> str:
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", document)).split())
 
 
 def _run(command: list[str], environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -47,7 +53,8 @@ def check_tools(tools: Path) -> None:
         temporary_path = Path(temporary)
         pdf = make_pdf(temporary_path / "tool-smoke.pdf")
         extracted = _run([str(executables["pdftotext"]), "-bbox-layout", "-enc", "UTF-8", str(pdf), "-"], environment)
-        if "Sonara reads local documents aloud." not in extracted.stdout:
+        normalized_extracted = normalize_bbox_text(extracted.stdout)
+        if "Sonara reads local documents aloud." not in normalized_extracted:
             raise RuntimeError("Staged Poppler did not extract the expected PDF text.")
         image_prefix = temporary_path / "rendered"
         _run([str(executables["pdftoppm"]), "-png", "-r", "300", "-f", "1", "-l", "1", str(pdf), str(image_prefix)], environment)
