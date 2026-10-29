@@ -55,6 +55,8 @@ jobs:
           .venv/bin/python -m pip install -r requirements.txt
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Prepare Tauri resource path for Rust tests
+        run: mkdir -p packaging/staging/sonara && touch packaging/staging/sonara/.ci-placeholder
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
