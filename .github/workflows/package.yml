@@ -187,7 +187,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
           path: release-assets
@@ -235,7 +235,7 @@ jobs:
             test -n "$APPLE_ID" && test -n "$APPLE_PASSWORD" && test -n "$APPLE_TEAM_ID" || { echo "Apple notarization credentials are required."; exit 1; }
           fi
       - name: Download all installer assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: release-assets
