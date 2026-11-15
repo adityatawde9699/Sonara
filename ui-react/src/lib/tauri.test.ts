@@ -189,7 +189,7 @@ describe("Tauri bindings", () => {
     });
     const loadedCfg = loadStoredLlmConfig();
     expect(loadedCfg.provider).toBe("openai");
-    expect(loadedCfg.apiKey).toBe("");
+    expect(loadedCfg.apiKey).toBe("sk-test"); // shared in memory so the Assistant can authenticate
     expect(localStorage.getItem("sonara-llm-config-v1")).not.toContain("sk-test");
 
     // Invoke mock

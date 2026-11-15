@@ -270,22 +270,27 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
 export const LLM_STORAGE_KEY = "sonara-llm-config-v1";
 export const AI_NARRATION_POLISH_STORAGE_KEY = "sonara-ai-narration-polish-enabled";
 
+// The API key is never written to localStorage. It is kept only in memory for
+// the lifetime of the window so Settings and the Assistant share one value.
+let sessionApiKey = "";
+
 export function loadStoredLlmConfig(): LlmConfig {
   try {
     const raw = localStorage.getItem(LLM_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      const config = { ...DEFAULT_LLM_CONFIG, ...parsed, apiKey: "" };
+      const config = { ...DEFAULT_LLM_CONFIG, ...parsed, apiKey: sessionApiKey };
       if (parsed.apiKey) localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify({ ...parsed, apiKey: "" }));
       return config;
     }
   } catch {
     // Fallback to default
   }
-  return DEFAULT_LLM_CONFIG;
+  return { ...DEFAULT_LLM_CONFIG, apiKey: sessionApiKey };
 }
 
 export function saveStoredLlmConfig(config: LlmConfig): void {
+  sessionApiKey = config.apiKey ?? "";
   try {
     localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify({ ...config, apiKey: "" }));
   } catch {
@@ -333,7 +338,7 @@ export async function llmEnhanceScript(
   return invoke<LlmEnhanceResult>("llm_enhance_script", { config, text });
 }
 
-export async function getDocumentText(path?: string): Promise<string> {
-  return invoke<string>("get_document_text", { path });
+export async function getDocumentText(): Promise<string> {
+  return invoke<string>("get_document_text");
 }
 

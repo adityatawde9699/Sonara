@@ -31,6 +31,8 @@ Add these GitHub Actions repository secrets before pushing a release tag:
 
 The Windows job signs the frozen Python runtime and staged native tools, and Tauri signs the app and NSIS installer. Tauri signs and notarizes the macOS app and disk image. The release job refuses publication if any required secret is absent. No signed/notarized release or successful clean-runner execution has been observed yet.
 
+Windows packaging is currently blocked, so tag pushes and manual runs default to the `unix` target (Linux plus both macOS architectures). `workflow_dispatch` requires an existing tag and builds that tag's commit; use `target=all` only after the Windows blocker below is resolved. Reruns overwrite assets (`--clobber`) and write a per-target `SHA256SUMS-<target>.txt`.
+
 Windows Poppler and Tesseract downloads are pinned and hash-checked. The pinned Tesseract installer is 5.5.3, while upstream 5.5.4 (released 2026-10-28) fixes security advisories. Update and validate this dependency before publishing Windows installers. License inventory and SBOM generation also remain outstanding.
 
 ## Supported artifact matrix and limitations

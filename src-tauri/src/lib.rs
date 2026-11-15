@@ -1145,12 +1145,12 @@ fn shutdown_llm_worker(state: &AppState) {
 }
 
 #[tauri::command]
-async fn get_document_text(app: AppHandle, path: Option<String>) -> Result<String, String> {
+async fn get_document_text(app: AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let target = if let Some(p) = path.filter(|s| !s.trim().is_empty()) {
-            p
-        } else {
+        // The target is derived only from backend state; the frontend cannot
+        // choose which file is read.
+        let target = {
             let reader_dir = app
                 .path()
                 .app_local_data_dir()

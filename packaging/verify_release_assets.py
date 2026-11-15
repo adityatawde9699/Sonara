@@ -12,11 +12,18 @@ REQUIRED_BY_PLATFORM = {
     "macos": {"Sonara-macos-aarch64.dmg", "Sonara-macos-x86_64.dmg"},
 }
 REQUIRED_ALL = set().union(*REQUIRED_BY_PLATFORM.values())
+# Linux and macOS only, used while the Windows installer is blocked.
+REQUIRED_UNIX = REQUIRED_BY_PLATFORM["linux"] | REQUIRED_BY_PLATFORM["macos"]
 
 
 def verify_assets(directory: Path, platform: str = "all") -> None:
     actual = {path.name for path in directory.iterdir() if path.is_file()}
-    required = REQUIRED_ALL if platform == "all" else REQUIRED_BY_PLATFORM[platform]
+    if platform == "all":
+        required = REQUIRED_ALL
+    elif platform == "unix":
+        required = REQUIRED_UNIX
+    else:
+        required = REQUIRED_BY_PLATFORM[platform]
     missing = sorted(required - actual)
     if missing:
         raise ValueError("Missing required installers: " + ", ".join(missing))
@@ -30,7 +37,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
-    parser.add_argument("--platform", choices=("all", *REQUIRED_BY_PLATFORM), default="all")
+    parser.add_argument("--platform", choices=("all", "unix", *REQUIRED_BY_PLATFORM), default="all")
     arguments = parser.parse_args()
     try:
         verify_assets(arguments.directory, arguments.platform)

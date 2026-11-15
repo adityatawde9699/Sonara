@@ -47,7 +47,7 @@ class LlmClientTests(unittest.TestCase):
         self.assertEqual(server.endpoint, "http://127.0.0.1:9931/v1")
 
     @patch("llm_client._embedded_model_manager.complete", return_value="direct answer")
-    @patch("urllib.request.urlopen")
+    @patch("llm_client._NO_REDIRECT_OPENER.open")
     def test_embedded_provider_uses_direct_runtime_not_http(self, mock_urlopen, mock_complete):
         cfg = LlmConfig(provider="embedded_llama_cpp", model_path="/tmp/example.gguf")
         result = chat_completion(cfg, [{"role": "user", "content": "hello"}])
@@ -64,7 +64,7 @@ class LlmClientTests(unittest.TestCase):
         mock_retrieve.assert_not_called()
         self.assertIn("A representative document passage.", mock_chat.call_args.args[1][-1]["content"])
 
-    @patch("urllib.request.urlopen", side_effect=OSError("connection refused"))
+    @patch("llm_client._NO_REDIRECT_OPENER.open", side_effect=OSError("connection refused"))
     def test_legacy_embedding_error_explains_server_and_embedded_options(self, _mock_urlopen):
         config = LlmConfig(provider="llama_cpp", endpoint="http://127.0.0.1:9931/v1")
         with self.assertRaises(RuntimeError) as raised:
@@ -203,7 +203,7 @@ class LlmClientTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("Could not connect", result["error"])
 
-    @patch("urllib.request.urlopen")
+    @patch("llm_client._NO_REDIRECT_OPENER.open")
     def test_chat_completion_parses_response(self, mock_urlopen):
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps({
@@ -216,7 +216,7 @@ class LlmClientTests(unittest.TestCase):
         res = chat_completion(cfg, [{"role": "user", "content": "Hello"}])
         self.assertEqual(res, "This is an answer from LLM.")
 
-    @patch("urllib.request.urlopen")
+    @patch("llm_client._NO_REDIRECT_OPENER.open")
     def test_rpc_handler_routes_chat_and_summarize(self, mock_urlopen):
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps({
@@ -234,7 +234,7 @@ class LlmClientTests(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["summary"], "Summary text here.")
 
-    @patch("urllib.request.urlopen")
+    @patch("llm_client._NO_REDIRECT_OPENER.open")
     def test_enhance_narration_script_extracts_json(self, mock_urlopen):
         mock_response = MagicMock()
         mock_json_content = """```json
@@ -277,6 +277,32 @@ class LlmClientTests(unittest.TestCase):
             })
             self.assertTrue(res_file["ok"])
             self.assertEqual(res_file["text"], "Direct file content.")
+
+    def test_remote_endpoint_requires_https_or_loopback(self):
+        from llm_client import chat_completion
+        for endpoint in ("http://example.com/v1", "file:///etc/passwd", "ftp://example.com"):
+            config = LlmConfig.from_dict({"provider": "openai", "endpoint": endpoint, "apiKey": "k"})
+            with self.assertRaises(RuntimeError):
+                chat_completion(config, [{"role": "user", "content": "hi"}])
+
+    def test_document_text_read_is_size_bounded(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch as _patch
+        import llm_client
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "big.txt"
+            big.write_text("x" * 64, encoding="utf-8")
+            with _patch.object(llm_client, "MAX_DOCUMENT_TEXT_BYTES", 16):
+                res = llm_client.extract_text_from_target(str(big))
+            self.assertFalse(res["ok"])
+            self.assertIn("limit", res["error"])
+
+    def test_unknown_provider_is_rejected(self):
+        from llm_client import chat_completion
+        config = LlmConfig.from_dict({"provider": "evil", "endpoint": "https://example.com/v1"})
+        with self.assertRaises(RuntimeError):
+            chat_completion(config, [{"role": "user", "content": "hi"}])
 
 
 if __name__ == "__main__":

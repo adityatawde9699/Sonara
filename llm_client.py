@@ -341,8 +341,11 @@ def chat_completion(
     """Complete through the selected provider without changing the public client API."""
     if config.provider == "embedded_llama_cpp":
         return _embedded_model_manager.complete(config, messages, max_tokens=max_tokens)
+    if config.provider not in HTTP_PROVIDERS:
+        raise RuntimeError(f"Unsupported LLM provider: {config.provider!r}.")
     if config.provider in {"llama_cpp", "ollama"} and not _is_loopback_endpoint(config.endpoint):
         raise RuntimeError(f"{config.provider} provider only accepts a local loopback endpoint.")
+    _require_safe_endpoint(config.endpoint)
     url = f"{config.endpoint}/chat/completions"
     headers = {
         "Content-Type": "application/json",
@@ -362,7 +365,7 @@ def chat_completion(
     req = urllib.request.Request(url, data=req_data, headers=headers, method="POST")
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _NO_REDIRECT_OPENER.open(req, timeout=timeout) as resp:
             raw_body = resp.read().decode("utf-8")
             result = json.loads(raw_body)
             choices = result.get("choices")
@@ -475,6 +478,35 @@ def ask_document(
     return chat_completion(config, messages, max_tokens=max(config.max_tokens, 1024))
 
 
+HTTP_PROVIDERS = frozenset({"ollama", "llama_cpp", "openai", "gemini", "custom"})
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so a credentialed request cannot be bounced to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        raise urllib.error.HTTPError(req.full_url, code, "Redirects are not followed", headers, fp)
+
+
+# build_opener keeps only http(s) handlers we name; file:/ftp: handlers are omitted.
+_NO_REDIRECT_OPENER = urllib.request.build_opener(
+    _NoRedirect, urllib.request.HTTPHandler, urllib.request.HTTPSHandler
+)
+
+
+def _require_safe_endpoint(endpoint: str) -> None:
+    """Allow https anywhere, but plain http only to loopback, so keys and text never cross the network in clear."""
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+    except ValueError as exc:
+        raise RuntimeError("LLM endpoint is not a valid URL.") from exc
+    if parsed.scheme == "https" and parsed.hostname:
+        return
+    if parsed.scheme == "http" and _is_loopback_endpoint(endpoint):
+        return
+    raise RuntimeError("LLM endpoint must use https, or http only for localhost/loopback addresses.")
+
+
 def _is_loopback_endpoint(endpoint: str) -> bool:
     try:
         parsed = urllib.parse.urlparse(endpoint)
@@ -497,7 +529,7 @@ def _embedding(config: LlmConfig, text: str) -> list[float]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as response:
+        with _NO_REDIRECT_OPENER.open(req, timeout=60) as response:
             payload = json.loads(response.read().decode("utf-8"))
         vector = payload["data"][0]["embedding"]
         if not isinstance(vector, list) or not vector:
@@ -700,6 +732,17 @@ def enhance_narration_script(
         }
 
 
+# Rust caps RPC responses at 16 MiB; refuse larger text files before reading them.
+MAX_DOCUMENT_TEXT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_text(path: Path) -> str:
+    size = path.stat().st_size
+    if size > MAX_DOCUMENT_TEXT_BYTES:
+        raise ValueError(f"{path.name} is {size} bytes, above the {MAX_DOCUMENT_TEXT_BYTES}-byte limit.")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def extract_text_from_target(target_path: str) -> dict[str, Any]:
     """Read plain text from reader-output directory or directly extract from a document file."""
     from pathlib import Path
@@ -708,15 +751,14 @@ def extract_text_from_target(target_path: str) -> dict[str, Any]:
     if p.is_dir():
         txt_path = p / "document_text.txt"
         if txt_path.is_file():
-            return {
-                "ok": True,
-                "text": txt_path.read_text(encoding="utf-8", errors="replace"),
-                "source": str(txt_path),
-            }
+            try:
+                return {"ok": True, "text": _read_bounded_text(txt_path), "source": str(txt_path)}
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "error": f"Failed reading {txt_path.name}: {exc}"}
         json_path = p / "extracted_document.json"
         if json_path.is_file():
             try:
-                data = json.loads(json_path.read_text(encoding="utf-8"))
+                data = json.loads(_read_bounded_text(json_path))
                 blocks = data.get("blocks", [])
                 text = "\n\n".join(b.get("text", "") for b in blocks if b.get("text"))
                 return {"ok": True, "text": text, "source": str(json_path)}
@@ -728,11 +770,10 @@ def extract_text_from_target(target_path: str) -> dict[str, Any]:
         return {"ok": False, "error": f"No document text found in directory {p}"}
     if p.is_file():
         if p.name == "document_text.txt" or p.suffix.lower() in (".txt", ".text", ".md"):
-            return {
-                "ok": True,
-                "text": p.read_text(encoding="utf-8", errors="replace"),
-                "source": str(p),
-            }
+            try:
+                return {"ok": True, "text": _read_bounded_text(p), "source": str(p)}
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "error": f"Failed reading {p.name}: {exc}"}
         try:
             from sonara import extract_document
 

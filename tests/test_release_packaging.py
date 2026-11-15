@@ -99,6 +99,20 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertEqual(selected[0]["platform"], "linux")
         self.assertEqual(len(release_matrix.release_matrix("all")["include"]), 4)
 
+    def test_unix_target_excludes_windows(self):
+        platforms = [t["platform"] for t in release_matrix.release_matrix("unix")["include"]]
+        self.assertEqual(sorted(platforms), ["linux", "macos", "macos"])
+
+    def test_unix_assets_do_not_require_windows_installer(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in asset_verifier.REQUIRED_UNIX:
+                (Path(tmp) / name).write_bytes(b"x")
+            asset_verifier.verify_assets(Path(tmp), "unix")
+            with self.assertRaises(ValueError):
+                asset_verifier.verify_assets(Path(tmp), "all")
+
     def test_poppler_bbox_output_is_compared_as_plain_text(self):
         result = native_tools_check.normalize_bbox_text(
             '<word xMin="1">Sonara</word><word>reads</word> local documents aloud.'

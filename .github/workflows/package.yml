@@ -6,15 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing or new stable release tag to build, such as v1.0.1
+        description: Existing release tag to build, such as v1.0.2. The tag must already exist; its commit is what gets built.
         required: true
         type: string
       target:
-        description: Build all platforms or add installers for one platform
+        description: Build installers. "unix" is Linux and macOS (Windows packaging is blocked, see docs/RELEASE_PROCESS.md); "all" includes Windows.
         required: true
-        default: all
+        default: unix
         type: choice
         options:
+          - unix
           - all
           - windows
           - linux
@@ -36,6 +37,8 @@ jobs:
       package_matrix: ${{ steps.release-matrix.outputs.package_matrix }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -80,7 +83,7 @@ jobs:
       - name: Select native release targets
         id: release-matrix
         env:
-          RELEASE_TARGET: ${{ inputs.target || 'all' }}
+          RELEASE_TARGET: ${{ inputs.target || 'unix' }}
         run: |
           matrix="$(python packaging/release_matrix.py "$RELEASE_TARGET")"
           echo "package_matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -102,6 +105,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -187,6 +192,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
       - uses: actions/download-artifact@v7
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
@@ -215,9 +222,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
       - name: Require platform signing credentials before publication
         env:
-          RELEASE_TARGET: ${{ inputs.target || 'all' }}
+          RELEASE_TARGET: ${{ inputs.target || 'unix' }}
           WINDOWS_PFX: ${{ secrets.SONARA_WINDOWS_PFX_BASE64 }}
           WINDOWS_PFX_PASSWORD: ${{ secrets.SONARA_WINDOWS_PFX_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -230,7 +239,7 @@ jobs:
           if [[ "$RELEASE_TARGET" == "all" || "$RELEASE_TARGET" == "windows" ]]; then
             test -n "$WINDOWS_PFX" && test -n "$WINDOWS_PFX_PASSWORD" || { echo "Windows signing secrets are required."; exit 1; }
           fi
-          if [[ "$RELEASE_TARGET" == "all" || "$RELEASE_TARGET" == "macos" ]]; then
+          if [[ "$RELEASE_TARGET" == "all" || "$RELEASE_TARGET" == "unix" || "$RELEASE_TARGET" == "macos" ]]; then
             test -n "$APPLE_CERTIFICATE" && test -n "$APPLE_CERTIFICATE_PASSWORD" && test -n "$APPLE_SIGNING_IDENTITY" || { echo "Apple Developer signing secrets are required."; exit 1; }
             test -n "$APPLE_ID" && test -n "$APPLE_PASSWORD" && test -n "$APPLE_TEAM_ID" || { echo "Apple notarization credentials are required."; exit 1; }
           fi
@@ -243,17 +252,22 @@ jobs:
       - name: Verify release assets are complete
         env:
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
-          RELEASE_TARGET: ${{ inputs.target || 'all' }}
+          RELEASE_TARGET: ${{ inputs.target || 'unix' }}
         run: python packaging/verify_release_assets.py release-assets --platform "$RELEASE_TARGET"
       - name: Write installer checksums
-        run: sha256sum release-assets/* > release-assets/SHA256SUMS.txt
+        run: |
+          # One checksum file per run so a later platform-scoped run cannot collide with it.
+          sum_file="SHA256SUMS-${RELEASE_TARGET}.txt"
+          (cd release-assets && sha256sum $(ls | grep -v '^SHA256SUMS') > "$sum_file")
+        env:
+          RELEASE_TARGET: ${{ inputs.target || 'unix' }}
       - name: Publish release and installers
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release-assets/*
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --title "Sonara $RELEASE_TAG" \

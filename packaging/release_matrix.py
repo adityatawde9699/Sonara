@@ -17,6 +17,8 @@ TARGETS = {
 def release_matrix(target: str) -> dict[str, list[dict[str, str]]]:
     if target == "all":
         selected = list(TARGETS.values())
+    elif target == "unix":
+        selected = [TARGETS["linux"], TARGETS["macos-aarch64"], TARGETS["macos-x86_64"]]
     elif target == "macos":
         selected = [TARGETS["macos-aarch64"], TARGETS["macos-x86_64"]]
     elif target in TARGETS:
