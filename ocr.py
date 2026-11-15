@@ -377,6 +377,28 @@ def parse_tesseract_tsv(
     return blocks
 
 
+# Mean Tesseract word confidence (0-100) below which a page's text is likely
+# to contain misreadings worth warning about.
+LOW_CONFIDENCE_THRESHOLD = 60.0
+
+
+def tsv_mean_confidence(tsv_content: str) -> float | None:
+    """Return the mean word confidence of a Tesseract TSV page, or None if it has no words."""
+    total = 0.0
+    count = 0
+    for row in csv.DictReader(io.StringIO(tsv_content), delimiter="\t"):
+        if row.get("level") != "5" or not (row.get("text") or "").strip():
+            continue
+        try:
+            confidence = float(row.get("conf", "-1"))
+        except (TypeError, ValueError):
+            continue
+        if confidence >= 0:
+            total += confidence
+            count += 1
+    return total / count if count else None
+
+
 def extract_scanned_pdf(
     pdf_path: Path,
     language: str = "eng",
@@ -472,6 +494,18 @@ def extract_scanned_pdf(
                 )
             else:
                 all_blocks.extend(page_blocks)
+                confidence = tsv_mean_confidence(tsv_text)
+                if confidence is not None and confidence < LOW_CONFIDENCE_THRESHOLD:
+                    notes.append(
+                        ExtractionNote(
+                            code="ocr_low_confidence",
+                            message=(
+                                f"Page {page_num} was hard to read (OCR confidence {confidence:.0f}%); "
+                                "some words may be misread. Check it in Preview narration."
+                            ),
+                            page=page_num,
+                        )
+                    )
 
     if not all_blocks:
         raise ValueError(

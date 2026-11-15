@@ -7,7 +7,7 @@ Sonara's document reader and default Piper synthesis path are designed to proces
 - Document text extraction is performed by local adapters (including Poppler for PDFs and the Python standard library for supported text/ZIP formats).
 - Piper inference is invoked locally through the Python worker and installed model files.
 - The desktop audio server binds to loopback on an ephemeral port and serves generated audio to the local WebView. It uses a per-launch random token and checks the active generated session.
-- Local progress, recent metadata, preferences, generated audio, and caches may be written to application data, WebView storage, output directories, or cache directories as described in [configuration](CONFIGURATION.md).
+- Local progress, the document library (which includes each prepared document's path on disk), preferences, generated audio, and caches may be written to application data, WebView storage, output directories, or cache directories as described in [configuration](CONFIGURATION.md).
 - Missing models are not silently downloaded by the default workflow.
 
 ## Optional external services

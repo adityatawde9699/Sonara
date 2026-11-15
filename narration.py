@@ -9,7 +9,7 @@ from datetime import date
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
-from document import Document, DocumentBlock, ExtractionNote
+from document import MARKDOWN_EXTRACTOR, Document, DocumentBlock, ExtractionNote
 
 
 NARRATION_SCHEMA_VERSION = 1
@@ -216,6 +216,7 @@ def build_narration_plan(
     overrides = tuple(pronunciation_overrides)
     _validate_overrides(overrides)
     pause_scale = voice_profile(voice).pause_scale
+    markdown = document.extractor == MARKDOWN_EXTRACTOR
     units: list[NarrationUnit] = []
     notes: list[NarrationNote] = [NarrationNote(
         "deterministic_segmentation_scope",
@@ -245,6 +246,7 @@ def build_narration_plan(
                 language=language,
                 expand_dates=expand_dates,
                 expand_citations=expand_citations,
+                markdown=markdown,
             )
             # Piper does not accept SSML prosody. Keep semantic blocks as
             # separate synthesis units and use punctuation plus inter-unit
@@ -255,7 +257,10 @@ def build_narration_plan(
             elif content_type == "table_row":
                 # Cell boundaries are meaningful when a table is spoken;
                 # a short pause is clearer than reading a vertical bar.
-                spoken_text = re.sub(r"\s*\|\s*", "; ", spoken_text).strip(" ;")
+                # A separator-only row ("| | |") keeps its text: it has no
+                # phonemes, so the engine writes a short silent chunk and the
+                # unit stays aligned with its source.
+                spoken_text = re.sub(r"\s*\|\s*", "; ", spoken_text).strip(" ;") or spoken_text
             matched_overrides.update(application.override_id for application in applications)
             unit_id = _unit_id(block, start, end, source_text)
             units.append(NarrationUnit(
@@ -501,6 +506,7 @@ def _apply_spoken_changes(
     language: str,
     expand_dates: bool,
     expand_citations: bool,
+    markdown: bool = False,
 ) -> tuple[str, list[OverrideApplication]]:
     explicit: list[tuple[int, int, str, str, str, str]] = []
     for override in overrides:
@@ -527,6 +533,8 @@ def _apply_spoken_changes(
         expand_dates=expand_dates,
         expand_citations=expand_citations,
     )
+    if markdown:
+        automatic = sorted(automatic + _markdown_spoken_rules(spoken_base), key=lambda item: (item[0], -(item[1] - item[0])))
     candidates = explicit + [
         item for item in automatic
         if not any(item[0] < end and item[1] > start for start, end in explicit_spans)
@@ -562,7 +570,60 @@ def _apply_spoken_changes(
         ))
         cursor = match_end
     output.append(spoken_base[cursor:])
-    return "".join(output), applications
+    spoken = "".join(output)
+    if any(not application.replacement for application in applications):
+        # Deleted markup can leave doubled or edge spaces; line breaks stay.
+        spoken = re.sub(r"[ \t]{2,}", " ", spoken).strip(" \t")
+    if not spoken:
+        # Deleting markup left nothing to say (for example a lone "---" rule);
+        # keep the text so the unit still maps to a short silent chunk.
+        return spoken_base, []
+    return spoken, applications
+
+
+_MARKDOWN_MARKER_RULES = (
+    # (rule id, pattern, group to delete or replace, replacement)
+    ("heading", r"^#{1,6}[ \t]+", 0, ""),
+    ("heading_closer", r"[ \t]+#+[ \t]*$", 0, ""),
+    ("setext_underline", r"\s+(?:={3,}|-{3,})\s*$", 0, ""),
+    ("list_marker", r"^[*+-][ \t]+", 0, ""),
+    ("quote_marker", r"^>[ \t]?", 0, ""),
+    ("horizontal_rule", r"^(?:[*_-][ \t]*){3,}$", 0, "—"),
+)
+_MARKDOWN_PAIRED = (
+    # Emphasis and code: delete the delimiters, keep the words between them.
+    ("strong", r"(?<![\w*])(\*\*)(?=\S)[^*\n]+?(?<=\S)(\*\*)(?![\w*])"),
+    ("strong", r"(?<![\w_])(__)(?=\S)[^_\n]+?(?<=\S)(__)(?![\w_])"),
+    ("emphasis", r"(?<![\w*])(\*)(?=[^\s*])[^*\n]+?(?<=[^\s*])(\*)(?![\w*])"),
+    ("emphasis", r"(?<![\w_])(_)(?=[^\s_])[^_\n]+?(?<=[^\s_])(_)(?![\w_])"),
+    ("code", r"(`+)(?=[^`\s])[^`\n]+?(?<=[^`\s])(\1)"),
+)
+
+
+def _markdown_spoken_rules(text: str) -> list[tuple[int, int, str, str, str, str]]:
+    """Delete Markdown markup from spoken text; the source keeps it.
+
+    Only markers are removed, so rules for the words inside ("**Dr. Smith**")
+    still apply. A link is spoken as its text, an image as its alt text.
+    """
+    found: list[tuple[int, int, str, str, str, str]] = []
+
+    def add(rule: str, start: int, end: int, value: str) -> None:
+        matched = text[start:end]
+        found.append((start, end, f"auto:markdown:{rule}", matched, value, matched))
+
+    for rule, pattern, group, value in _MARKDOWN_MARKER_RULES:
+        for match in re.finditer(pattern, text):
+            add(rule, match.start(group), match.end(group), value)
+    for rule, pattern in _MARKDOWN_PAIRED:
+        for match in re.finditer(pattern, text):
+            add(rule, match.start(1), match.end(1), "")
+            add(rule, match.start(2), match.end(2), "")
+    for match in re.finditer(r"(?P<bang>!?)(?P<open>\[)(?P<label>[^\]\n]*)(?P<close>\]\([^)\s]*(?:\s+\"[^\"]*\")?\))", text):
+        rule = "image" if match.group("bang") else "link"
+        add(rule, match.start(), match.end("open"), "")
+        add(rule, match.start("close"), match.end("close"), "")
+    return found
 
 
 def _automatic_spoken_rules(
@@ -1160,7 +1221,7 @@ def _content_type(block: DocumentBlock, source_text: str) -> str:
         return "list_item"
     if block.kind == "footnote":
         return "footnote"
-    if block.kind_source == "docx_table_row" or "table_row" in block.kind_source:
+    if "table_row" in block.kind_source:
         return "table_row"
     if _SPEAKER_LABEL.match(source_text) or _DIALOGUE_ATTRIBUTION.search(source_text):
         return "dialogue_candidate"

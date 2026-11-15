@@ -10,7 +10,7 @@ import { AssistantDrawer } from "./components/AssistantDrawer";
 import { NarrationPreviewModal } from "./components/NarrationPreviewModal";
 import { useSonara } from "./hooks/useSonara";
 import { isModalDialogOpen } from "./hooks/useModalDialog";
-import { AI_NARRATION_POLISH_STORAGE_KEY, type NarrationPreview } from "./lib/tauri";
+import type { NarrationPreview } from "./lib/tauri";
 
 function formatDuration(seconds: number): string {
   const totalMinutes = Math.max(0, Math.floor(seconds / 60));
@@ -53,6 +53,12 @@ export default function App() {
     await sonara.chooseDocument();
     setPage("home");
   };
+  const openFromLibrary = async (sourceSha256: string) => {
+    const outcome = await sonara.openRecentDocument(sourceSha256);
+    if (outcome === "failed") return;
+    sonara.setIsHistoryOpen(false);
+    setPage(outcome === "current" ? "reader" : "home");
+  };
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try { localStorage.setItem("sonara_theme", theme); } catch { /* storage may be unavailable */ }
@@ -72,9 +78,6 @@ export default function App() {
     setLibraryQuery(value);
     if (value) setPage("library");
   };
-  const [isPolishEnabled, setIsPolishEnabled] = useState(() => {
-    try { return localStorage.getItem(AI_NARRATION_POLISH_STORAGE_KEY) === "true"; } catch { return false; }
-  });
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
@@ -168,7 +171,9 @@ export default function App() {
             <section className="product-page" aria-labelledby="library-title">
               <header className="page-heading"><div><span className="eyebrow">YOUR COLLECTION</span><h1 id="library-title">My library</h1><p className="subtitle">Documents prepared for listening, kept on this device.</p></div><button className="button button-primary" type="button" onClick={() => void chooseFromLibrary()} disabled={!sonara.tauriReady}>＋ Import document</button></header>
               <div className="library-toolbar"><label className="library-search"><span aria-hidden="true">⌕</span><input aria-label="Search your library" placeholder="Search documents" value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} />{libraryQuery && <button type="button" aria-label="Clear search" onClick={() => setLibraryQuery("")}>×</button>}</label><div className="filter-tabs" role="group" aria-label="Library filter"><button type="button" className={libraryFilter === "all" ? "active" : ""} onClick={() => setLibraryFilter("all")}>All documents</button><button type="button" className={libraryFilter === "favorites" ? "active" : ""} onClick={() => setLibraryFilter("favorites")}>Favorites</button></div></div>
-              {filteredDocs.length ? <ul className="library-list">{filteredDocs.map((doc) => <li className="library-row" key={doc.sourceSha256}><span className="recent-file-mark">{formatDocumentType(doc.sourceName)}</span><div className="library-copy"><strong title={doc.sourceName}>{doc.sourceName}</strong><span>{doc.chunksCount} passages <i>·</i> {formatDuration(doc.totalDurationSeconds)} <i>·</i> {new Date(doc.lastListenedAt).toLocaleDateString()}</span></div><button className={`favorite-button ${favorites.includes(doc.sourceSha256) ? "is-favorite" : ""}`} type="button" aria-label={`${favorites.includes(doc.sourceSha256) ? "Remove from" : "Add to"} favorites: ${doc.sourceName}`} onClick={() => toggleFavorite(doc.sourceSha256)}>{favorites.includes(doc.sourceSha256) ? "★" : "☆"}</button>{sonara.session?.sourceSha256 === doc.sourceSha256 && <button className="button button-secondary" type="button" onClick={() => setPage("reader")}>Open reader</button>}</li>)}</ul> : <div className="library-empty"><span className="empty-icon" aria-hidden="true">⌕</span><h2>{sonara.recentDocs.length ? "No matching documents" : "Your library is waiting"}</h2><p>{sonara.recentDocs.length ? "Try another title or change the filter." : "Import a document and it will be ready to listen to here."}</p>{!sonara.recentDocs.length && <button className="button button-primary" type="button" onClick={() => void chooseFromLibrary()} disabled={!sonara.tauriReady}>Import a document</button>}</div>}
+              {filteredDocs.length ? <ul className="library-list">{filteredDocs.map((doc) => <li className="library-row" key={doc.sourceSha256}><span className="recent-file-mark">{formatDocumentType(doc.sourceName)}</span><div className="library-copy"><strong title={doc.sourceName}>{doc.sourceName}</strong><span>{doc.chunksCount} passages <i>·</i> {formatDuration(doc.totalDurationSeconds)} <i>·</i> {new Date(doc.lastListenedAt).toLocaleDateString()}</span></div><button className={`favorite-button ${favorites.includes(doc.sourceSha256) ? "is-favorite" : ""}`} type="button" aria-label={`${favorites.includes(doc.sourceSha256) ? "Remove from" : "Add to"} favorites: ${doc.sourceName}`} onClick={() => toggleFavorite(doc.sourceSha256)}>{favorites.includes(doc.sourceSha256) ? "★" : "☆"}</button>{sonara.session?.sourceSha256 === doc.sourceSha256
+                ? <button className="button button-secondary" type="button" onClick={() => setPage("reader")}>Open reader</button>
+                : <button className="button button-secondary" type="button" onClick={() => void openFromLibrary(doc.sourceSha256)} disabled={!doc.available} title={doc.available ? undefined : "The file was moved or deleted. Import it again."} aria-label={`Listen again: ${doc.sourceName}`}>Listen again</button>}</li>)}</ul> : <div className="library-empty"><span className="empty-icon" aria-hidden="true">⌕</span><h2>{sonara.recentDocs.length ? "No matching documents" : "Your library is waiting"}</h2><p>{sonara.recentDocs.length ? "Try another title or change the filter." : "Import a document and it will be ready to listen to here."}</p>{!sonara.recentDocs.length && <button className="button button-primary" type="button" onClick={() => void chooseFromLibrary()} disabled={!sonara.tauriReady}>Import a document</button>}</div>}
             </section>
           ) : page === "about" ? (
             <section className="product-page about-page" aria-labelledby="about-title">
@@ -287,7 +292,6 @@ export default function App() {
                   errorText={sonara.errorText}
                   disabled={!sonara.tauriReady}
                   selectedVoiceName={sonara.selectedVoiceName}
-                  isPolishEnabled={isPolishEnabled}
                   onOpenSettings={() => sonara.setIsSettingsOpen(true)}
                   onOpenAssistant={() => sonara.setIsAssistantOpen(true)}
                   onChoose={sonara.chooseDocument}
@@ -322,6 +326,7 @@ export default function App() {
                           <small>{doc.chunksCount} passages <span aria-hidden="true">·</span> {formatDuration(doc.totalDurationSeconds)}</small>
                           <small>{new Date(doc.lastListenedAt).toLocaleDateString()}</small>
                         </span>
+                        <button className="quiet-action" type="button" onClick={() => void openFromLibrary(doc.sourceSha256)} disabled={!doc.available && sonara.session?.sourceSha256 !== doc.sourceSha256} aria-label={`Open ${doc.sourceName}`}>Open</button>
                       </li>
                     ))}
                   </ul>
@@ -374,7 +379,6 @@ export default function App() {
       <SettingsModal
         isOpen={sonara.isSettingsOpen}
         onClose={() => sonara.setIsSettingsOpen(false)}
-        onPolishChange={setIsPolishEnabled}
         session={sonara.session}
         playbackRate={sonara.playerState.playbackRate}
         onSpeedChange={(speed) => sonara.setSpeed(speed)}
@@ -405,7 +409,9 @@ export default function App() {
         isOpen={sonara.isHistoryOpen}
         onClose={() => sonara.setIsHistoryOpen(false)}
         recentDocs={sonara.recentDocs}
-        onClearHistory={sonara.clearHistory}
+        onClearHistory={() => void sonara.clearHistory()}
+        onOpenDocument={(sha) => void openFromLibrary(sha)}
+        currentSha256={sonara.session?.sourceSha256}
       />
 
       <AssistantDrawer

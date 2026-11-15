@@ -14,13 +14,11 @@ import {
   llmChooseModel,
   llmDiscoverModels,
   llmModelStatus,
-  AI_NARRATION_POLISH_STORAGE_KEY,
 } from "../lib/tauri";
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  onPolishChange?: (enabled: boolean) => void;
   session: FrontendSession | null;
   playbackRate: number;
   onSpeedChange: (speed: number) => void;
@@ -49,7 +47,6 @@ const SPEED_PRESETS = [
 export const SettingsModal: FC<Props> = ({
   isOpen,
   onClose,
-  onPolishChange,
   session,
   playbackRate,
   onSpeedChange,
@@ -74,13 +71,6 @@ export const SettingsModal: FC<Props> = ({
   const [modelState, setModelState] = useState("UNLOADED");
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [isDiscoveringModels, setIsDiscoveringModels] = useState(false);
-  const [polishEnabled, setPolishEnabled] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(AI_NARRATION_POLISH_STORAGE_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
   const llmProvider = llmConfig.provider;
 
   const dialogRef = useModalDialog<HTMLDivElement>(isOpen, onClose);
@@ -133,15 +123,6 @@ export const SettingsModal: FC<Props> = ({
     setTestResult(null);
   };
 
-  const handlePolishToggle = (enabled: boolean) => {
-    setPolishEnabled(enabled);
-    onPolishChange?.(enabled);
-    try {
-      localStorage.setItem(AI_NARRATION_POLISH_STORAGE_KEY, String(enabled));
-    } catch {
-      // storage unavailable
-    }
-  };
 
   const handleTestConnection = async () => {
     setIsTesting(true);
@@ -339,10 +320,10 @@ export const SettingsModal: FC<Props> = ({
           </div>
         </div>
 
-        {/* AI Assistant & Smart Narration */}
+        {/* AI Assistant */}
         <div className="settings-section">
           <div className="settings-section-head">
-            <h3 className="settings-section-title">AI Assistant & Smart Narration</h3>
+            <h3 className="settings-section-title">AI Assistant</h3>
             <span className="settings-badge" data-testid="llm-provider-badge">
               {llmConfig.provider === "embedded_llama_cpp" ? "Local · embedded" : llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? "Local · loopback" : "Cloud API"}
             </span>
@@ -502,24 +483,6 @@ export const SettingsModal: FC<Props> = ({
             )}
           </div>
 
-          {/* Smart Narration Polish Toggle */}
-          <div className="llm-toggle-row">
-            <label className="llm-checkbox-label" htmlFor="enable-polish">
-              <input
-                id="enable-polish"
-                type="checkbox"
-                className="llm-checkbox"
-                checked={polishEnabled}
-                onChange={(e) => handlePolishToggle(e.target.checked)}
-              />
-              <span className="llm-toggle-text">
-                <strong>Enable AI Narration Polish</strong>
-                <span className="llm-toggle-sub">
-                  Cleans extraction artifacts and broken line wraps, and suggests pronunciations before reading.
-                </span>
-              </span>
-            </label>
-          </div>
         </div>
 
         {/* Speed Presets */}

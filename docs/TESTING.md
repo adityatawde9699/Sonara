@@ -6,11 +6,11 @@ This is the latest verified run. The dated sections below are historical records
 
 | Check | Command | Result |
 |---|---|---|
-| Python unit tests | `python -m unittest discover -s tests` | 154 run, 7 skipped, all pass on Python 3.14 and 3.12 |
-| Python integration (Poppler + Piper) | `SONARA_RUN_INTEGRATION=1 .venv/bin/python -m unittest discover -s tests -p test_integration_sonara.py` | 6 pass |
-| Frontend | `cd ui-react && npm test` | 71 pass across 14 files |
+| Python unit tests | `python -m unittest discover -s tests` | 170 run, 7 skipped, all pass on Python 3.14 and 3.12 |
+| Python with integrations (Poppler + Piper) | `SONARA_RUN_INTEGRATION=1 .venv/bin/python -W error::ResourceWarning -m unittest discover -s tests` | 170 run, 1 skipped (Tesseract), all pass. At exit Python reports two unclosed `/dev/null` handles that llama-cpp-python opens when it is imported (`llama_cpp/_utils.py`); they are not Sonara's |
+| Frontend | `cd ui-react && npm test` | 72 pass across 14 files |
 | Frontend types and lint | `npx tsc -b --noEmit`, `npm run lint` | clean |
-| Rust | `cargo test --manifest-path src-tauri/Cargo.toml --locked` | 18 pass, including end-to-end loopback tests of the audio server |
+| Rust | `cargo test --manifest-path src-tauri/Cargo.toml --locked` | 25 pass, including loopback tests of the real audio server (ranges, a 3 MiB streamed passage, a stalled client, the connection limit) and the library file |
 | Rust lint | `cargo clippy --locked --all-targets -- -D warnings` | clean (now enforced in CI) |
 | Site | `node --test site/scripts/downloads.test.mjs` | 4 pass |
 | Dependency audits | `npm audit`, `pip-audit`, `cargo audit` | no vulnerabilities and no ignored advisories. llama-cpp-python is installed with `--no-deps`, so `diskcache` (CVE-2025-69872) is not installed, and the release build refuses to run if it is present |
@@ -174,7 +174,7 @@ No browser checks above have been performed in this environment.
 
 ## Phase 5 Tauri desktop checks
 
-The Tauri app is in `src-tauri/`; its plain HTML/CSS/JavaScript frontend is in `ui/`. It uses the locked Rust dependencies and does not need an npm package installation. The tested Linux environment has Rust/Cargo 1.98.0, GTK 3, WebKitGTK 4.1, Node 24, and Zenity 4.2.1. See the [official Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/) before building on another machine.
+The Tauri app is in `src-tauri/`. At the time of these checks its frontend was a plain HTML/CSS/JavaScript prototype in `ui/`; that prototype has since been replaced by `ui-react/` and removed (2026-11-16), so the `node --check ui/app.js` step below is historical. The tested Linux environment has Rust/Cargo 1.98.0, GTK 3, WebKitGTK 4.1, Node 24, and Zenity 4.2.1. See the [official Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/) before building on another machine.
 
 Run these checks from the repository root:
 
@@ -187,7 +187,7 @@ node --check ui/app.js
 cargo run --manifest-path src-tauri/Cargo.toml --locked
 ```
 
-The desktop runtime expects the repository's `.venv/bin/python`, `sonara.py`, and the John medium Piper model. Configure `SONARA_PROJECT_ROOT`, `SONARA_PYTHON`, and `SONARA_MODEL_DIR` to override them. The Linux file picker requires Zenity. Generated WAVs, session metadata, and progress are placed in Tauri's app-local-data directory. A random-token HTTP listener binds only to `127.0.0.1`; it serves only passage indexes from the active validated session, checks Host and canonical chunk-directory containment, supports byte ranges, caps each response at 64 MiB, and shuts down with the window. The app does not provide filesystem APIs or local paths to the frontend.
+The desktop runtime expects the repository's `.venv/bin/python`, `sonara.py`, and the John medium Piper model. Configure `SONARA_PROJECT_ROOT`, `SONARA_PYTHON`, and `SONARA_MODEL_DIR` to override them. The Linux file picker requires Zenity. Generated WAVs, session metadata, and progress are placed in Tauri's app-local-data directory. A random-token HTTP listener binds only to `127.0.0.1`; it serves only passage indexes from the active validated session, checks Host and canonical chunk-directory containment, supports byte ranges, and shuts down with the window. (The 64 MiB response cap described here was replaced on 2026-11-16 by streaming, with at most 8 connections served at once.) The app does not provide filesystem APIs or local paths to the frontend.
 
 Evidence on 2026-10-25:
 

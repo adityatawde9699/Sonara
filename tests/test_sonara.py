@@ -1,3 +1,4 @@
+import contextlib
 import io
 from contextlib import redirect_stderr
 from dataclasses import replace
@@ -213,15 +214,13 @@ class PlayerTests(unittest.TestCase):
             self.assertIn(expected, page)
         self.assertIn("chunks/doc/run/chunk-000000.wav", page)
 
-    def test_desktop_player_reports_media_errors_and_url_normalization(self):
-        source = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("Media error ${mediaError.code}", source)
-        self.assertIn('error?.name === "NotAllowedError"', source)
-        self.assertIn("new URL(audio.currentSrc).pathname", source)
-        self.assertIn('audio.addEventListener("playing"', source)
-        self.assertIn("session.audioBaseUrl", source)
-        self.assertIn("Playback did not start within 5 seconds", source)
-        self.assertIn("audio did not load within 12 seconds", source)
+    def test_cli_rejects_a_voice_name_that_is_a_path(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            sonara.build_parser().parse_args(["read", "doc.pdf", "--voice", "../../etc/x", "--data-dir", "models"])
+        self.assertIn("Invalid voice name", stderr.getvalue())
+        with self.assertRaisesRegex(sonara.SonaraError, "Invalid voice name"):
+            sonara.synthesize("Hello.", "../x", Path("models"), Path("out.wav"), "piper")
 
     def test_chunk_player_manifest_cannot_close_its_script_element(self):
         manifest = {

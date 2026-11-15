@@ -20,7 +20,9 @@ All models originate from the official [`rhasspy/piper-voices`](https://huggingf
 
 ## Verification
 
-From the repository root:
+Sonara enforces this table. `tts_engine.PINNED_PIPER_VOICES` holds the same hashes, and a voice with one of these IDs is refused at load if its model or config does not match. Voices with other IDs are loaded without a pin. When you add or update a pinned voice, change both places.
+
+To check by hand, from the repository root:
 
 ```sh
 sha256sum models/piper/*.onnx models/piper/*.onnx.json

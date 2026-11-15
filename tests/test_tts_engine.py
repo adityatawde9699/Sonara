@@ -7,10 +7,12 @@ import wave
 from pathlib import Path
 
 import numpy as np
+from unittest.mock import patch
 
 from audio_processing import speech_level_dbfs
 from document import Document, DocumentBlock, SourceBox
 from narration import build_narration_plan
+import tts_engine
 from tts_engine import (
     AudioFormat,
     EngineCapabilities,
@@ -20,6 +22,7 @@ from tts_engine import (
     PiperEngine,
     TtsError,
     prune_audio_cache,
+    validate_voice_name,
 )
 
 
@@ -199,6 +202,15 @@ class SynthesisStreamTests(unittest.TestCase):
             self.assertEqual(engine.calls[-1][1], 1.2)
             self.assertGreaterEqual(len(list(cache.glob("*.wav"))), 2)
 
+    def test_cache_is_pruned_at_start_and_end_not_after_every_chunk(self):
+        text = "\n\n".join(f"Paragraph number {index}." for index in range(12))
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(tts_engine, "prune_audio_cache", wraps=tts_engine.prune_audio_cache) as prune:
+            chunks = read_all(SynthesisStream(FakeEngine(), make_plan(text, separate_paragraphs=True),
+                                              cache_dir=Path(temp)))
+        self.assertEqual(len(chunks), 12)
+        self.assertEqual(prune.call_count, 2)
+
     def test_corrupt_cache_is_removed_and_regenerated(self):
         plan = make_plan("One sentence.")
         engine = FakeEngine()
@@ -281,16 +293,52 @@ class PiperProfileTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            engine = self._engine(root, "en_US-john-medium", "more")
+            with patch.dict(tts_engine.PINNED_PIPER_VOICES, clear=True):
+                engine = self._engine(root, "en_US-john-medium", "more")
+                default = self._engine(root, "en_US-ryan-medium", "voice_default")
             engine._get_worker = lambda cancel_event: FakeClient()
             engine.synthesize_to_wav("Hello.", 1.0, root / "out.wav", threading.Event(), 5)
             self.assertEqual(sent["noise_scales"], (0.75, 0.85))
             self.assertEqual(sent["sentence_pause_ms"], 230)
             # Changing a profile value must not reuse audio made with the old one.
             self.assertIn("noise=(0.75, 0.85)", engine.cache_identity)
-            default = self._engine(root, "en_US-ryan-medium", "voice_default")
             self.assertIsNone(default.noise_scales)
             self.assertIn("sentence_pause_ms=200", default.cache_identity)
+
+
+class VoiceIntegrityTests(unittest.TestCase):
+    def _write_voice(self, root, voice, model=b"model placeholder"):
+        model_path = root / f"{voice}.onnx"
+        model_path.write_bytes(model)
+        (root / f"{voice}.onnx.json").write_text(json.dumps({"audio": {"sample_rate": 22050}}), encoding="utf-8")
+        return model_path
+
+    def test_a_bundled_voice_id_with_different_files_is_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            model = self._write_voice(Path(temp), "en_US-ryan-medium")
+            with self.assertRaisesRegex(TtsError, "does not match its published checksum"):
+                PiperEngine(model)
+
+    def test_user_installed_voices_are_allowed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            engine = PiperEngine(self._write_voice(Path(temp), "en_GB-custom-medium"))
+            self.assertEqual(engine.capabilities.voice, "en_GB-custom-medium")
+
+    def test_installed_bundled_voices_match_their_pins(self):
+        models = Path(__file__).resolve().parents[1] / "models" / "piper"
+        installed = [voice for voice in tts_engine.PINNED_PIPER_VOICES if (models / f"{voice}.onnx").is_file()]
+        if not installed:
+            self.skipTest("no bundled Piper voices are installed")
+        for voice in installed:
+            with self.subTest(voice=voice):
+                PiperEngine(models / f"{voice}.onnx")
+
+    def test_voice_names_cannot_leave_the_model_directory(self):
+        for good in ("en_US-ryan-medium", "af_sarah"):
+            self.assertEqual(validate_voice_name(good), good)
+        for bad in ("../secret", "en_US/../../x", "voice.onnx", "", "-flag", "a" * 200, "C:\\x"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_voice_name(bad)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from benchmark import BENCHMARK_PASSAGES, make_benchmark_document
 from narration import build_narration_plan
-from tts_engine import PiperEngine, SynthesisStream
+from tts_engine import PiperEngine, SynthesisStream, validate_voice_name
 
 
 VARIATIONS = ("voice_default", "less", "more")
@@ -105,7 +105,7 @@ def create_listening_pack(
 ) -> dict[str, object]:
     if repeats < 1:
         raise ValueError("repeats must be at least one")
-    model_path = models_dir / f"{voice}.onnx"
+    model_path = models_dir / f"{validate_voice_name(voice)}.onnx"
     config_path = model_path.with_suffix(model_path.suffix + ".json")
     if not model_path.is_file() or not config_path.is_file():
         raise FileNotFoundError(f"Piper model and config must exist for voice {voice!r} in {models_dir}")

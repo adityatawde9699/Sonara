@@ -183,6 +183,27 @@ class OcrTests(unittest.TestCase):
                 self.assertEqual(doc.notes[0].page, 2)
                 self.assertIn("Page 2 yielded no recognizable text", doc.notes[0].message)
 
+    def test_low_confidence_page_is_flagged(self):
+        blurry = "\n".join(
+            line.replace("\t95\t", "\t30\t").replace("\t96\t", "\t41\t").replace("\t94\t", "\t20\t")
+            .replace("\t92\t", "\t55\t").replace("\t93\t", "\t40\t").replace("\t91\t", "\t35\t").replace("\t90\t", "\t50\t")
+            for line in MOCK_TSV_OUTPUT.splitlines()
+        )
+        self.assertAlmostEqual(ocr.tsv_mean_confidence(MOCK_TSV_OUTPUT), 93.0)
+        self.assertAlmostEqual(ocr.tsv_mean_confidence(blurry), 271 / 7)
+        self.assertIsNone(ocr.tsv_mean_confidence(MOCK_TSV_OUTPUT.splitlines()[0]))
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "scan.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n%EOF\n")
+            with (
+                patch("ocr.is_tesseract_available", return_value=True),
+                patch("ocr.render_pdf_page_to_png", side_effect=lambda p, num, prefix, **kw: Path(tmp) / f"page_{num}.png"),
+                patch("ocr.run_tesseract_tsv", side_effect=[MOCK_TSV_OUTPUT, blurry]),
+            ):
+                doc = extract_scanned_pdf(pdf_path, use_cache=False, page_sizes=[(612.0, 792.0)] * 2)
+        self.assertEqual([(note.code, note.page) for note in doc.notes], [("ocr_low_confidence", 2)])
+        self.assertIn("confidence 39%", doc.notes[0].message)
+
 
 class OcrResourceBoundsTests(unittest.TestCase):
     def _pdf(self, tmp: str) -> Path:

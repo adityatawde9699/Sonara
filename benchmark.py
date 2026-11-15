@@ -17,7 +17,7 @@ from typing import Any
 
 from document import Document, DocumentBlock, SourceBox, SCHEMA_VERSION
 from narration import build_narration_plan
-from tts_engine import PiperEngine, SynthesisStream
+from tts_engine import PiperEngine, SynthesisStream, validate_voice_name
 
 try:
     import resource
@@ -134,7 +134,7 @@ def benchmark_voice(
     models_dir: Path,
     trials_per_passage: int = 3,
 ) -> dict[str, Any]:
-    model_path = models_dir / f"{voice}.onnx"
+    model_path = models_dir / f"{validate_voice_name(voice)}.onnx"
     config_path = model_path.with_suffix(model_path.suffix + ".json")
     if not model_path.is_file():
         raise FileNotFoundError(f"Model file not found: {model_path}")

@@ -24,6 +24,44 @@ from audio_processing import AUDIO_FINISH_VERSION, finish_wav
 from narration import NarrationPlan, NarrationUnit, VoiceProfile, voice_profile
 
 
+# SHA-256 of the bundled voices' model and config files, as published by
+# rhasspy/piper-voices (also listed in models/piper/README.md). A file with a
+# known voice id that does not match is corrupt or has been replaced, and is
+# refused. Other, user-installed voices are allowed and are identified in the
+# cache key by their own hashes.
+PINNED_PIPER_VOICES: dict[str, tuple[str, str]] = {
+    "en_US-ryan-medium": (
+        "abf4c274862564ed647ba0d2c47f8ee7c9b717d27bdad9219100eb310db4047a",
+        "44034c056cb15681b2ad494307c7f3f2e4499d1253c700c711fa0a4607ffe78d",
+    ),
+    "en_US-lessac-medium": (
+        "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f",
+        "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0",
+    ),
+    "en_US-bryce-medium": (
+        "dc9caa6c313199ffb5ac698b6e542fa6cba388aeaf2731e25262e33b9810aef1",
+        "7ceb1bc4af6d4e41b6d1edbb86c67e91e01eaa71f66db4cd0ae92ac704d415be",
+    ),
+    "en_US-john-medium": (
+        "789c6c875726e627ddee93d51d8727859abe9c091c3d141591f4b83c2072e988",
+        "af60f177b6b550f3d7a302720c0fb89e7f94a82b5dca464775ef63b1c69ba09a",
+    ),
+}
+
+# Voice ids name files under the model directory, so they may not contain
+# path separators, dots or anything else that could leave it.
+_VOICE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+
+
+def validate_voice_name(voice: str) -> str:
+    """Return ``voice`` if it is a plain voice id, otherwise raise ValueError."""
+    if not isinstance(voice, str) or not _VOICE_NAME.fullmatch(voice):
+        raise ValueError(
+            f"Invalid voice name {voice!r}: use letters, digits, '_' and '-' only (for example en_US-ryan-medium)."
+        )
+    return voice
+
+
 class TtsError(RuntimeError):
     """A recoverable engine, model, cache, or synthesis failure."""
 
@@ -150,10 +188,18 @@ class SynthesisStream:
             self.engine.end_stream(lease_token)
             raise
         self._lease_token = lease_token
+        # Cache keys hash every unit's text, so compute them once per stream.
+        self._cache_paths: dict[str, Path] = {}
+        self._protected: set[Path] = set()
+        # Pruning lists the whole cache directory, so do it at start, after
+        # every tenth of the budget (at least 8 MiB) of new audio, and at the end.
+        self._prune_every_bytes = max(8 * 1024 * 1024, cache_max_bytes // 10)
+        self._stored_since_prune = 0
         try:
             if self.cache_dir is not None:
-                protected = {self._cache_path(unit) for unit in self.plan.units}
-                prune_audio_cache(self.cache_dir, self.cache_max_bytes, protected=protected)
+                self._cache_paths = {unit.id: self._compute_cache_path(unit) for unit in self.plan.units}
+                self._protected = {path.resolve() for path in self._cache_paths.values()}
+                self._prune_cache()
         except BaseException:
             self._temporary.cleanup()
             self.engine.end_stream(self._lease_token)
@@ -270,6 +316,8 @@ class SynthesisStream:
                 )
                 if not self._put(chunk):
                     return
+            if self.cache_dir is not None and self._stored_since_prune:
+                self._prune_cache()
             self._put(_END)
         except BaseException as exc:
             if not self._cancel.is_set():
@@ -285,6 +333,15 @@ class SynthesisStream:
         return False
 
     def _cache_path(self, unit: NarrationUnit) -> Path:
+        path = self._cache_paths.get(unit.id)
+        return path if path is not None else self._compute_cache_path(unit)
+
+    def _prune_cache(self) -> None:
+        if self.cache_dir is not None:
+            prune_audio_cache(self.cache_dir, self.cache_max_bytes, protected=self._protected)
+        self._stored_since_prune = 0
+
+    def _compute_cache_path(self, unit: NarrationUnit) -> Path:
         cache_key_data = {
             "document_source_sha256": self.plan.document_source_sha256,
             "plan_schema": self.plan.schema_version,
@@ -331,9 +388,9 @@ class SynthesisStream:
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
-        if self.cache_dir is not None:
-            protected = {self._cache_path(item) for item in self.plan.units}
-            prune_audio_cache(self.cache_dir, self.cache_max_bytes, protected=protected)
+        self._stored_since_prune += destination.stat().st_size
+        if self._stored_since_prune >= self._prune_every_bytes:
+            self._prune_cache()
         return destination
 
 
@@ -450,11 +507,14 @@ class PiperEngine:
             device="CPU",
         )
         self.load_timeout_seconds = load_timeout_seconds
+        model_sha256 = _sha256_file(self.model_path)
+        config_sha256 = _sha256_file(self.config_path)
+        _verify_pinned_voice(self.model_path, model_sha256, config_sha256)
         self.cache_identity = ":".join((
             "piper",
             runtime_version,
-            _sha256_file(self.model_path),
-            _sha256_file(self.config_path),
+            model_sha256,
+            config_sha256,
             f"variation={self.variation}",
             f"noise={self.noise_scales}",
             f"sentence_pause_ms={self.profile.sentence_pause_ms}",
@@ -775,6 +835,20 @@ class _PiperWorkerClient:
                     pass
             if self._reader is not threading.current_thread():
                 self._reader.join(timeout=2)
+
+
+def _verify_pinned_voice(model_path: Path, model_sha256: str, config_sha256: str) -> None:
+    voice = model_path.name.removesuffix(".onnx")
+    pinned = PINNED_PIPER_VOICES.get(voice)
+    if pinned is None:
+        return
+    for kind, expected, actual in (("model", pinned[0], model_sha256), ("configuration", pinned[1], config_sha256)):
+        if actual != expected:
+            raise TtsError(
+                f"The {voice} voice {kind} file does not match its published checksum "
+                f"(expected {expected[:12]}…, found {actual[:12]}…). It may be corrupt or replaced; "
+                "reinstall the voice from rhasspy/piper-voices."
+            )
 
 
 def _sha256_file(path: Path) -> str:

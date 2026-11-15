@@ -1,6 +1,29 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import type { LibraryDocument } from "./lib/tauri";
+
+/** A minimal desktop bridge whose library holds `documents`. */
+function withDesktopLibrary(
+  documents: Array<Omit<LibraryDocument, "engine" | "available">>,
+  responses: Record<string, unknown> = {},
+) {
+  const library = documents.map((doc) => ({ engine: "Piper", available: true, ...doc }));
+  const invoke = vi.fn(async (command: string): Promise<unknown> => {
+    if (command in responses) return responses[command];
+    if (command === "list_library") return library;
+    if (command === "list_voices") return [];
+    return null;
+  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__TAURI__ = { core: { invoke }, event: { listen: vi.fn(async () => () => {}) } };
+  return invoke;
+}
+
+afterEach(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  delete (window as any).__TAURI__;
+});
 
 describe("Sonara workspace", () => {
   it("shows the honest first-run state and keeps desktop import disabled in browser preview", async () => {
@@ -24,23 +47,35 @@ describe("Sonara workspace", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Document History" })).not.toBeInTheDocument());
   });
 
-  it("labels recent files from their names instead of assuming every session is a PDF", () => {
-    localStorage.setItem("sonara_recent_documents", JSON.stringify([
+  it("labels recent files from their names instead of assuming every session is a PDF", async () => {
+    withDesktopLibrary([
       {
         sourceName: "Imported-notes.docx",
-        sourceSha256: "legacy-docx-session",
+        sourceSha256: "docx-session",
         voice: "en_US-ryan-medium",
         chunksCount: 12,
         totalDurationSeconds: 540,
         lastListenedAt: Date.now(),
       },
-    ]));
+    ]);
 
     render(<App />);
 
-    expect(screen.getByText("DOCX")).toBeInTheDocument();
+    expect(await screen.findByText("DOCX")).toBeInTheDocument();
     expect(screen.getByText("Imported-notes.docx")).toBeInTheDocument();
-    localStorage.removeItem("sonara_recent_documents");
+  });
+
+  it("reopens a library document by hash and returns home ready to prepare it", async () => {
+    const invoke = withDesktopLibrary(
+      [{ sourceName: "Field Notes.pdf", sourceSha256: "field-notes", voice: "voice", chunksCount: 8, totalDurationSeconds: 600, lastListenedAt: 1000 }],
+      { open_library_document: { displayName: "Field Notes.pdf" } },
+    );
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /My Library/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Listen again: Field Notes.pdf" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_library_document", { sourceSha256: "field-notes" }));
+    expect(await screen.findByText("Selected from your library · ready to prepare speech")).toBeInTheDocument();
   });
 
   it("opens settings and keyboard shortcuts from their visible controls", async () => {
@@ -54,15 +89,15 @@ describe("Sonara workspace", () => {
     expect(await screen.findByRole("dialog", { name: "Keyboard Shortcuts" })).toBeInTheDocument();
   });
 
-  it("searches recent documents and persists favorite filtering in the library", () => {
-    localStorage.setItem("sonara_recent_documents", JSON.stringify([
+  it("searches recent documents and persists favorite filtering in the library", async () => {
+    withDesktopLibrary([
       { sourceName: "Field Notes.pdf", sourceSha256: "field-notes", voice: "voice", chunksCount: 8, totalDurationSeconds: 600, lastListenedAt: 1000 },
       { sourceName: "Annual Review.docx", sourceSha256: "annual-review", voice: "voice", chunksCount: 12, totalDurationSeconds: 900, lastListenedAt: 2000 },
-    ]));
+    ]);
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: /My Library/ }));
-    expect(screen.getByText("Field Notes.pdf")).toBeInTheDocument();
+    expect(await screen.findByText("Field Notes.pdf")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "Search your library" }), { target: { value: "annual" } });
     expect(screen.getByText("Annual Review.docx")).toBeInTheDocument();
     expect(screen.queryByText("Field Notes.pdf")).not.toBeInTheDocument();
@@ -72,7 +107,6 @@ describe("Sonara workspace", () => {
     expect(screen.getByText("Field Notes.pdf")).toBeInTheDocument();
     expect(screen.queryByText("Annual Review.docx")).not.toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem("sonara_favorites") || "[]")).toContain("field-notes");
-    localStorage.removeItem("sonara_recent_documents");
     localStorage.removeItem("sonara_favorites");
   });
 

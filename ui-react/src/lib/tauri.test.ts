@@ -10,6 +10,10 @@ import {
   saveProgress,
   onSynthesisFinished,
   onSynthesisProgress,
+  listLibrary,
+  openLibraryDocument,
+  removeLibraryDocument,
+  clearLibrary,
 } from "./tauri";
 
 describe("Tauri bindings", () => {
@@ -40,6 +44,23 @@ describe("Tauri bindings", () => {
     const result = await pickDocument();
     expect(mockInvoke).toHaveBeenCalledWith("pick_document", undefined);
     expect(result).toEqual({ displayName: "report.docx" });
+  });
+
+  it("names library documents by hash only", async () => {
+    const mockInvoke = vi.fn().mockResolvedValue(undefined);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__TAURI__ = { core: { invoke: mockInvoke }, event: { listen: vi.fn() } };
+    const sha = "ab".repeat(32);
+    await listLibrary();
+    await openLibraryDocument(sha);
+    await removeLibraryDocument(sha);
+    await clearLibrary();
+    expect(mockInvoke.mock.calls).toEqual([
+      ["list_library", undefined],
+      ["open_library_document", { sourceSha256: sha }],
+      ["remove_library_document", { sourceSha256: sha }],
+      ["clear_library", undefined],
+    ]);
   });
 
   it("supports startReading, cancelReading, currentSession, loadProgress, saveProgress, listVoices", async () => {
@@ -171,7 +192,6 @@ describe("Tauri bindings", () => {
       llmTestConnection,
       llmChat,
       llmSummarize,
-      llmEnhanceScript,
       getDocumentText,
     } = await import("./tauri");
 
@@ -197,7 +217,6 @@ describe("Tauri bindings", () => {
       if (cmd === "llm_test_connection") return Promise.resolve({ ok: true, latencyMs: 30 });
       if (cmd === "llm_chat") return Promise.resolve({ ok: true, answer: "Answer for " + args?.question });
       if (cmd === "llm_summarize") return Promise.resolve({ ok: true, summary: "Summary of document" });
-      if (cmd === "llm_enhance_script") return Promise.resolve({ ok: true, enhancement: { spokenText: "Spoken", notes: [], suggestedOverrides: [] } });
       if (cmd === "get_document_text") return Promise.resolve("Full document text here");
       return Promise.reject(new Error(`Unknown cmd: ${cmd}`));
     });
@@ -219,10 +238,6 @@ describe("Tauri bindings", () => {
     const sumRes = await llmSummarize(loadedCfg, "doc text", "summary");
     expect(sumRes.ok).toBe(true);
     expect(sumRes.summary).toBe("Summary of document");
-
-    const enhRes = await llmEnhanceScript(loadedCfg, "raw text");
-    expect(enhRes.ok).toBe(true);
-    expect(enhRes.enhancement?.spokenText).toBe("Spoken");
 
     const docText = await getDocumentText();
     expect(docText).toBe("Full document text here");

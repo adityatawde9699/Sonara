@@ -8,7 +8,6 @@ interface Props {
   errorText: string;
   disabled: boolean;
   selectedVoiceName?: string;
-  isPolishEnabled?: boolean;
   onOpenSettings?: () => void;
   onOpenAssistant?: () => void;
   onChoose: () => void;
@@ -25,7 +24,6 @@ export const DocumentCard: FC<Props> = ({
   errorText,
   disabled,
   selectedVoiceName,
-  isPolishEnabled,
   onOpenSettings,
   onOpenAssistant,
   onChoose,
@@ -70,12 +68,6 @@ export const DocumentCard: FC<Props> = ({
                   Change
                 </button>
               )}
-            </div>
-          )}
-          {isPolishEnabled && (
-            <div className="card-ai-badge" title="AI Narration Polish can clean extraction artifacts and suggest pronunciations">
-              <span className="ai-spark" aria-hidden="true">AI</span>
-              <span>AI Polish Active</span>
             </div>
           )}
         </div>

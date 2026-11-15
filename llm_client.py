@@ -687,52 +687,6 @@ def summarize_document(
     return chat_completion(config, messages, max_tokens=token_budget)
 
 
-def enhance_narration_script(
-    config: LlmConfig,
-    raw_text: str,
-) -> dict[str, Any]:
-    """Polish raw PDF/OCR text into natural, spoken prose and suggest pronunciation overrides."""
-    prompt = (
-        "You are an expert audio narration editor. Polish the following raw document passage "
-        "into natural spoken English suitable for TTS narration. "
-        "Rules:\n"
-        "1. Remove raw PDF artifacts (running headers, broken line wraps, footnote indices).\n"
-        "2. Spell out or expand abbreviations and equations for natural listening.\n"
-        "3. Keep the original wording and meaning accurate — do not summarize.\n"
-        "4. If there are proper names or loanwords that an English reader might mispronounce, "
-        "provide phonetic substitutions in suggested_overrides.\n\n"
-        "Respond ONLY with a JSON object in this exact format:\n"
-        "{\n"
-        '  "spoken_text": "polished text ready for speech",\n'
-        '  "notes": ["short note of changes made"],\n'
-        '  "suggested_overrides": [{"source": "Word", "spoken": "PhoneticSpelling"}]\n'
-        "}\n\n"
-        f"Text to polish:\n{raw_text[:4000]}"
-    )
-
-    messages = [
-        {"role": "system", "content": "You are a professional audio narration script editor. Output only valid JSON."},
-        {"role": "user", "content": prompt},
-    ]
-
-    raw_response = chat_completion(config, messages, max_tokens=1500)
-    # Extract JSON block if surrounded by markdown code fences
-    cleaned = raw_response.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
-        if cleaned.endswith("```"):
-            cleaned = cleaned.rsplit("```", 1)[0]
-    cleaned = cleaned.strip()
-
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        return {
-            "spoken_text": raw_text,
-            "notes": ["LLM returned non-JSON output; using original text"],
-            "suggested_overrides": [],
-        }
-
 
 # Rust caps RPC responses at 16 MiB; refuse larger text files before reading them.
 MAX_DOCUMENT_TEXT_BYTES = 16 * 1024 * 1024
@@ -810,11 +764,6 @@ def rpc_handler(request: dict[str, Any]) -> dict[str, Any]:
         mode = str(request.get("mode", "summary"))
         summary = summarize_document(config, text, mode)
         return {"ok": True, "summary": summary}
-
-    if action == "enhance_narration":
-        text = str(request.get("text", ""))
-        enhancement = enhance_narration_script(config, text)
-        return {"ok": True, "enhancement": enhancement}
 
     if action == "get_document_text":
         path = str(request.get("path", ""))

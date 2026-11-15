@@ -25,6 +25,8 @@ describe("HistoryDrawer component", () => {
         chunksCount: 8,
         totalDurationSeconds: 125,
         lastListenedAt: Date.now() - 5000,
+        engine: "Piper",
+        available: true,
       },
     ];
 
@@ -53,6 +55,8 @@ describe("HistoryDrawer component", () => {
         chunksCount: 8,
         totalDurationSeconds: 125,
         lastListenedAt: Date.now(),
+        engine: "Piper",
+        available: true,
       },
     ];
 
@@ -67,5 +71,29 @@ describe("HistoryDrawer component", () => {
 
     fireEvent.click(screen.getByText("Clear history"));
     expect(onClearHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens available documents and disables ones whose file is gone", () => {
+    const onOpenDocument = vi.fn();
+    const base = { voice: "v", engine: "Piper", chunksCount: 1, totalDurationSeconds: 10, lastListenedAt: Date.now() };
+    render(
+      <HistoryDrawer
+        isOpen={true}
+        onClose={vi.fn()}
+        onClearHistory={vi.fn()}
+        onOpenDocument={onOpenDocument}
+        currentSha256="current"
+        recentDocs={[
+          { ...base, sourceName: "now.pdf", sourceSha256: "current", available: true },
+          { ...base, sourceName: "old.txt", sourceSha256: "old", available: true },
+          { ...base, sourceName: "gone.md", sourceSha256: "gone", available: false },
+        ]}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Continue now.pdf" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open old.txt" }));
+    expect(onOpenDocument.mock.calls).toEqual([["current"], ["old"]]);
+    expect(screen.getByRole("button", { name: "Open gone.md" })).toBeDisabled();
+    expect(screen.getByText("File moved or deleted")).toBeInTheDocument();
   });
 });

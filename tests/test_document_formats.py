@@ -106,6 +106,23 @@ def create_minimal_epub(chapters: list[tuple[str, str]] = None) -> bytes:
     return buf.getvalue()
 
 
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def docx_from_xml(body: str, **parts: str) -> bytes:
+    """A DOCX whose document body (and optional word/<part>.xml files) are given as raw XML."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", f'<w:document xmlns:w="{W_NS}"><w:body>{body}</w:body></w:document>')
+        for name, xml in parts.items():
+            zf.writestr(f"word/{name}.xml", xml)
+    return buf.getvalue()
+
+
+def para(text: str, run_props: str = "") -> str:
+    return f"<w:p><w:r>{run_props}<w:t>{text}</w:t></w:r></w:p>"
+
+
 class DocumentFormatsTests(unittest.TestCase):
     def test_txt_extraction_utf8(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -241,6 +258,97 @@ class DocumentFormatsTests(unittest.TestCase):
             with patch("document.MAX_ARCHIVE_ENTRIES", 1):
                 with self.assertRaisesRegex(ValueError, "more than 1 entries"):
                     extract_docx_document(docx_path)
+
+
+class ParserGapTests(unittest.TestCase):
+    def _docx(self, data: bytes):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "doc.docx"
+            path.write_bytes(data)
+            return extract_docx_document(path)
+
+    def _epub(self, html: str):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "book.epub"
+            path.write_bytes(create_minimal_epub([("ch1.xhtml", html)]))
+            return extract_epub_document(path)
+
+    def _txt(self, text: str, name: str = "notes.txt"):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / name
+            path.write_text(text, encoding="utf-8")
+            return extract_txt_document(path)
+
+    def test_docx_content_controls_are_read_and_hidden_text_is_not(self):
+        body = (
+            para("Before.")
+            + f"<w:sdt><w:sdtContent>{para('Inside a content control.')}</w:sdtContent></w:sdt>"
+            + para("Secret note.", "<w:rPr><w:vanish/></w:rPr>")
+            + para("Shown despite vanish off.", '<w:rPr><w:vanish w:val="0"/></w:rPr>')
+        )
+        doc = self._docx(docx_from_xml(body))
+        self.assertEqual([block.text for block in doc.blocks],
+                         ["Before.", "Inside a content control.", "Shown despite vanish off."])
+
+    def test_docx_footnotes_follow_the_body_without_separators(self):
+        footnotes = (
+            f'<w:footnotes xmlns:w="{W_NS}">'
+            f'<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:t>----</w:t></w:r></w:p></w:footnote>'
+            f'<w:footnote w:id="1">{para("A cited source.")}</w:footnote>'
+            "</w:footnotes>"
+        )
+        doc = self._docx(docx_from_xml(para("Body text."), footnotes=footnotes))
+        self.assertEqual([(block.text, block.kind) for block in doc.blocks],
+                         [("Body text.", "paragraph"), ("A cited source.", "footnote")])
+
+    def test_docx_nested_table_is_read_once(self):
+        inner = "<w:tbl><w:tr><w:tc>" + para("inner") + "</w:tc></w:tr></w:tbl>"
+        outer = "<w:tbl><w:tr><w:tc>" + para("outer") + inner + "</w:tc><w:tc>" + para("next") + "</w:tc></w:tr></w:tbl>"
+        doc = self._docx(docx_from_xml(outer))
+        self.assertEqual([block.text for block in doc.blocks], ["outer inner | next"])
+
+    def test_docx_entity_expansion_is_rejected(self):
+        bomb = (
+            '<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY a "aaaaaaaaaa">'
+            + "".join(f'<!ENTITY {chr(98 + i)} "{("&" + chr(97 + i) + ";") * 10}">' for i in range(8))
+            + f']><w:document xmlns:w="{W_NS}"><w:body><w:p><w:r><w:t>&i;</w:t></w:r></w:p></w:body></w:document>'
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("word/document.xml", bomb)
+        with self.assertRaisesRegex(ValueError, "Malformed DOCX XML"):
+            self._docx(buf.getvalue())
+
+    def test_epub_skips_scripts_styles_and_head_and_marks_footnotes(self):
+        html = (
+            "<style>p { color: red }</style><script>var secret = 1;</script>"
+            "<p>Real text.</p><p>Word<ruby>漢<rt>kan</rt></ruby>.</p>"
+            '<aside epub:type="footnote"><p>A note.</p></aside><p>After.</p>'
+        )
+        doc = self._epub(html)
+        self.assertEqual([(block.text, block.kind) for block in doc.blocks],
+                         [("Real text.", "paragraph"), ("Word漢.", "paragraph"), ("A note.", "footnote"), ("After.", "paragraph")])
+
+    def test_txt_headings_need_real_evidence(self):
+        doc = self._txt(
+            "INTRODUCTION\n\nRelated Work\n\n2.1 Method details\n\n"
+            "- Buy milk\n\nsee you soon\n\nRegards,\n\nA closing sentence."
+        )
+        self.assertEqual([(block.text, block.kind) for block in doc.blocks], [
+            ("INTRODUCTION", "heading"),
+            ("Related Work", "heading"),
+            ("2.1 Method details", "heading"),
+            ("- Buy milk", "list_item"),
+            ("see you soon", "paragraph"),
+            ("Regards,", "paragraph"),
+            ("A closing sentence.", "paragraph"),
+        ])
+
+    def test_markdown_setext_heading_and_extractor(self):
+        doc = self._txt("Title\n=====\n\nBody.", name="notes.md")
+        self.assertEqual(doc.blocks[0].kind, "heading")
+        self.assertEqual(doc.extractor, "Native Markdown reader")
+        self.assertEqual(self._txt("Body.").extractor, "Native TXT reader")
 
 
 if __name__ == "__main__":

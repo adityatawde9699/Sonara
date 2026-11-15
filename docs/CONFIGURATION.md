@@ -20,7 +20,8 @@ The shell also has CLI defaults and engine-specific flags. Run `.venv/bin/python
 - Piper model weights and adjacent `.onnx.json` files are read from the selected model directory. Sonara does not fetch missing voice weights automatically.
 - The current desktop synthesis outputs and versioned reading progress are stored under Tauri's per-user application data directory. Temporary synthesis working files are created by the worker and cleaned up along the normal lifecycle.
 - The CLI writes generated WAV chunks, a manifest, and an HTML player under `--output-dir`; the default cache directory is `.sonara-audio-cache` below the current working directory.
-- UI preferences and recent-document metadata are stored in WebView `localStorage`; the API key is intentionally blanked before LLM configuration is persisted. Treat recent metadata and local progress as local application data.
+- UI preferences and favorites are stored in WebView `localStorage`; the API key is intentionally blanked before LLM configuration is persisted.
+- The document library is `library.json` in the Tauri app-local data directory, beside `reader-output/` and progress. It records up to 50 prepared documents: name, hash, voice, duration, last-prepared time, and the document's absolute path, so the document can be reopened. The path stays in the backend and is never sent to the WebView. Clear history removes the file. Treat the library and local progress as local application data.
 
 ## AI providers
 

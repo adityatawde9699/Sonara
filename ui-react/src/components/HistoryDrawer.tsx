@@ -1,12 +1,16 @@
 import { type FC } from "react";
 import { useModalDialog } from "../hooks/useModalDialog";
-import type { RecentDocument } from "../lib/history";
+import type { LibraryDocument } from "../lib/tauri";
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  recentDocs: RecentDocument[];
+  recentDocs: LibraryDocument[];
   onClearHistory: () => void;
+  /** Reopen a document; omitted, rows are informational only. */
+  onOpenDocument?: (sourceSha256: string) => void;
+  /** The document currently loaded in the player. */
+  currentSha256?: string;
 }
 
 function formatClock(seconds: number): string {
@@ -32,6 +36,8 @@ export const HistoryDrawer: FC<Props> = ({
   onClose,
   recentDocs,
   onClearHistory,
+  onOpenDocument,
+  currentSha256,
 }) => {
   const dialogRef = useModalDialog<HTMLDivElement>(isOpen, onClose);
 
@@ -124,7 +130,21 @@ export const HistoryDrawer: FC<Props> = ({
                     <span>·</span>
                     <span>{formatRelativeTime(doc.lastListenedAt)}</span>
                   </div>
+                  {!doc.available && (
+                    <span className="history-unavailable">File moved or deleted</span>
+                  )}
                 </div>
+                {onOpenDocument && (
+                  <button
+                    type="button"
+                    className="button button-secondary history-open"
+                    onClick={() => onOpenDocument(doc.sourceSha256)}
+                    disabled={!doc.available && doc.sourceSha256 !== currentSha256}
+                    aria-label={`${doc.sourceSha256 === currentSha256 ? "Continue" : "Open"} ${doc.sourceName}`}
+                  >
+                    {doc.sourceSha256 === currentSha256 ? "Continue" : "Open"}
+                  </button>
+                )}
               </div>
             ))}
           </div>

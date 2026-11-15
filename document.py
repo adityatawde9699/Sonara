@@ -347,6 +347,43 @@ def _validate_zip_entry_count(archive: zipfile.ZipFile) -> list[str]:
     return names
 
 
+MARKDOWN_EXTRACTOR = "Native Markdown reader"
+MARKDOWN_SUFFIXES = (".md", ".markdown")
+_TXT_LIST_MARKER = re.compile(r"^(?:[-*+•●▪]|\d{1,3}[.)])\s+")
+_SETEXT_HEADING = re.compile(r"^[^\n]{1,120}\n(?:=+|-+)[ \t]*$")
+_NUMBERED_HEADING = re.compile(r"^(?:(?:chapter|part|section|appendix)\s+\w+|\d+(?:\.\d+)*\.?\s+\S)", re.IGNORECASE)
+_SMALL_TITLE_WORDS = frozenset("a an and as at but by for from in into nor of on or per the to vs via with".split())
+
+
+def _looks_like_title(line: str) -> bool:
+    """Short title-cased or all-caps line: "Results", "Related Work", "INTRODUCTION"."""
+    words = re.findall(r"[^\W\d_][\w'’-]*", line)
+    if not words or len(words) > 12:
+        return False
+    if line.isupper():
+        return True
+    significant = [word for word in words if word.casefold() not in _SMALL_TITLE_WORDS or word is words[0]]
+    return all(word[:1].isupper() for word in significant)
+
+
+def _classify_text_paragraph(para: str) -> tuple[str, str]:
+    """Label a plain-text/Markdown paragraph from explicit markup or strong evidence only."""
+    if re.match(r"^#{1,6}\s+\S", para):
+        return "heading", "txt_markdown_heading"
+    if _SETEXT_HEADING.match(para):
+        return "heading", "txt_setext_heading"
+    # List markers come before the heading check: "- Buy milk" is not a title.
+    if _TXT_LIST_MARKER.match(para):
+        return "list_item", "txt_list_marker"
+    if para.startswith(("> ", "\"", "“", "‘")):
+        return "quote", "txt_quote_delimiter"
+    single_line = "\n" not in para and len(para) <= 80
+    if single_line and not para.rstrip().endswith((".", "!", "?", ",", ";", ":", "…")):
+        if _NUMBERED_HEADING.match(para) or _looks_like_title(para):
+            return "heading", "txt_heading_heuristic"
+    return "paragraph", "txt_paragraph"
+
+
 def extract_txt_document(txt_path: Path) -> Document:
     """Extract plain text or markdown files into schema-v1 Document blocks."""
     if not txt_path.is_file():
@@ -372,27 +409,15 @@ def extract_txt_document(txt_path: Path) -> Document:
     if not raw_paragraphs:
         raise ValueError(f"No readable text was found in text file: {txt_path.name}")
 
-    blocks_data: list[tuple[str, str, str]] = []
-    for para in raw_paragraphs:
-        kind = "paragraph"
-        kind_source = "txt_paragraph"
-        if re.match(r"^#{1,6}\s+", para) or (len(para) <= 80 and not para.endswith((".", "!", "?")) and "\n" not in para):
-            kind = "heading"
-            kind_source = "txt_heading_heuristic"
-        elif re.match(r"^(?:[-*•●▪]|\d{1,3}[.)])\s+", para):
-            kind = "list_item"
-            kind_source = "txt_list_marker"
-        elif para.startswith(("> ", "\"", "“", "‘")):
-            kind = "quote"
-            kind_source = "txt_quote_delimiter"
-        blocks_data.append((para, kind, kind_source))
+    blocks_data = [(para, *_classify_text_paragraph(para)) for para in raw_paragraphs]
 
     source_sha256 = compute_file_sha256(txt_path)
     return _build_virtual_paged_document(
         blocks_data=blocks_data,
         source_name=txt_path.name,
         source_sha256=source_sha256,
-        extractor="Native TXT reader",
+        # Narration strips Markdown markup from spoken text for this extractor.
+        extractor=MARKDOWN_EXTRACTOR if txt_path.suffix.lower() in MARKDOWN_SUFFIXES else "Native TXT reader",
         extractor_version="1.0",
     )
 
@@ -406,70 +431,40 @@ def extract_docx_document(docx_path: Path) -> Document:
     if not zipfile.is_zipfile(docx_path):
         raise ValueError(f"File is not a valid DOCX zip archive: {docx_path.name}")
 
+    notes_xml: dict[str, bytes] = {}
     try:
         with zipfile.ZipFile(docx_path, "r") as zf:
             names = _validate_zip_entry_count(zf)
             if "word/document.xml" not in names:
                 raise ValueError("Invalid DOCX archive: missing word/document.xml")
             xml_bytes = _read_bounded_zip_member(zf, "word/document.xml")
+            total_read = len(xml_bytes)
+            for part in ("footnotes", "endnotes"):
+                member = f"word/{part}.xml"
+                if member in names:
+                    notes_xml[part] = _read_bounded_zip_member(zf, member, total_read=total_read)
+                    total_read += len(notes_xml[part])
     except (zipfile.BadZipFile, KeyError, OSError) as exc:
         raise ValueError(f"Could not read DOCX archive: {exc}") from exc
 
-    try:
-        root = ElementTree.fromstring(xml_bytes)
-    except ElementTree.ParseError as exc:
-        raise ValueError(f"Malformed DOCX XML: {exc}") from exc
-
-    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    body = root.find("w:body", ns)
+    root = _parse_docx_xml(xml_bytes, "word/document.xml")
+    body = root.find(f"{_W}body")
     if body is None:
         raise ValueError("Invalid DOCX structure: missing w:body element")
 
     blocks_data: list[tuple[str, str, str]] = []
-    for elem in body:
-        tag = elem.tag.rsplit("}", 1)[-1]
-        if tag == "p":
-            text_parts: list[str] = []
-            for child in elem.iter():
-                ctag = child.tag.rsplit("}", 1)[-1]
-                if ctag == "t" and child.text:
-                    text_parts.append(child.text)
-                elif ctag == "tab":
-                    text_parts.append("\t")
-                elif ctag == "br":
-                    text_parts.append("\n")
-            text = "".join(text_parts).strip()
-            if not text:
+    _collect_docx_blocks(body, blocks_data)
+    # Footnotes and endnotes follow the body, in note order. Headers and
+    # footers are page furniture repeated on every page and are not read.
+    for part, label in (("footnotes", "footnote"), ("endnotes", "endnote")):
+        if part not in notes_xml:
+            continue
+        for note in _parse_docx_xml(notes_xml[part], f"word/{part}.xml"):
+            if note.tag != f"{_W}{label}" or note.get(f"{_W}type") in {"separator", "continuationSeparator", "continuationNotice"}:
                 continue
-
-            kind = "paragraph"
-            kind_source = "docx_paragraph"
-            p_style = elem.find(".//w:pStyle", ns)
-            if p_style is not None:
-                val = p_style.attrib.get(f"{{{ns['w']}}}val", p_style.attrib.get("val", "")).lower()
-                if "heading" in val or "title" in val:
-                    kind = "heading"
-                    kind_source = "docx_heading_style"
-            if kind == "paragraph":
-                num_pr = elem.find(".//w:numPr", ns)
-                if num_pr is not None:
-                    kind = "list_item"
-                    kind_source = "docx_list_style"
-            blocks_data.append((text, kind, kind_source))
-        elif tag == "tbl":
-            # Extract table cells preserving sequential rows
-            for row in elem.findall("w:tr", ns):
-                cells_text: list[str] = []
-                for cell in row.findall("w:tc", ns):
-                    cell_text_parts: list[str] = []
-                    for t in cell.findall(".//w:t", ns):
-                        if t.text:
-                            cell_text_parts.append(t.text)
-                    cell_text = " ".join(cell_text_parts).strip()
-                    if cell_text:
-                        cells_text.append(cell_text)
-                if cells_text:
-                    blocks_data.append((" | ".join(cells_text), "paragraph", "docx_table_row"))
+            note_blocks: list[tuple[str, str, str]] = []
+            _collect_docx_blocks(note, note_blocks)
+            blocks_data.extend((text, "footnote", f"docx_{label}") for text, _, _ in note_blocks)
 
     if not blocks_data:
         raise ValueError(f"No readable text was found in DOCX file: {docx_path.name}")
@@ -484,29 +479,118 @@ def extract_docx_document(docx_path: Path) -> Document:
     )
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+# Containers whose children are ordinary body content: content controls,
+# custom XML, and tracked insertions/moves.
+_DOCX_TRANSPARENT = {f"{_W}sdt", f"{_W}sdtContent", f"{_W}customXml", f"{_W}ins", f"{_W}moveTo", f"{_W}smartTag"}
+
+
+def _parse_docx_xml(data: bytes, name: str) -> ElementTree.Element:
+    # ElementTree never fetches external entities, and the bundled expat
+    # (2.4+) rejects entity-expansion ("billion laughs") documents.
+    try:
+        return ElementTree.fromstring(data)
+    except ElementTree.ParseError as exc:
+        raise ValueError(f"Malformed DOCX XML in {name}: {exc}") from exc
+
+
+def _docx_run_hidden(run: ElementTree.Element) -> bool:
+    vanish = run.find(f"{_W}rPr/{_W}vanish")
+    return vanish is not None and vanish.get(f"{_W}val", "true").lower() not in {"0", "false", "off"}
+
+
+def _docx_paragraph_text(paragraph: ElementTree.Element) -> str:
+    parts: list[str] = []
+    for run in paragraph.iter(f"{_W}r"):
+        if _docx_run_hidden(run):
+            continue
+        for child in run:
+            if child.tag == f"{_W}t" and child.text:
+                parts.append(child.text)
+            elif child.tag == f"{_W}tab":
+                parts.append("\t")
+            elif child.tag in {f"{_W}br", f"{_W}cr"}:
+                parts.append("\n")
+    return "".join(parts).strip()
+
+
+def _collect_docx_blocks(container: ElementTree.Element, blocks: list[tuple[str, str, str]]) -> None:
+    for elem in container:
+        if elem.tag in _DOCX_TRANSPARENT:
+            _collect_docx_blocks(elem, blocks)
+        elif elem.tag == f"{_W}p":
+            text = _docx_paragraph_text(elem)
+            if not text:
+                continue
+            kind, kind_source = "paragraph", "docx_paragraph"
+            style = elem.find(f"{_W}pPr/{_W}pStyle")
+            style_name = (style.get(f"{_W}val", "") if style is not None else "").lower()
+            if "heading" in style_name or "title" in style_name:
+                kind, kind_source = "heading", "docx_heading_style"
+            elif elem.find(f"{_W}pPr/{_W}numPr") is not None:
+                kind, kind_source = "list_item", "docx_list_style"
+            blocks.append((text, kind, kind_source))
+        elif elem.tag == f"{_W}tbl":
+            # Direct rows only: a nested table is read as part of its cell.
+            for row in elem.findall(f"{_W}tr"):
+                cells = []
+                for cell in row.findall(f"{_W}tc"):
+                    paragraphs = [_docx_paragraph_text(p) for p in cell.iter(f"{_W}p")]
+                    cell_text = " ".join(text for text in paragraphs if text)
+                    if cell_text:
+                        cells.append(cell_text)
+                if cells:
+                    blocks.append((" | ".join(cells), "paragraph", "docx_table_row"))
+
+
 class _EpubHtmlExtractor(HTMLParser):
     """Robust HTML text parser for EPUB chapter documents."""
+
+    _BLOCK_TAGS = ("p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "div", "section", "article", "aside")
+    # Never narrated: code, styling, metadata, and ruby pronunciation glosses.
+    _SKIPPED_TAGS = ("script", "style", "head", "template", "noscript", "rt", "rp")
+    _NOTE_TYPES = {"footnote", "endnote", "rearnote", "note"}
 
     def __init__(self) -> None:
         super().__init__()
         self.blocks: list[tuple[str, str, str]] = []
         self._current_text: list[str] = []
         self._current_tag: str | None = None
+        self._skip_depth = 0
+        self._note_depth = 0
+        self._open_notes: list[bool] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_lower = tag.lower()
-        if tag_lower in ("p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "div", "section", "article"):
+        if tag_lower in self._SKIPPED_TAGS:
+            self._skip_depth += 1
+            return
+        if tag_lower in self._BLOCK_TAGS:
             self._flush_current()
             self._current_tag = tag_lower
+            types = set(" ".join(value or "" for name, value in attrs if name in {"epub:type", "role"}).replace("doc-", "").split())
+            is_note = bool(types & self._NOTE_TYPES)
+            self._open_notes.append(is_note)
+            self._note_depth += is_note
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # Self-closing tags (<br/>, <img/>) carry no text and open no element.
+        if tag.lower() in self._BLOCK_TAGS:
+            self._flush_current()
 
     def handle_endtag(self, tag: str) -> None:
         tag_lower = tag.lower()
-        if tag_lower in ("p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "div", "section", "article"):
+        if tag_lower in self._SKIPPED_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if tag_lower in self._BLOCK_TAGS:
             self._flush_current()
             self._current_tag = None
+            if self._open_notes:
+                self._note_depth -= self._open_notes.pop()
 
     def handle_data(self, data: str) -> None:
-        if data:
+        if data and not self._skip_depth:
             self._current_text.append(data)
 
     def _flush_current(self) -> None:
@@ -515,7 +599,10 @@ class _EpubHtmlExtractor(HTMLParser):
         if not full_text:
             return
         tag = self._current_tag or "p"
-        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+        if self._note_depth:
+            kind = "footnote"
+            kind_source = "epub_footnote"
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             kind = "heading"
             kind_source = f"epub_{tag}"
         elif tag == "li":

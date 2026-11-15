@@ -9,6 +9,20 @@ export interface SelectedDocument {
   displayName: string;
 }
 
+/** A prepared document, as recorded by the desktop library. */
+export interface LibraryDocument {
+  sourceSha256: string;
+  sourceName: string;
+  voice: string;
+  engine: string;
+  chunksCount: number;
+  totalDurationSeconds: number;
+  /** Unix time in milliseconds. */
+  lastListenedAt: number;
+  /** False when the source file has been moved or deleted. */
+  available: boolean;
+}
+
 export interface FrontendChunk {
   durationSeconds: number;
   pauseAfterMs: number;
@@ -116,6 +130,23 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 
 export async function pickDocument(): Promise<SelectedDocument | null> {
   return invoke<SelectedDocument | null>("pick_document");
+}
+
+export async function listLibrary(): Promise<LibraryDocument[]> {
+  return invoke<LibraryDocument[]>("list_library");
+}
+
+/** Select a library document for narration; the backend supplies its path. */
+export async function openLibraryDocument(sourceSha256: string): Promise<SelectedDocument> {
+  return invoke<SelectedDocument>("open_library_document", { sourceSha256 });
+}
+
+export async function removeLibraryDocument(sourceSha256: string): Promise<void> {
+  return invoke<void>("remove_library_document", { sourceSha256 });
+}
+
+export async function clearLibrary(): Promise<void> {
+  return invoke<void>("clear_library");
 }
 
 export async function currentSession(): Promise<FrontendSession | null> {
@@ -234,22 +265,6 @@ export interface LlmSummarizeResult {
   error?: string;
 }
 
-export interface PronunciationOverrideSuggestion {
-  source: string;
-  spoken: string;
-}
-
-export interface NarrationEnhancement {
-  spokenText: string;
-  notes: string[];
-  suggestedOverrides: PronunciationOverrideSuggestion[];
-}
-
-export interface LlmEnhanceResult {
-  ok: boolean;
-  enhancement?: NarrationEnhancement;
-  error?: string;
-}
 
 export const DEFAULT_LLM_CONFIG: LlmConfig = {
   provider: "ollama",
@@ -268,7 +283,6 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
 };
 
 export const LLM_STORAGE_KEY = "sonara-llm-config-v1";
-export const AI_NARRATION_POLISH_STORAGE_KEY = "sonara-ai-narration-polish-enabled";
 
 // The API key is never written to localStorage. It is kept only in memory for
 // the lifetime of the window so Settings and the Assistant share one value.
@@ -329,13 +343,6 @@ export async function llmSummarize(
   mode?: "summary" | "takeaways" | "explain_passage"
 ): Promise<LlmSummarizeResult> {
   return invoke<LlmSummarizeResult>("llm_summarize", { config, text, mode });
-}
-
-export async function llmEnhanceScript(
-  config: LlmConfig,
-  text: string
-): Promise<LlmEnhanceResult> {
-  return invoke<LlmEnhanceResult>("llm_enhance_script", { config, text });
 }
 
 export async function getDocumentText(): Promise<string> {

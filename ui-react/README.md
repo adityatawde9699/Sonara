@@ -5,10 +5,12 @@ The React 19 + TypeScript interface for the Sonara Tauri app. It runs inside the
 ## Layout
 
 - `src/App.tsx`: page routing (home, library, reader, about) and app-level state.
-- `src/hooks/useSonara.ts`: the reading session, the audio player, and global keyboard shortcuts.
+- `src/hooks/useSonara.ts`: the document phase, synthesis events, library, dialogs, and global keyboard shortcuts. It composes:
+  - `src/hooks/useAudioPlayer.ts`: passage-by-passage playback, pauses between passages, seeking, speed, retry/skip, and progress saving.
+  - `src/hooks/useSpeechSettings.ts`: engine, voice, variation, and narration options, persisted per device.
 - `src/hooks/useModalDialog.ts`: shared dialog behaviour (focus trap, focus restore, topmost-only Escape).
 - `src/components/`: the player, reader, assistant, settings, history, and shortcuts UI, each with a `*.test.tsx` beside it.
-- `src/lib/`: the Tauri command wrapper and local history storage.
+- `src/lib/`: the typed Tauri command wrapper. The library itself is kept by the backend.
 
 ## Commands
 

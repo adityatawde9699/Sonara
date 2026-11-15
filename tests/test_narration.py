@@ -279,6 +279,37 @@ def spoken(text, **kwargs):
     return " ".join(unit.spoken_text for unit in plan.units)
 
 
+class TableRowTests(unittest.TestCase):
+    def test_cells_are_read_with_short_pauses_and_separator_rows_do_not_fail(self):
+        document = make_document(
+            ("paragraph", "docx_table_row", "Name | Score"),
+            ("paragraph", "docx_table_row", "| | |"),
+        )
+        plan = build_narration_plan(document)
+        self.assertEqual([unit.spoken_text for unit in plan.units], ["Name; Score", "| | |"])
+        self.assertEqual({unit.content_type for unit in plan.units}, {"table_row"})
+
+
+class MarkdownSpokenTextTests(unittest.TestCase):
+    def _plan(self, *blocks, extractor="Native Markdown reader"):
+        document = make_document(*blocks)
+        return build_narration_plan(Document(**{**document.__dict__, "extractor": extractor}))
+
+    def test_markup_is_removed_from_spoken_text_only(self):
+        source = "Use **bold**, `code` and [the docs](https://example.com) with **Dr. Smith**."
+        plan = self._plan(("heading", "txt_markdown_heading", "## Results ##"), ("paragraph", "txt_paragraph", source))
+        self.assertEqual([unit.spoken_text for unit in plan.units],
+                         ["Results.", "Use bold, code and the docs with Doctor Smith."])
+        self.assertEqual(plan.units[1].source_text, source)
+        self.assertIn("auto:markdown:link", {change.override_id for change in plan.units[1].applied_overrides})
+
+    def test_a_rule_line_keeps_a_silent_unit_and_plain_text_is_untouched(self):
+        plan = self._plan(("paragraph", "txt_paragraph", "---"), ("paragraph", "txt_paragraph", "snake_case and 2*3*4."))
+        self.assertEqual([unit.spoken_text for unit in plan.units], ["—", "snake_case and 2*3*4."])
+        txt = self._plan(("paragraph", "txt_paragraph", "Keep **stars** in .txt"), extractor="Native TXT reader")
+        self.assertEqual(txt.units[0].spoken_text, "Keep **stars** in .txt")
+
+
 class SpokenNormalizationTests(unittest.TestCase):
     """Each case is a reading the bundled espeak-ng front end gets wrong without the rule."""
 

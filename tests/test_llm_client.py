@@ -12,7 +12,6 @@ from llm_client import (
     test_connection,
     ask_document,
     summarize_document,
-    enhance_narration_script,
     rpc_handler,
     EmbeddedModelManager,
     _embedding,
@@ -234,27 +233,10 @@ class LlmClientTests(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["summary"], "Summary text here.")
 
-    @patch("llm_client._NO_REDIRECT_OPENER.open")
-    def test_enhance_narration_script_extracts_json(self, mock_urlopen):
-        mock_response = MagicMock()
-        mock_json_content = """```json
-{
-  "spoken_text": "Summer holidays! Uh-jee smiled.",
-  "notes": ["Replaced Ajji with phonetic spelling Uh-jee"],
-  "suggested_overrides": [{"source": "Ajji", "spoken": "Uh-jee"}]
-}
-```"""
-        mock_response.read.return_value = json.dumps({
-            "choices": [{"message": {"content": mock_json_content}}]
-        }).encode("utf-8")
-        mock_response.__enter__.return_value = mock_response
-        mock_urlopen.return_value = mock_response
-
-        cfg = LlmConfig(provider="openai", model="gpt-4o-mini", api_key="sk-test")
-        enhanced = enhance_narration_script(cfg, "Summer holidays! Ajji smiled.")
-        self.assertEqual(enhanced["spoken_text"], "Summer holidays! Uh-jee smiled.")
-        self.assertEqual(len(enhanced["suggested_overrides"]), 1)
-        self.assertEqual(enhanced["suggested_overrides"][0]["source"], "Ajji")
+    def test_removed_narration_rewrite_action_is_rejected(self):
+        # Narration is planned deterministically; the LLM never rewrites it.
+        res = rpc_handler({"action": "enhance_narration", "config": {"provider": "ollama"}, "text": "x"})
+        self.assertEqual(res, {"ok": False, "error": "Unknown LLM action: enhance_narration"})
 
     def test_extract_text_from_target_and_rpc(self):
         import tempfile

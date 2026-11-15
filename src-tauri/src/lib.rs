@@ -1,112 +1,40 @@
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{TcpListener, TcpStream};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt as WindowsCommandExt;
-use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::fs::{self, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
-const DEFAULT_FALLBACK_VOICE: &str = "en_US-ryan-medium";
-const MAX_ERROR_LOG_BYTES: u64 = 16 * 1024;
-const MAX_AUDIO_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024;
+mod audio_server;
+mod library;
+mod llm_rpc;
+mod pickers;
+mod runtime;
+mod session;
+mod voices;
+
+use audio_server::AudioServer;
+use library::{LibraryDocument, LIBRARY_FILE};
+use llm_rpc::{
+    invoke_llm_rpc, llm_test_connection_inner, shutdown_llm_worker, ChatMessageInput,
+    LlmChatResult, LlmConfigInput, LlmSummarizeResult, LlmTestResult, LlmWorker,
+};
+use pickers::{choose_document_path, choose_gguf_path};
+use runtime::{
+    configure_runtime_command, pdf_tool_args, resolve_runtime, spawn_sonara_worker,
+    stop_worker_tree, verify_installed_runtime, worker_failure_message, WorkerOptions,
+};
+use session::{
+    atomic_write_json, load_reader_session, load_saved_session, progress_path,
+    session_audio_lookup, validate_hash, validate_progress_shape, FrontendSession, Progress,
+    ReaderSession,
+};
+use voices::{discover_voices, VoiceInfo, DEFAULT_FALLBACK_VOICE};
+
 const SUPPORTED_DOCUMENT_EXTENSIONS: &[&str] = &["pdf", "txt", "text", "md", "docx", "epub"];
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceInfo {
-    pub id: String,
-    pub name: String,
-    pub quality: String,
-    pub language: String,
-    pub is_default: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LlmConfigInput {
-    pub provider: String,
-    pub endpoint: Option<String>,
-    pub model: Option<String>,
-    pub api_key: Option<String>,
-    pub temperature: Option<f64>,
-    pub max_tokens: Option<u32>,
-    pub embedding_model: Option<String>,
-    pub embedding_endpoint: Option<String>,
-    pub model_path: Option<String>,
-    pub model_directory: Option<String>,
-    pub context_size: Option<u32>,
-    pub threads: Option<u32>,
-    pub batch_size: Option<u32>,
-    pub idle_timeout_seconds: Option<u32>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatMessageInput {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct LlmTestResult {
-    pub ok: bool,
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub latency_ms: Option<u64>,
-    pub response: Option<String>,
-    pub error: Option<String>,
-    pub model_state: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct LlmChatResult {
-    pub ok: bool,
-    pub answer: Option<String>,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct LlmSummarizeResult {
-    pub ok: bool,
-    pub summary: Option<String>,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct PronunciationOverrideSuggestion {
-    pub source: String,
-    pub spoken: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct NarrationEnhancement {
-    pub spoken_text: String,
-    pub notes: Vec<String>,
-    pub suggested_overrides: Vec<PronunciationOverrideSuggestion>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LlmEnhanceResult {
-    pub ok: bool,
-    pub enhancement: Option<NarrationEnhancement>,
-    pub error: Option<String>,
-}
 
 #[derive(Default)]
 struct AppState {
@@ -118,222 +46,14 @@ struct AppState {
     /// is held for the whole of a request, so shutdown uses this one to kill a
     /// busy worker instead of waiting behind the in-flight call.
     llm_child: Mutex<Option<Arc<Mutex<Child>>>>,
-}
-
-/// Longest wait for one LLM worker reply. Embedded CPU inference on a large
-/// model can be slow; HTTP providers time out after 60 s inside the worker.
-const LLM_RPC_TIMEOUT: Duration = Duration::from_secs(300);
-const LLM_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
-const MAX_LLM_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
-
-enum LlmLine {
-    Line(Vec<u8>),
-    TooLarge,
-    ReadError(String),
-}
-
-struct LlmWorker {
-    child: Arc<Mutex<Child>>,
-    #[cfg_attr(not(test), allow(dead_code))]
-    pid: u32,
-    stdin: std::process::ChildStdin,
-    /// Lines read from the worker's stdout by a dedicated thread, so requests
-    /// can wait with a timeout instead of blocking forever.
-    lines: Receiver<LlmLine>,
-}
-
-impl LlmWorker {
-    fn kill(&self) {
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-fn spawn_llm_line_reader(stdout: std::process::ChildStdout) -> Receiver<LlmLine> {
-    let (sender, receiver) = mpsc::channel();
-    let spawned = thread::Builder::new()
-        .name("sonara-llm-stdout".to_owned())
-        .spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                let mut line = Vec::new();
-                let message = match (&mut reader)
-                    .take(MAX_LLM_RESPONSE_BYTES + 1)
-                    .read_until(b'\n', &mut line)
-                {
-                    Ok(0) => break, // EOF: dropping the sender signals the exit.
-                    Ok(read) if read as u64 > MAX_LLM_RESPONSE_BYTES => LlmLine::TooLarge,
-                    Ok(_) => LlmLine::Line(line),
-                    Err(error) => LlmLine::ReadError(error.to_string()),
-                };
-                let stop = !matches!(message, LlmLine::Line(_));
-                if sender.send(message).is_err() || stop {
-                    break;
-                }
-            }
-        });
-    if spawned.is_err() {
-        // Without a reader every request reports a disconnected worker.
-        let (_, receiver) = mpsc::channel();
-        return receiver;
-    }
-    receiver
-}
-
-struct AudioServer {
-    base_url: String,
-    stopped: Arc<AtomicBool>,
-    thread: Mutex<Option<thread::JoinHandle<()>>>,
+    /// Serializes read-modify-write updates of the library file.
+    library: Mutex<()>,
 }
 
 struct ActiveJob {
     id: String,
     child: Arc<Mutex<Child>>,
     cancelled: Arc<AtomicBool>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReaderChunk {
-    audio_file: String,
-    duration_seconds: f64,
-    pause_after_ms: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReaderSession {
-    source_name: String,
-    source_sha256: String,
-    narration_ruleset_version: String,
-    voice: String,
-    #[serde(default = "default_engine_name")]
-    engine: String,
-    sample_rate: u32,
-    channels: u16,
-    sample_width_bytes: u16,
-    chunks: Vec<ReaderChunk>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FrontendSession {
-    source_name: String,
-    source_sha256: String,
-    narration_ruleset_version: String,
-    voice: String,
-    engine: String,
-    sample_rate: u32,
-    channels: u16,
-    sample_width_bytes: u16,
-    audio_base_url: String,
-    chunks: Vec<FrontendChunk>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FrontendChunk {
-    duration_seconds: f64,
-    pause_after_ms: u64,
-}
-
-impl FrontendSession {
-    fn from_session(session: &ReaderSession, audio_base_url: &str) -> Self {
-        Self {
-            source_name: session.source_name.clone(),
-            source_sha256: session.source_sha256.clone(),
-            narration_ruleset_version: session.narration_ruleset_version.clone(),
-            voice: session.voice.clone(),
-            engine: session.engine.clone(),
-            sample_rate: session.sample_rate,
-            channels: session.channels,
-            sample_width_bytes: session.sample_width_bytes,
-            audio_base_url: audio_base_url.to_owned(),
-            chunks: session
-                .chunks
-                .iter()
-                .map(|chunk| FrontendChunk {
-                    duration_seconds: chunk.duration_seconds,
-                    pause_after_ms: chunk.pause_after_ms,
-                })
-                .collect(),
-        }
-    }
-}
-
-fn default_engine_name() -> String {
-    "Piper".to_owned()
-}
-
-impl AudioServer {
-    fn start(app: AppHandle) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        listener.set_nonblocking(true)?;
-        let address = listener.local_addr()?;
-        let expected_host = format!("127.0.0.1:{}", address.port());
-        let mut random = [0_u8; 32];
-        getrandom::fill(&mut random).map_err(|error| {
-            std::io::Error::other(format!(
-                "Could not create a local audio access token: {error}"
-            ))
-        })?;
-        let token = random
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let base_url = format!("http://127.0.0.1:{}/v1/{token}", address.port());
-        let stopped = Arc::new(AtomicBool::new(false));
-        let thread_stopped = Arc::clone(&stopped);
-        let thread_token = token.clone();
-        let thread_host = expected_host;
-        let worker = thread::Builder::new()
-            .name("sonara-local-audio-http".to_owned())
-            .spawn(move || {
-                while !thread_stopped.load(Ordering::SeqCst) {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            serve_audio_http_request(&app, &thread_token, &thread_host, stream)
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(20));
-                        }
-                        Err(_) => break,
-                    }
-                }
-            })?;
-        Ok(Self {
-            base_url,
-            stopped,
-            thread: Mutex::new(Some(worker)),
-        })
-    }
-
-    fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        if let Ok(mut worker) = self.thread.lock() {
-            if let Some(worker) = worker.take() {
-                let _ = worker.join();
-            }
-        }
-    }
-}
-
-impl Drop for AudioServer {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Progress {
-    version: u8,
-    source_sha256: String,
-    segment: usize,
-    offset_seconds: f64,
-    playback_rate: f64,
 }
 
 #[derive(Serialize)]
@@ -355,6 +75,77 @@ struct SynthesisProgress {
     job_id: String,
     completed_chunks: usize,
     total_chunks: usize,
+}
+
+fn library_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_local_data_dir()
+        .map(|dir| dir.join(LIBRARY_FILE))
+        .map_err(|error| format!("Could not find Sonara's local data directory: {error}"))
+}
+
+/// Run `action` on the library file while holding the library lock.
+fn with_library<T>(
+    app: &AppHandle,
+    action: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let path = library_path(app)?;
+    let state = app.state::<AppState>();
+    let _guard = state
+        .library
+        .lock()
+        .map_err(|_| "Library state is unavailable.".to_owned())?;
+    action(&path)
+}
+
+#[tauri::command]
+fn list_library(app: AppHandle) -> Result<Vec<LibraryDocument>, String> {
+    with_library(&app, |path| {
+        Ok(library::library_documents(library::load_library(path)))
+    })
+}
+
+/// Select a document from the library for narration, as the picker would.
+/// The frontend names the document by hash; the path comes from the library.
+#[tauri::command]
+fn open_library_document(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_sha256: String,
+) -> Result<SelectedDocument, String> {
+    validate_hash(&source_sha256)?;
+    let source_path = with_library(&app, |path| {
+        library::find_source_path(path, &source_sha256)
+            .ok_or_else(|| "This document is no longer in your library.".to_owned())
+    })?;
+    if !source_path.is_file() {
+        return Err(
+            "This document is no longer at its saved location. Open it again with Choose document."
+                .to_owned(),
+        );
+    }
+    let canonical = validate_document(&source_path)?;
+    let display_name = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Selected document")
+        .to_owned();
+    *state
+        .selected_document
+        .lock()
+        .map_err(|_| "Document selection state is unavailable.".to_owned())? = Some(canonical);
+    Ok(SelectedDocument { display_name })
+}
+
+#[tauri::command]
+fn remove_library_document(app: AppHandle, source_sha256: String) -> Result<(), String> {
+    validate_hash(&source_sha256)?;
+    with_library(&app, |path| library::remove_entry(path, &source_sha256))
+}
+
+#[tauri::command]
+fn clear_library(app: AppHandle) -> Result<(), String> {
+    with_library(&app, library::clear_library)
 }
 
 #[tauri::command]
@@ -449,138 +240,6 @@ async fn preview_narration(
     .map_err(|e| format!("Preview narration task failed: {e}"))?
 }
 
-#[cfg(target_os = "linux")]
-fn choose_document_path() -> Result<Option<PathBuf>, String> {
-    let zenity_res = Command::new("zenity")
-        .arg("--file-selection")
-        .arg("--title=Open a Document in Sonara")
-        .arg("--file-filter=Supported Documents | *.pdf *.txt *.text *.md *.docx *.epub")
-        .arg("--file-filter=All Files | *")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-
-    let output = match zenity_res {
-        Ok(out) => out,
-        Err(_) => Command::new("kdialog")
-            .arg("--getopenfilename")
-            .arg(".")
-            .arg("*.pdf *.txt *.text *.md *.docx *.epub|Supported Documents (*.pdf *.txt *.text *.md *.docx *.epub)\n*|All Files (*)")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .map_err(|error| {
-                format!(
-                    "Could not open the system file picker ({error}). Install Zenity or Kdialog."
-                )
-            })?,
-    };
-
-    if !output.status.success() {
-        if output.stdout.is_empty() {
-            return Ok(None);
-        }
-        return Err(format!(
-            "The system file picker exited with status {}.",
-            output.status
-        ));
-    }
-    let selected = String::from_utf8(output.stdout)
-        .map_err(|_| "The system file picker returned a non-UTF-8 path.".to_owned())?;
-    let selected = selected.trim_end_matches(['\r', '\n']);
-    if selected.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(PathBuf::from(selected)))
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn choose_gguf_path() -> Result<Option<PathBuf>, String> {
-    let output = match Command::new("zenity")
-        .arg("--file-selection")
-        .arg("--title=Choose a GGUF model for Sonara")
-        .arg("--file-filter=GGUF Models | *.gguf")
-        .arg("--file-filter=All Files | *")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-    {
-        Ok(output) => output,
-        Err(_) => Command::new("kdialog")
-            .arg("--getopenfilename")
-            .arg(".")
-            .arg("*.gguf|GGUF models\n*|All files (*)")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .map_err(|error| format!("Could not open the model picker: {error}"))?,
-    };
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let value = String::from_utf8(output.stdout)
-        .map_err(|_| "The model picker returned an invalid path.".to_owned())?;
-    let value = value.trim();
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(PathBuf::from(value)))
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn choose_gguf_path() -> Result<Option<PathBuf>, String> {
-    let output = Command::new("osascript").arg("-e")
-        .arg(r#"POSIX path of (choose file with prompt "Choose a GGUF model for Sonara" of type {"gguf"})"#)
-        .stdout(Stdio::piped()).stderr(Stdio::null()).output()
-        .map_err(|error| format!("Could not open macOS model picker: {error}"))?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let value = String::from_utf8(output.stdout)
-        .map_err(|_| "The model picker returned an invalid path.".to_owned())?;
-    let value = value.trim();
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(PathBuf::from(value)))
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn choose_gguf_path() -> Result<Option<PathBuf>, String> {
-    let script = r#"Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Filter = "GGUF models (*.gguf)|*.gguf|All files (*.*)|*.*"
-$dialog.Title = "Choose a GGUF model for Sonara"
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.FileName }"#;
-    let output = Command::new("powershell")
-        .arg("-NoProfile")
-        .arg("-Command")
-        .arg(script)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|error| format!("Could not open Windows model picker: {error}"))?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let value = String::from_utf8(output.stdout)
-        .map_err(|_| "The model picker returned an invalid path.".to_owned())?;
-    let value = value.trim();
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(PathBuf::from(value)))
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn choose_gguf_path() -> Result<Option<PathBuf>, String> {
-    Err("Model file selection is not supported on this operating system.".to_owned())
-}
-
 #[tauri::command]
 async fn llm_choose_model() -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -588,66 +247,6 @@ async fn llm_choose_model() -> Result<Option<String>, String> {
     })
     .await
     .map_err(|e| format!("Choose model task failed: {e}"))?
-}
-
-#[cfg(target_os = "macos")]
-fn choose_document_path() -> Result<Option<PathBuf>, String> {
-    let script = r#"POSIX path of (choose file with prompt "Open a Document in Sonara" of type {"pdf", "txt", "text", "md", "docx", "epub", "public.plain-text", "net.daringfireball.markdown", "com.adobe.pdf", "org.openxmlformats.wordprocessingml.document", "org.idpf.epub-folder"})"#;
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|err| format!("Could not open macOS file picker: {err}"))?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let selected =
-        String::from_utf8(output.stdout).map_err(|_| "Picker returned non-UTF-8 path.")?;
-    let selected = selected.trim();
-    if selected.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(PathBuf::from(selected)))
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn choose_document_path() -> Result<Option<PathBuf>, String> {
-    let script = r#"
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Filter = "Supported Documents (*.pdf;*.txt;*.text;*.md;*.docx;*.epub)|*.pdf;*.txt;*.text;*.md;*.docx;*.epub|All files (*.*)|*.*"
-$dialog.Title = "Open a Document in Sonara"
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-    Write-Output $dialog.FileName
-}
-"#;
-    let output = Command::new("powershell")
-        .arg("-NoProfile")
-        .arg("-Command")
-        .arg(script)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|err| format!("Could not open Windows file picker: {err}"))?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let selected =
-        String::from_utf8(output.stdout).map_err(|_| "Picker returned non-UTF-8 path.")?;
-    let selected = selected.trim();
-    if selected.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(PathBuf::from(selected)))
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn choose_document_path() -> Result<Option<PathBuf>, String> {
-    Err("File selection is not supported on this operating system.".to_owned())
 }
 
 #[tauri::command]
@@ -670,84 +269,6 @@ fn list_voices(app: AppHandle) -> Result<Vec<VoiceInfo>, String> {
         return Ok(Vec::new());
     }
     discover_voices(&runtime.model_dir)
-}
-
-fn discover_voices(model_dir: &Path) -> Result<Vec<VoiceInfo>, String> {
-    let mut voices = Vec::new();
-    let entries =
-        fs::read_dir(model_dir).map_err(|e| format!("Could not read voice directory: {e}"))?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("onnx") {
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let json_path = model_dir.join(format!("{stem}.onnx.json"));
-            if json_path.is_file() {
-                let (name, quality, language) = parse_voice_metadata(&json_path, stem);
-                voices.push(VoiceInfo {
-                    id: stem.to_string(),
-                    name,
-                    quality,
-                    language,
-                    is_default: false,
-                });
-            }
-        }
-    }
-    voices.sort_by(|a, b| {
-        voice_priority(&a.id)
-            .cmp(&voice_priority(&b.id))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    if !voices.is_empty() {
-        let default_idx = voices
-            .iter()
-            .position(|v| v.id == "en_US-ryan-medium")
-            .or_else(|| voices.iter().position(|v| v.id == "en_US-lessac-medium"))
-            .unwrap_or(0);
-        if let Some(target) = voices.get_mut(default_idx) {
-            target.is_default = true;
-        }
-    }
-    Ok(voices)
-}
-
-fn voice_priority(id: &str) -> usize {
-    match id {
-        "en_US-ryan-medium" => 0,
-        "en_US-lessac-medium" => 1,
-        "en_US-bryce-medium" => 2,
-        "en_US-john-medium" => 3,
-        _ => 10,
-    }
-}
-
-fn parse_voice_metadata(json_path: &Path, id: &str) -> (String, String, String) {
-    let friendly_name = match id {
-        "en_US-ryan-medium" => "Ryan (American Male · Natural)".to_string(),
-        "en_US-lessac-medium" => "Lessac (American Female · Expressive)".to_string(),
-        "en_US-bryce-medium" => "Bryce (American Male · Narrative)".to_string(),
-        "en_US-john-medium" => "John (American Male · LibriVox)".to_string(),
-        _ => id.to_string(),
-    };
-    let Ok(content) = fs::read_to_string(json_path) else {
-        return (friendly_name, "medium".to_string(), "en_US".to_string());
-    };
-    let Ok(val): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
-        return (friendly_name, "medium".to_string(), "en_US".to_string());
-    };
-    let quality = val
-        .pointer("/audio/quality")
-        .and_then(|v| v.as_str())
-        .unwrap_or("medium")
-        .to_string();
-    let language = val
-        .pointer("/language/code")
-        .and_then(|v| v.as_str())
-        .unwrap_or("en_US")
-        .to_string();
-    (friendly_name, quality, language)
 }
 
 // Each parameter is a top-level key in the frontend's `invoke` payload, so
@@ -968,116 +489,6 @@ fn save_progress(
     atomic_write_json(&path, &progress)
 }
 
-fn invoke_llm_rpc(
-    app: Option<&AppHandle>,
-    state: &AppState,
-    request: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let runtime = resolve_runtime(app)?;
-    let llm_script = runtime.llm_script.clone();
-    if !llm_script.is_file() {
-        return Err("LLM client script (llm_client.py) was not found in project root.".to_owned());
-    }
-    let mut worker_guard = state
-        .llm_worker
-        .lock()
-        .map_err(|_| "LLM worker state is unavailable.".to_owned())?;
-    let exited = worker_guard.as_ref().is_some_and(|worker| {
-        worker
-            .child
-            .lock()
-            .map(|mut child| child.try_wait().ok().flatten().is_some())
-            .unwrap_or(true)
-    });
-    if exited {
-        *worker_guard = None;
-    }
-    if worker_guard.is_none() {
-        let mut command = Command::new(&runtime.python);
-        command
-            .arg(&llm_script)
-            .arg("worker")
-            .current_dir(&runtime.project_root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        configure_runtime_command(&mut command, &runtime);
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("Failed to start Sonara's local LLM worker: {error}"))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "LLM worker stdin was unavailable.".to_owned())?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "LLM worker stdout was unavailable.".to_owned())?;
-        let pid = child.id();
-        let child = Arc::new(Mutex::new(child));
-        if let Ok(mut handle) = state.llm_child.lock() {
-            *handle = Some(Arc::clone(&child));
-        }
-        *worker_guard = Some(LlmWorker {
-            child,
-            pid,
-            stdin,
-            lines: spawn_llm_line_reader(stdout),
-        });
-    }
-    let Some(worker) = worker_guard.as_mut() else {
-        return Err("Sonara's local LLM worker could not be started.".to_owned());
-    };
-    let mut request_line = serde_json::to_vec(request)
-        .map_err(|error| format!("Failed to serialize LLM request: {error}"))?;
-    if request_line.len() > 4 * 1024 * 1024 {
-        return Err("LLM request exceeded the 4 MiB limit.".to_owned());
-    }
-    request_line.push(b'\n');
-    if let Err(error) = worker
-        .stdin
-        .write_all(&request_line)
-        .and_then(|_| worker.stdin.flush())
-    {
-        discard_llm_worker(state, &mut worker_guard);
-        return Err(format!(
-            "Could not send request to Sonara's local LLM worker: {error}"
-        ));
-    }
-
-    let reply = worker.lines.recv_timeout(LLM_RPC_TIMEOUT);
-    let failure = match reply {
-        Ok(LlmLine::Line(line)) => match serde_json::from_slice(&line) {
-            Ok(result) => return Ok(result),
-            Err(error) => format!("Sonara's local LLM worker returned invalid JSON: {error}"),
-        },
-        Ok(LlmLine::TooLarge) => "LLM response exceeded the 16 MiB limit.".to_owned(),
-        Ok(LlmLine::ReadError(error)) => {
-            format!("Could not read response from Sonara's local LLM worker: {error}")
-        }
-        Err(RecvTimeoutError::Timeout) => format!(
-            "Sonara's local LLM worker did not answer within {} seconds and was stopped.",
-            LLM_RPC_TIMEOUT.as_secs()
-        ),
-        Err(RecvTimeoutError::Disconnected) => {
-            "Sonara's local LLM worker exited without a response.".to_owned()
-        }
-    };
-    // Any failure leaves the stream out of step with requests, so the worker
-    // is replaced rather than reused; a late reply can never answer the next call.
-    discard_llm_worker(state, &mut worker_guard);
-    Err(failure)
-}
-
-fn discard_llm_worker(state: &AppState, worker_guard: &mut Option<LlmWorker>) {
-    if let Some(worker) = worker_guard.take() {
-        worker.kill();
-    }
-    if let Ok(mut handle) = state.llm_child.lock() {
-        *handle = None;
-    }
-}
-
 #[tauri::command]
 async fn llm_test_connection(
     app: AppHandle,
@@ -1089,21 +500,6 @@ async fn llm_test_connection(
     })
     .await
     .map_err(|e| format!("LLM test connection task failed: {e}"))?
-}
-
-fn llm_test_connection_inner(
-    app: Option<&AppHandle>,
-    state: &AppState,
-    config: LlmConfigInput,
-) -> Result<LlmTestResult, String> {
-    let req = serde_json::json!({
-        "action": "test_connection",
-        "config": config,
-    });
-    let val = invoke_llm_rpc(app, state, &req)?;
-    let result: LlmTestResult = serde_json::from_value(val)
-        .map_err(|e| format!("Failed to decode LLM test connection response: {e}"))?;
-    Ok(result)
 }
 
 #[tauri::command]
@@ -1157,28 +553,6 @@ async fn llm_summarize(
 }
 
 #[tauri::command]
-async fn llm_enhance_script(
-    app: AppHandle,
-    config: LlmConfigInput,
-    text: String,
-) -> Result<LlmEnhanceResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        let req = serde_json::json!({
-            "action": "enhance_narration",
-            "config": config,
-            "text": text,
-        });
-        let val = invoke_llm_rpc(Some(&app), &state, &req)?;
-        let result: LlmEnhanceResult = serde_json::from_value(val)
-            .map_err(|e| format!("Failed to decode LLM narration enhance response: {e}"))?;
-        Ok(result)
-    })
-    .await
-    .map_err(|e| format!("LLM enhance script task failed: {e}"))?
-}
-
-#[tauri::command]
 async fn llm_model_status(
     app: AppHandle,
     config: LlmConfigInput,
@@ -1204,38 +578,6 @@ async fn llm_discover_models(
     })
     .await
     .map_err(|e| format!("LLM discover models task failed: {e}"))?
-}
-
-fn shutdown_llm_worker(state: &AppState) {
-    // If a request is in flight the worker lock is held for its whole
-    // duration; kill the process through the side handle so closing the app
-    // never waits on a slow model. The in-flight call then sees the worker exit.
-    let mut guard = match state.llm_worker.try_lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            if let Ok(mut handle) = state.llm_child.lock() {
-                if let Some(child) = handle.take() {
-                    if let Ok(mut child) = child.lock() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                }
-            }
-            return;
-        }
-    };
-    let Some(mut worker) = guard.take() else {
-        return;
-    };
-    if let Ok(mut handle) = state.llm_child.lock() {
-        *handle = None;
-    }
-    let shutdown = b"{\"action\":\"shutdown\",\"config\":{\"provider\":\"embedded_llama_cpp\"}}\n";
-    let _ = worker.stdin.write_all(shutdown);
-    let _ = worker.stdin.flush();
-    // Give the worker a moment to unload its model, then stop it regardless.
-    let _ = worker.lines.recv_timeout(LLM_SHUTDOWN_TIMEOUT);
-    worker.kill();
 }
 
 #[tauri::command]
@@ -1354,214 +696,16 @@ fn monitor_worker(
         if let Ok(mut current) = app.state::<AppState>().inner().session.lock() {
             *current = Some(session.clone());
         }
+        // The audio is ready either way; a library that cannot be written
+        // only means this document will not be offered for reopening.
+        let _ = with_library(&app, |path| {
+            library::record_session(path, session, &document_path, library::now_millis())
+        });
     }
     let audio_base_url = app.state::<AudioServer>().base_url.clone();
     let result =
         session_result.map(|session| FrontendSession::from_session(&session, &audio_base_url));
     let _ = app.emit("synthesis-finished", SynthesisFinished { job_id, result });
-}
-
-fn read_log_tail(path: &Path, max_bytes: u64) -> Option<String> {
-    let mut file = File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    if len == 0 {
-        return None;
-    }
-    let offset = len.saturating_sub(max_bytes);
-    if offset > 0 {
-        file.seek(SeekFrom::Start(offset)).ok()?;
-    }
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).ok()?;
-    let text = String::from_utf8_lossy(&buffer);
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_owned())
-    }
-}
-
-fn extract_error_summary(detail: &str, limit: usize) -> String {
-    let explicit_errors: Vec<&str> = detail
-        .lines()
-        .map(str::trim)
-        .filter(|line| {
-            (line.starts_with("sonara:") && !line.starts_with("sonara: review:"))
-                || line.contains("Error")
-                || line.contains("error:")
-                || line.contains("failed:")
-        })
-        .collect();
-
-    if !explicit_errors.is_empty() {
-        return truncate_chars(&explicit_errors.join("\n"), limit);
-    }
-
-    let lines: Vec<&str> = detail
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    if lines.len() > 10 {
-        let last_lines = &lines[lines.len() - 10..];
-        truncate_chars(&last_lines.join("\n"), limit)
-    } else {
-        truncate_chars(detail, limit)
-    }
-}
-
-fn worker_failure_message(log_path: &Path, exit_code: Option<i32>) -> String {
-    let detail = read_log_tail(log_path, MAX_ERROR_LOG_BYTES);
-    match detail {
-        Some(detail) => format!("Speech generation failed: {}", extract_error_summary(&detail, 4000)),
-        None => format!("Speech generation failed (worker exit code {}). Check the local Python and Piper setup.", exit_code.map_or_else(|| "unknown".to_owned(), |code| code.to_string())),
-    }
-}
-
-fn truncate_chars(value: &str, limit: usize) -> String {
-    let mut chars = value.chars();
-    let prefix: String = chars.by_ref().take(limit).collect();
-    if chars.next().is_some() {
-        format!("{prefix}…")
-    } else {
-        prefix
-    }
-}
-
-fn load_reader_session(output_dir: &Path, source_path: &Path) -> Result<ReaderSession, String> {
-    let manifest_path = output_dir.join("audio_chunks.json");
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &fs::read(&manifest_path)
-            .map_err(|error| format!("Could not read the audio manifest: {error}"))?,
-    )
-    .map_err(|error| format!("The generated audio manifest is invalid: {error}"))?;
-    let session_meta_path = output_dir.join("desktop-session.json");
-    let source_name = source_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("Document")
-        .to_owned();
-    let source_sha256 = manifest
-        .get("document_source_sha256")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "The audio manifest has no document identity.".to_owned())?
-        .to_owned();
-    validate_hash(&source_sha256)?;
-    let audio_format = manifest
-        .get("audio_format")
-        .ok_or_else(|| "The audio manifest has no audio format.".to_owned())?;
-    let sample_rate = audio_format
-        .get("sample_rate")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| "The manifest sample rate is invalid.".to_owned())?;
-    let channels = audio_format
-        .get("channels")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u16::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| "The manifest channel count is invalid.".to_owned())?;
-    let sample_width_bytes = audio_format
-        .get("sample_width_bytes")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u16::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| "The manifest sample width is invalid.".to_owned())?;
-    let chunk_values = manifest
-        .get("chunks")
-        .and_then(serde_json::Value::as_array)
-        .filter(|chunks| !chunks.is_empty())
-        .ok_or_else(|| "The audio manifest contains no playable chunks.".to_owned())?;
-    let canonical_output = output_dir
-        .canonicalize()
-        .map_err(|error| format!("Could not inspect generated audio: {error}"))?;
-    let mut chunks = Vec::with_capacity(chunk_values.len());
-    for (index, value) in chunk_values.iter().enumerate() {
-        let audio_file = value
-            .get("audio_file")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| format!("Audio passage {} has no audio file.", index + 1))?;
-        let relative = Path::new(audio_file);
-        if !is_safe_relative_audio_path(relative) {
-            return Err(format!(
-                "Audio passage {} has an unsafe local path.",
-                index + 1
-            ));
-        }
-        let file = output_dir.join(relative);
-        let canonical_file = file
-            .canonicalize()
-            .map_err(|error| format!("Audio passage {} is unavailable: {error}", index + 1))?;
-        if !canonical_file.starts_with(&canonical_output) || !canonical_file.is_file() {
-            return Err(format!(
-                "Audio passage {} is outside Sonara's output directory.",
-                index + 1
-            ));
-        }
-        let duration_seconds = value
-            .get("duration_seconds")
-            .and_then(serde_json::Value::as_f64)
-            .filter(|duration| duration.is_finite() && *duration > 0.0)
-            .ok_or_else(|| format!("Audio passage {} has an invalid duration.", index + 1))?;
-        let pause_after_ms = value
-            .get("pause_after_ms")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        chunks.push(ReaderChunk {
-            audio_file: canonical_file.to_string_lossy().into_owned(),
-            duration_seconds,
-            pause_after_ms,
-        });
-    }
-    let session = ReaderSession {
-        source_name,
-        source_sha256,
-        narration_ruleset_version: manifest
-            .get("narration_ruleset_version")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned(),
-        voice: manifest
-            .get("voice")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(DEFAULT_FALLBACK_VOICE)
-            .to_owned(),
-        engine: manifest
-            .get("engine")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("Piper")
-            .to_owned(),
-        sample_rate,
-        channels,
-        sample_width_bytes,
-        chunks,
-    };
-    atomic_write_json(&session_meta_path, &session)?;
-    Ok(session)
-}
-
-fn load_saved_session(output_dir: &Path) -> Option<ReaderSession> {
-    let bytes = fs::read(output_dir.join("desktop-session.json")).ok()?;
-    let mut session: ReaderSession = serde_json::from_slice(&bytes).ok()?;
-    validate_hash(&session.source_sha256).ok()?;
-    if session.chunks.is_empty() {
-        return None;
-    }
-    let root = output_dir.canonicalize().ok()?;
-    for chunk in &mut session.chunks {
-        let path = PathBuf::from(&chunk.audio_file).canonicalize().ok()?;
-        if !path.starts_with(&root)
-            || !path.is_file()
-            || !chunk.duration_seconds.is_finite()
-            || chunk.duration_seconds <= 0.0
-        {
-            return None;
-        }
-        chunk.audio_file = path.to_string_lossy().into_owned();
-    }
-    Some(session)
 }
 
 fn validate_document(path: &Path) -> Result<PathBuf, String> {
@@ -1585,798 +729,6 @@ fn validate_document(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-#[derive(Clone, Debug)]
-struct RuntimePaths {
-    project_root: PathBuf,
-    python: PathBuf,
-    kokoro_python: PathBuf,
-    script: PathBuf,
-    llm_script: PathBuf,
-    model_dir: PathBuf,
-    kokoro_dir: PathBuf,
-    tools_dir: PathBuf,
-    packaged: bool,
-}
-
-/// Validated narration settings passed to the synthesis worker.
-struct WorkerOptions<'a> {
-    voice: &'a str,
-    variation: &'a str,
-    engine: &'a str,
-    resource_profile: &'a str,
-    expand_dates: bool,
-    expand_citations: bool,
-}
-
-fn spawn_sonara_worker(
-    runtime: &RuntimePaths,
-    document: &Path,
-    output_dir: &Path,
-    options: &WorkerOptions<'_>,
-    stdout: File,
-    stderr: File,
-) -> std::io::Result<Child> {
-    let python = if options.engine == "kokoro" {
-        if !runtime.kokoro_python.is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Kokoro Python environment is missing at {}. Install its dependencies in that environment.", runtime.kokoro_python.display()),
-            ));
-        }
-        &runtime.kokoro_python
-    } else {
-        &runtime.python
-    };
-    let mut command = Command::new(python);
-    command
-        .env_clear()
-        .env("HOME", std::env::var_os("HOME").unwrap_or_default())
-        .env("LANG", std::env::var_os("LANG").unwrap_or_default())
-        .env("LC_ALL", std::env::var_os("LC_ALL").unwrap_or_default())
-        .env(
-            "LD_LIBRARY_PATH",
-            std::env::var_os("LD_LIBRARY_PATH").unwrap_or_default(),
-        )
-        .current_dir(&runtime.project_root)
-        .arg(&runtime.script)
-        .arg("read")
-        .arg(document)
-        .arg("--voice")
-        .arg(options.voice)
-        .arg("--variation")
-        .arg(options.variation)
-        .arg("--engine")
-        .arg(options.engine)
-        .arg("--resource-profile")
-        .arg(options.resource_profile)
-        .arg("--data-dir")
-        .arg(&runtime.model_dir)
-        .arg("--kokoro-dir")
-        .arg(&runtime.kokoro_dir)
-        .arg("--output-dir")
-        .arg(output_dir)
-        .args(pdf_tool_args(runtime))
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .env("PYTHONUNBUFFERED", "1");
-    configure_runtime_command(&mut command, runtime);
-    if options.expand_dates {
-        command.arg("--expand-dates");
-    }
-    if options.expand_citations {
-        command.arg("--expand-citations");
-    }
-    #[cfg(unix)]
-    command.process_group(0);
-    command.spawn()
-}
-
-fn resolve_runtime(app: Option<&AppHandle>) -> Result<RuntimePaths, String> {
-    let data_root = if let Some(app) = app {
-        app.path()
-            .app_local_data_dir()
-            .map_err(|error| format!("Could not locate Sonara's user data directory: {error}"))?
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.sonara-test-data")
-    };
-
-    let explicit_root = std::env::var_os("SONARA_PROJECT_ROOT").map(PathBuf::from);
-    let (root, packaged) = if let Some(root) = explicit_root {
-        (root, false)
-    } else if cfg!(debug_assertions) {
-        (PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."), false)
-    } else if let Some(app) = app {
-        let resources = app
-            .path()
-            .resource_dir()
-            .map_err(|error| format!("Could not locate Sonara's installed resources: {error}"))?;
-        (resources.join("sonara"), true)
-    } else {
-        return Err("Installed Sonara resources are unavailable.".to_owned());
-    };
-
-    let mut runtime = resolve_runtime_layout(&root, &data_root, packaged, cfg!(windows))?;
-    if let Some(python) = std::env::var_os("SONARA_PYTHON") {
-        runtime.python = resolve_override_path(&runtime.project_root, PathBuf::from(python));
-        if packaged {
-            runtime.kokoro_python = runtime.python.clone();
-        }
-    }
-    if let Some(kokoro_python) = std::env::var_os("SONARA_KOKORO_PYTHON") {
-        runtime.kokoro_python =
-            resolve_override_path(&runtime.project_root, PathBuf::from(kokoro_python));
-    }
-    if let Some(model_dir) = std::env::var_os("SONARA_MODEL_DIR") {
-        runtime.model_dir = resolve_override_path(&runtime.project_root, PathBuf::from(model_dir));
-    }
-    Ok(runtime)
-}
-
-fn resolve_runtime_layout(
-    root: &Path,
-    data_root: &Path,
-    packaged: bool,
-    windows: bool,
-) -> Result<RuntimePaths, String> {
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("Could not locate Sonara runtime resources: {error}"))?;
-    let script = root.join("sonara.py");
-    let llm_script = root.join("llm_client.py");
-    if !script.is_file() || !llm_script.is_file() {
-        return Err(format!(
-            "Sonara backend resources are incomplete in {}.",
-            root.display()
-        ));
-    }
-
-    let python = if packaged {
-        root.join(if windows {
-            "sonara-runtime.exe"
-        } else {
-            "sonara-runtime"
-        })
-    } else if windows {
-        root.join(".venv/Scripts/python.exe")
-    } else {
-        root.join(".venv/bin/python")
-    };
-    if !python.is_file() {
-        return Err(if packaged {
-            format!("Bundled Sonara runtime is missing: {}", python.display())
-        } else {
-            format!("Python environment was not found at {}. Set SONARA_PYTHON to the environment's Python executable.", python.display())
-        });
-    }
-
-    let data_root = if packaged {
-        data_root.to_path_buf()
-    } else {
-        root.clone()
-    };
-    let model_dir = data_root.join("models/piper");
-    let kokoro_dir = data_root.join("models/kokoro");
-    let kokoro_python = if packaged {
-        python.clone()
-    } else if windows {
-        root.join(".cache/kokoro-venv/Scripts/python.exe")
-    } else {
-        root.join(".cache/kokoro-venv/bin/python")
-    };
-
-    Ok(RuntimePaths {
-        project_root: root.clone(),
-        python,
-        kokoro_python,
-        script,
-        llm_script,
-        model_dir,
-        kokoro_dir,
-        tools_dir: root.join("tools"),
-        packaged,
-    })
-}
-
-fn resolve_override_path(root: &Path, path: PathBuf) -> PathBuf {
-    if path.is_absolute() {
-        path
-    } else {
-        root.join(path)
-    }
-}
-
-fn runtime_search_path(runtime: &RuntimePaths) -> std::ffi::OsString {
-    let existing = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths = vec![runtime.tools_dir.join("bin"), runtime.tools_dir.clone()];
-    paths.extend(std::env::split_paths(&existing));
-    std::env::join_paths(paths).unwrap_or(existing)
-}
-
-fn pdftotext_path(runtime: &RuntimePaths) -> PathBuf {
-    let executable = if cfg!(windows) {
-        "pdftotext.exe"
-    } else {
-        "pdftotext"
-    };
-    let nested = runtime.tools_dir.join("bin").join(executable);
-    if nested.is_file() {
-        nested
-    } else {
-        runtime.tools_dir.join(executable)
-    }
-}
-
-fn pdf_tool_args(runtime: &RuntimePaths) -> Vec<std::ffi::OsString> {
-    if runtime.packaged {
-        vec![
-            "--pdftotext".into(),
-            pdftotext_path(runtime).into_os_string(),
-        ]
-    } else {
-        Vec::new()
-    }
-}
-
-fn configure_runtime_command(command: &mut Command, runtime: &RuntimePaths) {
-    command.env("PATH", runtime_search_path(runtime));
-    if runtime.packaged {
-        command.env("TESSDATA_PREFIX", runtime.tools_dir.join("tessdata"));
-        command.env("POPPLER_DATADIR", runtime.tools_dir.join("share/poppler"));
-        #[cfg(target_os = "linux")]
-        {
-            let existing = std::env::var_os("LD_LIBRARY_PATH").unwrap_or_default();
-            let paths = std::iter::once(runtime.tools_dir.join("lib"))
-                .chain(std::env::split_paths(&existing))
-                .collect::<Vec<_>>();
-            if let Ok(joined) = std::env::join_paths(paths) {
-                command.env("LD_LIBRARY_PATH", joined);
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        for name in [
-            "SystemRoot",
-            "WINDIR",
-            "TEMP",
-            "TMP",
-            "USERPROFILE",
-            "APPDATA",
-            "LOCALAPPDATA",
-        ] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        if let Some(profile) = std::env::var_os("USERPROFILE") {
-            command.env("HOME", profile);
-        }
-        command.creation_flags(0x0800_0000);
-    }
-}
-
-fn verify_installed_runtime(app: &AppHandle) -> Result<(), String> {
-    let runtime = resolve_runtime(Some(app))?;
-    if !runtime.packaged {
-        return Err("Installed-runtime check did not resolve packaged resources.".to_owned());
-    }
-    let mut runtime_command = Command::new(&runtime.python);
-    runtime_command.arg("--self-check");
-    configure_runtime_command(&mut runtime_command, &runtime);
-    let runtime_output = runtime_command
-        .output()
-        .map_err(|error| format!("Could not start the bundled inference runtime: {error}"))?;
-    if !runtime_output.status.success() {
-        return Err(format!(
-            "Bundled inference runtime failed its self-check: {}",
-            String::from_utf8_lossy(&runtime_output.stderr).trim()
-        ));
-    }
-    let report: serde_json::Value =
-        serde_json::from_slice(&runtime_output.stdout).map_err(|error| {
-            format!("Bundled inference runtime returned invalid status JSON: {error}")
-        })?;
-    if report.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
-        return Err(format!(
-            "Bundled inference runtime reports unavailable engines: {report}"
-        ));
-    }
-
-    for (name, executable, args) in [
-        ("pdftotext", pdftotext_path(&runtime), vec!["-v"]),
-        (
-            "pdftoppm",
-            runtime.tools_dir.join("bin").join(if cfg!(windows) {
-                "pdftoppm.exe"
-            } else {
-                "pdftoppm"
-            }),
-            vec!["-v"],
-        ),
-    ] {
-        let mut command = Command::new(executable);
-        command.args(args);
-        configure_runtime_command(&mut command, &runtime);
-        let output = command
-            .output()
-            .map_err(|error| format!("Could not run bundled {name}: {error}"))?;
-        if !output.status.success() {
-            return Err(format!("Bundled {name} failed its startup check."));
-        }
-    }
-
-    let mut tesseract = Command::new(runtime.tools_dir.join("bin").join(if cfg!(windows) {
-        "tesseract.exe"
-    } else {
-        "tesseract"
-    }));
-    tesseract.arg("--list-langs");
-    configure_runtime_command(&mut tesseract, &runtime);
-    let output = tesseract
-        .output()
-        .map_err(|error| format!("Could not run bundled Tesseract: {error}"))?;
-    if !output.status.success()
-        || !String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .any(|line| line.trim() == "eng")
-    {
-        return Err(
-            "Bundled Tesseract or its English language data failed the startup check.".to_owned(),
-        );
-    }
-    Ok(())
-}
-
-fn progress_path(app: &AppHandle, source_sha256: &str) -> Result<PathBuf, String> {
-    let root = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| format!("Could not find Sonara's local data directory: {error}"))?
-        .join("progress");
-    fs::create_dir_all(&root)
-        .map_err(|error| format!("Could not create progress storage: {error}"))?;
-    Ok(root.join(format!("{source_sha256}.json")))
-}
-
-fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    let temp = path.with_file_name(format!(
-        ".{}.{}.tmp",
-        path.file_name().unwrap_or_default().to_string_lossy(),
-        make_job_id()
-    ));
-    let bytes = serde_json::to_vec_pretty(value)
-        .map_err(|error| format!("Could not encode local reader state: {error}"))?;
-    let result = (|| {
-        let mut file = File::create(&temp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result.map_err(|error| format!("Could not save local reader state: {error}"))
-}
-
-fn validate_hash(hash: &str) -> Result<(), String> {
-    if hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Ok(())
-    } else {
-        Err("Document identity is invalid.".to_owned())
-    }
-}
-
-fn is_safe_relative_audio_path(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-        && !path.is_absolute()
-        && path
-            .components()
-            .all(|item| matches!(item, Component::Normal(_)))
-}
-
-fn serve_audio_http_request(app: &AppHandle, token: &str, expected_host: &str, stream: TcpStream) {
-    let reader_output = app
-        .path()
-        .app_local_data_dir()
-        .ok()
-        .map(|path| path.join("reader-output"));
-    serve_audio_request(
-        app.state::<AppState>().inner(),
-        reader_output.as_deref(),
-        token,
-        expected_host,
-        stream,
-    );
-}
-
-/// Serve one audio request. Takes the app state and output directory
-/// directly, rather than an `AppHandle`, so tests can drive it over a socket.
-fn serve_audio_request(
-    state: &AppState,
-    reader_output: Option<&Path>,
-    token: &str,
-    expected_host: &str,
-    mut stream: TcpStream,
-) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-    let mut bytes = Vec::with_capacity(2048);
-    let mut buffer = [0_u8; 2048];
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(0) => return,
-            Ok(count) => {
-                if bytes.len() + count > MAX_HTTP_REQUEST_BYTES {
-                    write_audio_http_response(
-                        &mut stream,
-                        431,
-                        "text/plain",
-                        b"Request too large",
-                        None,
-                        None,
-                    );
-                    return;
-                }
-                bytes.extend_from_slice(&buffer[..count]);
-                if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            Err(_) => return,
-        }
-    }
-
-    let request_text = String::from_utf8_lossy(&bytes);
-    let mut lines = request_text.split("\r\n");
-    let Some(request_line) = lines.next() else {
-        write_audio_http_response(
-            &mut stream,
-            400,
-            "text/plain",
-            b"Malformed request",
-            None,
-            None,
-        );
-        return;
-    };
-    let mut request_parts = request_line.split_whitespace();
-    let method = request_parts.next().unwrap_or_default();
-    let path = request_parts.next().unwrap_or_default();
-    let version = request_parts.next().unwrap_or_default();
-    if (version != "HTTP/1.0" && version != "HTTP/1.1") || path.contains('?') {
-        write_audio_http_response(
-            &mut stream,
-            400,
-            "text/plain",
-            b"Malformed request",
-            None,
-            None,
-        );
-        return;
-    }
-    if method != "GET" && method != "HEAD" {
-        write_audio_http_response(
-            &mut stream,
-            405,
-            "text/plain",
-            b"Method not allowed",
-            None,
-            None,
-        );
-        return;
-    }
-
-    let mut host = None;
-    let mut range = None;
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("host") {
-                host = Some(value.trim());
-            }
-            if name.eq_ignore_ascii_case("range") {
-                range = Some(value.trim());
-            }
-        }
-    }
-    if host != Some(expected_host) {
-        write_audio_http_response(
-            &mut stream,
-            421,
-            "text/plain",
-            b"Unexpected host",
-            None,
-            None,
-        );
-        return;
-    }
-    let (document_hash, index) = match parse_audio_route(path, token) {
-        Ok(route) => route,
-        Err(status) => {
-            write_audio_http_response(
-                &mut stream,
-                status,
-                "text/plain",
-                b"Audio passage not found",
-                None,
-                None,
-            );
-            return;
-        }
-    };
-    let session = match state.session.lock() {
-        Ok(session) => session.clone(),
-        Err(_) => {
-            write_audio_http_response(
-                &mut stream,
-                500,
-                "text/plain",
-                b"Reader state unavailable",
-                None,
-                None,
-            );
-            return;
-        }
-    };
-    let Some(session) = session.filter(|session| session.source_sha256 == document_hash) else {
-        write_audio_http_response(
-            &mut stream,
-            404,
-            "text/plain",
-            b"Audio passage not found",
-            None,
-            None,
-        );
-        return;
-    };
-    let Some(chunk) = session.chunks.get(index) else {
-        write_audio_http_response(
-            &mut stream,
-            404,
-            "text/plain",
-            b"Audio passage not found",
-            None,
-            None,
-        );
-        return;
-    };
-    let output_root = match reader_output.map(Path::canonicalize) {
-        Some(Ok(path)) => path,
-        _ => {
-            write_audio_http_response(
-                &mut stream,
-                404,
-                "text/plain",
-                b"Generated audio unavailable",
-                None,
-                None,
-            );
-            return;
-        }
-    };
-    let chunks_root = match output_root.join("chunks").canonicalize() {
-        Ok(path) => path,
-        Err(_) => {
-            write_audio_http_response(
-                &mut stream,
-                404,
-                "text/plain",
-                b"Generated audio unavailable",
-                None,
-                None,
-            );
-            return;
-        }
-    };
-    let audio_path = match PathBuf::from(&chunk.audio_file).canonicalize() {
-        Ok(path) if path.starts_with(chunks_root) && path.is_file() => path,
-        _ => {
-            write_audio_http_response(
-                &mut stream,
-                404,
-                "text/plain",
-                b"Generated audio unavailable",
-                None,
-                None,
-            );
-            return;
-        }
-    };
-    let mut file = match File::open(audio_path) {
-        Ok(file) => file,
-        Err(_) => {
-            write_audio_http_response(
-                &mut stream,
-                404,
-                "text/plain",
-                b"Generated audio unavailable",
-                None,
-                None,
-            );
-            return;
-        }
-    };
-    let file_length = match file.metadata() {
-        Ok(metadata) if metadata.is_file() => metadata.len(),
-        _ => {
-            write_audio_http_response(
-                &mut stream,
-                404,
-                "text/plain",
-                b"Generated audio unavailable",
-                None,
-                None,
-            );
-            return;
-        }
-    };
-    let (start, end, partial) = match range {
-        Some(value) => match parse_byte_range(value, file_length) {
-            Some((start, end)) => (start, end, true),
-            None => {
-                write_audio_http_response(
-                    &mut stream,
-                    416,
-                    "audio/wav",
-                    &[],
-                    Some(format!("bytes */{file_length}")),
-                    Some(0),
-                );
-                return;
-            }
-        },
-        None => (0, file_length, false),
-    };
-    let content_length = end.saturating_sub(start);
-    if content_length > MAX_AUDIO_RESPONSE_BYTES {
-        write_audio_http_response(
-            &mut stream,
-            413,
-            "text/plain",
-            b"Audio passage too large",
-            None,
-            None,
-        );
-        return;
-    }
-    let is_head = method == "HEAD";
-    let body = if is_head {
-        Vec::new()
-    } else {
-        if file.seek(SeekFrom::Start(start)).is_err() {
-            write_audio_http_response(
-                &mut stream,
-                500,
-                "text/plain",
-                b"Could not read audio",
-                None,
-                None,
-            );
-            return;
-        }
-        let mut body = Vec::with_capacity(content_length as usize);
-        if file.take(content_length).read_to_end(&mut body).is_err()
-            || body.len() as u64 != content_length
-        {
-            write_audio_http_response(
-                &mut stream,
-                500,
-                "text/plain",
-                b"Could not read audio",
-                None,
-                None,
-            );
-            return;
-        }
-        body
-    };
-    let content_range =
-        partial.then(|| format!("bytes {start}-{}/{file_length}", end.saturating_sub(1)));
-    write_audio_http_response(
-        &mut stream,
-        if partial { 206 } else { 200 },
-        "audio/wav",
-        &body,
-        content_range,
-        Some(content_length),
-    );
-}
-
-fn write_audio_http_response(
-    stream: &mut TcpStream,
-    status: u16,
-    content_type: &str,
-    body: &[u8],
-    content_range: Option<String>,
-    content_length: Option<u64>,
-) {
-    let reason = match status {
-        200 => "OK",
-        206 => "Partial Content",
-        400 => "Bad Request",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        413 => "Payload Too Large",
-        416 => "Range Not Satisfiable",
-        421 => "Misdirected Request",
-        431 => "Request Header Fields Too Large",
-        _ => "Internal Server Error",
-    };
-    let mut headers = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        content_length.unwrap_or(body.len() as u64)
-    );
-    if content_type == "audio/wav" {
-        headers.push_str("Accept-Ranges: bytes\r\n");
-    }
-    if let Some(content_range) = content_range {
-        headers.push_str(&format!("Content-Range: {content_range}\r\n"));
-    }
-    headers.push_str("Cache-Control: no-store\r\n\r\n");
-    if stream.write_all(headers.as_bytes()).is_ok() && !body.is_empty() {
-        let _ = stream.write_all(body);
-    }
-}
-
-fn parse_byte_range(header_value: &str, size: u64) -> Option<(u64, u64)> {
-    if size == 0 {
-        return None;
-    }
-    let range = header_value.strip_prefix("bytes=")?;
-    if range.contains(',') {
-        return None;
-    }
-    let (start_text, end_text) = range.split_once('-')?;
-    if start_text.is_empty() {
-        let suffix_length = end_text.parse::<u64>().ok()?;
-        return (suffix_length > 0).then(|| (size.saturating_sub(suffix_length), size));
-    }
-    let start = start_text.parse::<u64>().ok()?;
-    if start >= size {
-        return None;
-    }
-    let end = if end_text.is_empty() {
-        size - 1
-    } else {
-        end_text.parse::<u64>().ok()?.min(size - 1)
-    };
-    (end >= start).then_some((start, end + 1))
-}
-
-fn parse_audio_route<'a>(path: &'a str, token: &str) -> Result<(&'a str, usize), u16> {
-    if path.contains('?') {
-        return Err(404);
-    }
-    let Some(path) = path.strip_prefix('/') else {
-        return Err(404);
-    };
-    let parts: Vec<_> = path.split('/').collect();
-    if parts.len() != 4 || parts[0] != "v1" || parts[1] != token {
-        return Err(404);
-    }
-    if validate_hash(parts[2]).is_err() {
-        return Err(404);
-    }
-    let index = parts[3].parse::<usize>().map_err(|_| 404_u16)?;
-    Ok((parts[2], index))
-}
-
-fn validate_progress_shape(progress: &Progress) -> Result<(), String> {
-    if progress.version == 1
-        && progress.offset_seconds.is_finite()
-        && progress.offset_seconds >= 0.0
-        && progress.playback_rate.is_finite()
-        && (0.7..=1.5).contains(&progress.playback_rate)
-    {
-        Ok(())
-    } else {
-        Err("Reading progress is outside the supported range.".to_owned())
-    }
-}
-
 fn make_job_id() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2397,58 +749,6 @@ fn terminate_active(app: &AppHandle, job_id: &str) {
     }
 }
 
-fn stop_worker_tree(child: &mut Child) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        let process_group = -(child.id() as i32);
-        if child
-            .try_wait()
-            .map_err(|error| format!("Could not inspect the speech worker: {error}"))?
-            .is_some()
-        {
-            unsafe {
-                libc::kill(process_group, libc::SIGKILL);
-            }
-            return Ok(());
-        }
-        // The Python process starts Piper in this same process group. Signal
-        // both, allow short cleanup, then kill any inference process remaining.
-        unsafe {
-            libc::kill(process_group, libc::SIGTERM);
-        }
-        let mut exited = false;
-        for _ in 0..20 {
-            match child.try_wait() {
-                Ok(Some(_)) => {
-                    exited = true;
-                    break;
-                }
-                Ok(None) => thread::sleep(Duration::from_millis(25)),
-                Err(error) => return Err(format!("Could not stop the speech worker: {error}")),
-            }
-        }
-        unsafe {
-            libc::kill(process_group, libc::SIGKILL);
-        }
-        if !exited {
-            child
-                .wait()
-                .map_err(|error| format!("Could not reap the speech worker: {error}"))?;
-        }
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        child
-            .kill()
-            .map_err(|error| format!("Could not stop the speech worker: {error}"))?;
-        child
-            .wait()
-            .map_err(|error| format!("Could not reap the speech worker: {error}"))?;
-        Ok(())
-    }
-}
-
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
@@ -2464,11 +764,14 @@ pub fn run() {
             llm_test_connection,
             llm_chat,
             llm_summarize,
-            llm_enhance_script,
             llm_model_status,
             llm_discover_models,
             llm_choose_model,
-            get_document_text
+            get_document_text,
+            list_library,
+            open_library_document,
+            remove_library_document,
+            clear_library
         ])
         .setup(|app| {
             if std::env::args().any(|argument| argument == "--sonara-smoke-check") {
@@ -2476,7 +779,20 @@ pub fn run() {
                 app.handle().exit(0);
                 return Ok(());
             }
-            let audio_server = AudioServer::start(app.handle().clone())?;
+            let lookup_app = app.handle().clone();
+            let audio_server = AudioServer::start(Arc::new(move |hash: &str, index: usize| {
+                let reader_output = lookup_app
+                    .path()
+                    .app_local_data_dir()
+                    .ok()
+                    .map(|path| path.join("reader-output"));
+                session_audio_lookup(
+                    lookup_app.state::<AppState>().inner(),
+                    reader_output.as_deref(),
+                    hash,
+                    index,
+                )
+            }))?;
             app.manage(audio_server);
             let output_dir = app.path().app_local_data_dir()?.join("reader-output");
             if let Some(session) = load_saved_session(&output_dir) {
@@ -2510,6 +826,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn document_selection_accepts_supported_and_rejects_other_files() {
@@ -2540,482 +857,5 @@ mod tests {
             assert!(validate_document(&supported).is_ok());
             let _ = fs::remove_file(supported);
         }
-    }
-
-    #[test]
-    fn progress_requires_supported_rate_and_document_hash() {
-        assert!(validate_hash(&"a".repeat(64)).is_ok());
-        assert!(validate_hash("not-a-hash").is_err());
-        let progress = Progress {
-            version: 1,
-            source_sha256: "a".repeat(64),
-            segment: 0,
-            offset_seconds: 2.0,
-            playback_rate: 1.0,
-        };
-        assert!(validate_progress_shape(&progress).is_ok());
-        let invalid = Progress {
-            playback_rate: 2.0,
-            ..progress
-        };
-        assert!(validate_progress_shape(&invalid).is_err());
-    }
-
-    #[test]
-    fn local_audio_route_requires_token_and_valid_document_path() {
-        let token = "a".repeat(64);
-        let hash = "b".repeat(64);
-        assert_eq!(
-            parse_audio_route(&format!("/v1/{token}/{hash}/3"), &token),
-            Ok((hash.as_str(), 3))
-        );
-        assert!(parse_audio_route(&format!("/v1/wrong/{hash}/3"), &token).is_err());
-        assert!(parse_audio_route(&format!("/v1/{token}/../3"), &token).is_err());
-        assert!(
-            parse_audio_route(&format!("/v1/{token}/{hash}/3?file=/etc/passwd"), &token).is_err()
-        );
-    }
-
-    #[test]
-    fn local_audio_ranges_cover_open_ended_and_suffix_requests() {
-        assert_eq!(parse_byte_range("bytes=10-19", 100), Some((10, 20)));
-        assert_eq!(parse_byte_range("bytes=90-", 100), Some((90, 100)));
-        assert_eq!(parse_byte_range("bytes=-5", 100), Some((95, 100)));
-        assert_eq!(parse_byte_range("bytes=100-", 100), None);
-        assert_eq!(parse_byte_range("bytes=1-2,4-5", 100), None);
-    }
-
-    #[test]
-    fn manifest_paths_cannot_escape_output_root() {
-        let path = Path::new("chunks/../../outside.wav");
-        assert!(!is_safe_relative_audio_path(path));
-        assert!(is_safe_relative_audio_path(Path::new(
-            "chunks/run/chunk.wav"
-        )));
-        assert!(!is_safe_relative_audio_path(Path::new("")));
-    }
-
-    #[test]
-    fn progress_file_round_trips_through_atomic_storage() {
-        let root = std::env::temp_dir().join(format!("sonara-progress-{}", make_job_id()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("progress.json");
-        let progress = Progress {
-            version: 1,
-            source_sha256: "f".repeat(64),
-            segment: 4,
-            offset_seconds: 12.75,
-            playback_rate: 1.2,
-        };
-        atomic_write_json(&path, &progress).unwrap();
-        let restored: Progress = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(restored.segment, 4);
-        assert_eq!(restored.offset_seconds, 12.75);
-        assert_eq!(restored.playback_rate, 1.2);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn log_tail_extracts_explicit_error_even_from_large_review_logs() {
-        let root = std::env::temp_dir().join(format!("sonara-log-test-{}", make_job_id()));
-        fs::create_dir_all(&root).unwrap();
-        let log_file = root.join("worker.log");
-
-        // Simulate 200 lines of review warnings followed by the actual error
-        let mut contents = String::new();
-        for i in 1..=200 {
-            contents.push_str(&format!(
-                "sonara: review: Text regions share vertical space (page {i})\n"
-            ));
-        }
-        contents.push_str("sonara: Piper synthesis failed: model buffer overflow\n");
-        fs::write(&log_file, &contents).unwrap();
-
-        let msg = worker_failure_message(&log_file, Some(2));
-        assert!(msg.contains("sonara: Piper synthesis failed: model buffer overflow"));
-        assert!(!msg.contains("worker exit code 2"));
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn voice_discovery_identifies_installed_models() {
-        let root = std::env::temp_dir().join(format!("sonara-voices-test-{}", make_job_id()));
-        fs::create_dir_all(&root).unwrap();
-
-        // Create mock voice files
-        fs::write(root.join("en_US-ryan-medium.onnx"), b"onnx").unwrap();
-        fs::write(
-            root.join("en_US-ryan-medium.onnx.json"),
-            br#"{"audio":{"quality":"medium"},"language":{"code":"en_US"}}"#,
-        )
-        .unwrap();
-        fs::write(root.join("en_US-lessac-medium.onnx"), b"onnx").unwrap();
-        fs::write(
-            root.join("en_US-lessac-medium.onnx.json"),
-            br#"{"audio":{"quality":"medium"},"language":{"code":"en_US"}}"#,
-        )
-        .unwrap();
-
-        let voices = discover_voices(&root).unwrap();
-        assert_eq!(voices.len(), 2);
-        assert_eq!(voices[0].id, "en_US-ryan-medium");
-        assert!(voices[0].is_default);
-        assert_eq!(voices[1].id, "en_US-lessac-medium");
-        assert!(!voices[1].is_default);
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn packaged_runtime_uses_installed_resources_and_user_data() {
-        let base = std::env::temp_dir().join(format!("sonara-runtime-paths-{}", make_job_id()));
-        let resource_root = base.join("Program Files/Sonara/resources/sonara");
-        let user_data = base.join("User Data/Sonara");
-        fs::create_dir_all(&resource_root).unwrap();
-        fs::create_dir_all(&user_data).unwrap();
-        fs::write(resource_root.join("sonara.py"), b"backend entry").unwrap();
-        fs::write(resource_root.join("llm_client.py"), b"llm entry").unwrap();
-        fs::write(resource_root.join("sonara-runtime"), b"runtime").unwrap();
-
-        let runtime = resolve_runtime_layout(&resource_root, &user_data, true, false).unwrap();
-        assert_eq!(runtime.project_root, resource_root.canonicalize().unwrap());
-        assert_eq!(runtime.python, runtime.project_root.join("sonara-runtime"));
-        assert_eq!(runtime.model_dir, user_data.join("models/piper"));
-        assert_eq!(runtime.kokoro_dir, user_data.join("models/kokoro"));
-        assert_eq!(runtime.tools_dir, runtime.project_root.join("tools"));
-        fs::create_dir_all(runtime.tools_dir.join("bin")).unwrap();
-        fs::write(runtime.tools_dir.join("bin/pdftotext"), b"poppler").unwrap();
-        assert_eq!(
-            pdftotext_path(&runtime),
-            runtime.tools_dir.join("bin/pdftotext")
-        );
-        assert_eq!(pdf_tool_args(&runtime).len(), 2);
-        assert_eq!(
-            PathBuf::from(&pdf_tool_args(&runtime)[1]),
-            runtime.tools_dir.join("bin/pdftotext")
-        );
-        assert!(!runtime.model_dir.starts_with(&runtime.project_root));
-
-        let _ = fs::remove_dir_all(base);
-    }
-
-    #[test]
-    fn packaged_runtime_selects_windows_executable_name() {
-        let base = std::env::temp_dir().join(format!("sonara-runtime-windows-{}", make_job_id()));
-        let resource_root = base.join("resources/sonara");
-        fs::create_dir_all(&resource_root).unwrap();
-        fs::write(resource_root.join("sonara.py"), b"backend entry").unwrap();
-        fs::write(resource_root.join("llm_client.py"), b"llm entry").unwrap();
-        fs::write(resource_root.join("sonara-runtime.exe"), b"runtime").unwrap();
-
-        let runtime =
-            resolve_runtime_layout(&resource_root, &base.join("data"), true, true).unwrap();
-        assert_eq!(
-            runtime.python,
-            runtime.project_root.join("sonara-runtime.exe")
-        );
-        assert_eq!(runtime.kokoro_python, runtime.python);
-
-        let _ = fs::remove_dir_all(base);
-    }
-
-    #[test]
-    fn packaged_runtime_reports_missing_files_without_falling_back_to_source_checkout() {
-        let base = std::env::temp_dir().join(format!("sonara-runtime-missing-{}", make_job_id()));
-        fs::create_dir_all(&base).unwrap();
-        let error = resolve_runtime_layout(&base, &base.join("data"), true, false)
-            .expect_err("an empty install resource directory is not a runtime");
-        assert!(error.contains("backend resources are incomplete"));
-        let _ = fs::remove_dir_all(base);
-    }
-
-    #[test]
-    fn llm_rpc_test_connection_offline_returns_error() {
-        let config = LlmConfigInput {
-            provider: "ollama".to_string(),
-            endpoint: Some("http://127.0.0.1:59998/v1".to_string()),
-            model: Some("llama3.2".to_string()),
-            api_key: None,
-            temperature: Some(0.7),
-            max_tokens: Some(100),
-            embedding_model: None,
-            embedding_endpoint: None,
-            model_path: None,
-            model_directory: None,
-            context_size: None,
-            threads: None,
-            batch_size: None,
-            idle_timeout_seconds: None,
-        };
-        let state = AppState::default();
-        let result = llm_test_connection_inner(None, &state, config)
-            .expect("IPC invocation should return a structured result");
-        shutdown_llm_worker(&state);
-        assert!(!result.ok);
-        assert!(result.error.is_some());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn llm_line_reader_reports_lines_then_disconnects_at_eof() {
-        let mut child = Command::new("echo")
-            .arg(r#"{"ok":true}"#)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let lines = spawn_llm_line_reader(child.stdout.take().unwrap());
-        match lines.recv_timeout(Duration::from_secs(5)) {
-            Ok(LlmLine::Line(line)) => assert_eq!(line, b"{\"ok\":true}\n"),
-            _ => panic!("expected one response line"),
-        }
-        assert!(matches!(
-            lines.recv_timeout(Duration::from_secs(5)),
-            Err(RecvTimeoutError::Disconnected)
-        ));
-        let _ = child.wait();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn shutdown_kills_a_busy_llm_worker_without_waiting_for_its_reply() {
-        let state = Arc::new(AppState::default());
-        let mut child = Command::new("sleep")
-            .arg("60")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let pid = child.id();
-        let child = Arc::new(Mutex::new(child));
-        *state.llm_child.lock().unwrap() = Some(Arc::clone(&child));
-        *state.llm_worker.lock().unwrap() = Some(LlmWorker {
-            child: Arc::clone(&child),
-            pid,
-            stdin,
-            lines: spawn_llm_line_reader(stdout),
-        });
-
-        // Simulate an in-flight request: hold the worker lock, as invoke_llm_rpc does.
-        let (held, release) = (Arc::new(std::sync::Barrier::new(2)), Arc::clone(&state));
-        let held_clone = Arc::clone(&held);
-        let busy = thread::spawn(move || {
-            let guard = release.llm_worker.lock().unwrap();
-            held_clone.wait();
-            thread::sleep(Duration::from_millis(500));
-            drop(guard);
-        });
-        held.wait();
-
-        let started = std::time::Instant::now();
-        shutdown_llm_worker(&state);
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "shutdown must not wait for the request"
-        );
-        let status = child.lock().unwrap().try_wait().unwrap();
-        assert!(status.is_some(), "busy worker should have been killed");
-        busy.join().unwrap();
-    }
-
-    /// A temporary reader-output tree served by `serve_audio_request`.
-    struct AudioFixture {
-        root: PathBuf,
-        state: AppState,
-        hash: String,
-        token: String,
-    }
-
-    impl AudioFixture {
-        const BODY_LEN: usize = 1000;
-
-        fn new() -> Self {
-            let root = std::env::temp_dir().join(format!("sonara-audio-test-{}", make_job_id()));
-            let chunks = root.join("reader-output/chunks/doc");
-            fs::create_dir_all(&chunks).unwrap();
-            let body: Vec<u8> = (0..Self::BODY_LEN).map(|i| (i % 251) as u8).collect();
-            let good = chunks.join("chunk-0.wav");
-            fs::write(&good, &body).unwrap();
-            // Inside reader-output but outside chunks/: must not be served.
-            let outside = root.join("reader-output/secret.wav");
-            fs::write(&outside, b"not audio").unwrap();
-            let mut chunk_files = vec![good, outside.clone()];
-            #[cfg(unix)]
-            {
-                let link = chunks.join("escape.wav");
-                std::os::unix::fs::symlink(&outside, &link).unwrap();
-                chunk_files.push(link);
-            }
-            let hash = "ab".repeat(32);
-            let session = ReaderSession {
-                source_name: "doc.pdf".to_owned(),
-                source_sha256: hash.clone(),
-                narration_ruleset_version: "rules-test".to_owned(),
-                voice: "test".to_owned(),
-                engine: "piper".to_owned(),
-                sample_rate: 22050,
-                channels: 1,
-                sample_width_bytes: 2,
-                chunks: chunk_files
-                    .into_iter()
-                    .map(|path| ReaderChunk {
-                        audio_file: path.to_string_lossy().into_owned(),
-                        duration_seconds: 1.0,
-                        pause_after_ms: 0,
-                    })
-                    .collect(),
-            };
-            let state = AppState::default();
-            *state.session.lock().unwrap() = Some(session);
-            Self {
-                root,
-                state,
-                hash,
-                token: "f".repeat(64),
-            }
-        }
-
-        fn path(&self, index: usize) -> String {
-            format!("/v1/{}/{}/{index}", self.token, self.hash)
-        }
-
-        /// Send a raw request and return (status, headers, body).
-        fn send(&self, raw: &str) -> (u16, String, Vec<u8>) {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let host = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
-            let raw = raw.replace("{HOST}", &host);
-            let reader_output = self.root.join("reader-output");
-            thread::scope(|scope| {
-                scope.spawn(|| {
-                    let (stream, _) = listener.accept().unwrap();
-                    serve_audio_request(
-                        &self.state,
-                        Some(&reader_output),
-                        &self.token,
-                        &host,
-                        stream,
-                    );
-                });
-                let mut client = TcpStream::connect(&host).unwrap();
-                client.write_all(raw.as_bytes()).unwrap();
-                let mut response = Vec::new();
-                client.read_to_end(&mut response).unwrap();
-                let split = response
-                    .windows(4)
-                    .position(|window| window == b"\r\n\r\n")
-                    .expect("response has a header terminator");
-                let headers = String::from_utf8_lossy(&response[..split]).into_owned();
-                let status = headers[9..12].parse().unwrap();
-                (status, headers, response[split + 4..].to_vec())
-            })
-        }
-
-        fn get(&self, path: &str, extra_headers: &str) -> (u16, String, Vec<u8>) {
-            self.send(&format!(
-                "GET {path} HTTP/1.1\r\nHost: {{HOST}}\r\n{extra_headers}\r\n"
-            ))
-        }
-    }
-
-    impl Drop for AudioFixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
-        }
-    }
-
-    #[test]
-    fn audio_server_serves_whole_ranged_and_head_requests() {
-        let fixture = AudioFixture::new();
-        let (status, headers, body) = fixture.get(&fixture.path(0), "");
-        assert_eq!(status, 200);
-        assert_eq!(body.len(), AudioFixture::BODY_LEN);
-        assert!(headers.contains("Accept-Ranges: bytes"));
-        assert!(headers.contains("Cache-Control: no-store"));
-
-        let (status, headers, body) = fixture.get(&fixture.path(0), "Range: bytes=10-19\r\n");
-        assert_eq!(status, 206);
-        assert!(headers.contains("Content-Range: bytes 10-19/1000"));
-        assert_eq!(body, (10..20).map(|i| (i % 251) as u8).collect::<Vec<_>>());
-
-        let (status, headers, _) = fixture.get(&fixture.path(0), "Range: bytes=5000-\r\n");
-        assert_eq!(status, 416);
-        assert!(headers.contains("Content-Range: bytes */1000"));
-
-        let (status, headers, body) = fixture.send(&format!(
-            "HEAD {} HTTP/1.1\r\nHost: {{HOST}}\r\n\r\n",
-            fixture.path(0)
-        ));
-        assert_eq!(status, 200);
-        assert!(headers.contains("Content-Length: 1000"));
-        assert!(body.is_empty());
-    }
-
-    #[test]
-    fn audio_server_rejects_bad_host_token_method_and_query() {
-        let fixture = AudioFixture::new();
-        let wrong_host = fixture.send(&format!(
-            "GET {} HTTP/1.1\r\nHost: evil.example:80\r\n\r\n",
-            fixture.path(0)
-        ));
-        assert_eq!(wrong_host.0, 421, "DNS-rebinding hosts must be refused");
-
-        let wrong_token = format!("/v1/{}/{}/0", "0".repeat(64), fixture.hash);
-        assert_eq!(fixture.get(&wrong_token, "").0, 404);
-
-        let post = fixture.send(&format!(
-            "POST {} HTTP/1.1\r\nHost: {{HOST}}\r\n\r\n",
-            fixture.path(0)
-        ));
-        assert_eq!(post.0, 405);
-
-        let query = format!("{}?x=1", fixture.path(0));
-        assert_eq!(fixture.get(&query, "").0, 400);
-
-        let oversized = format!(
-            "GET {} HTTP/1.1\r\nHost: {{HOST}}\r\nX-Pad: {}\r\n\r\n",
-            fixture.path(0),
-            "a".repeat(MAX_HTTP_REQUEST_BYTES)
-        );
-        assert_eq!(fixture.send(&oversized).0, 431);
-    }
-
-    #[test]
-    fn audio_server_serves_only_files_inside_the_active_chunks_directory() {
-        let fixture = AudioFixture::new();
-        let other_document = format!("/v1/{}/{}/0", fixture.token, "cd".repeat(32));
-        assert_eq!(fixture.get(&other_document, "").0, 404);
-        assert_eq!(fixture.get(&fixture.path(99), "").0, 404);
-        // A manifest entry outside chunks/ is refused even though it exists.
-        let (status, _, body) = fixture.get(&fixture.path(1), "");
-        assert_eq!(status, 404);
-        assert!(!body.starts_with(b"not audio"));
-        #[cfg(unix)]
-        {
-            // A symlink inside chunks/ that points outside it is refused.
-            let (status, _, body) = fixture.get(&fixture.path(2), "");
-            assert_eq!(status, 404);
-            assert!(!body.starts_with(b"not audio"));
-        }
-    }
-
-    #[test]
-    fn embedded_llm_worker_is_reused_without_startup_model_load() {
-        let state = AppState::default();
-        let request = serde_json::json!({
-            "action": "model_status",
-            "config": {"provider": "embedded_llama_cpp"}
-        });
-        let first = invoke_llm_rpc(None, &state, &request).expect("status request should complete");
-        assert_eq!(first["state"], "UNLOADED");
-        let first_pid = state.llm_worker.lock().unwrap().as_ref().unwrap().pid;
-
-        let second =
-            invoke_llm_rpc(None, &state, &request).expect("second status request should complete");
-        let second_pid = state.llm_worker.lock().unwrap().as_ref().unwrap().pid;
-        assert_eq!(second["state"], "UNLOADED");
-        assert_eq!(first_pid, second_pid);
-        shutdown_llm_worker(&state);
     }
 }

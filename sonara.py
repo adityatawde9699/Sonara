@@ -30,7 +30,7 @@ from document import (
     parse_bbox_layout,
 )
 from narration import NarrationError, build_narration_plan
-from tts_engine import KokoroEngine, PiperEngine, SynthesisStream, TtsError
+from tts_engine import KokoroEngine, PiperEngine, SynthesisStream, TtsError, validate_voice_name
 from resource_policy import get_resource_profile
 
 
@@ -54,7 +54,7 @@ def extract_document(document_path: Path, pdftotext: str = "pdftotext") -> Docum
     ext = document_path.suffix.lower()
     if ext == ".pdf":
         return extract_pdf_document(document_path, pdftotext)
-    elif ext in (".txt", ".text", ".md"):
+    elif ext in (".txt", ".text", ".md", ".markdown"):
         try:
             return extract_txt_document(document_path)
         except ValueError as exc:
@@ -312,6 +312,10 @@ else{{
 
 
 def synthesize(text: str, voice: str, data_dir: Path, output: Path, piper: str) -> None:
+    try:
+        validate_voice_name(voice)
+    except ValueError as exc:
+        raise SonaraError(str(exc)) from exc
     if len(text.encode("utf-8")) > 100_000:
         raise SonaraError(
             "The one-shot Piper executable path supports up to 100 KB of text; "
@@ -473,6 +477,7 @@ def _synthesize_plan(
 ) -> dict[str, Any]:
     """Generate mapped unit WAVs with one worker and return a playback manifest."""
     try:
+        validate_voice_name(voice)
         policy = get_resource_profile(resource_profile)
         if engine_name == "kokoro":
             engine = KokoroEngine(kokoro_dir, voice=voice)
@@ -480,7 +485,7 @@ def _synthesize_plan(
             model_path = data_dir / f"{voice}.onnx"
             config_path = model_path.with_suffix(model_path.suffix + ".json")
             engine = PiperEngine(model_path, config_path, variation=variation)
-    except TtsError as exc:
+    except (TtsError, ValueError) as exc:
         raise SonaraError(str(exc)) from exc
     output.parent.mkdir(parents=True, exist_ok=True)
     temp_handle = tempfile.NamedTemporaryFile(
@@ -706,12 +711,19 @@ def _write_text_atomic(path: Path, value: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _voice_argument(value: str) -> str:
+    try:
+        return validate_voice_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sonara", description="Read a document (.pdf, .txt, .text, .md, .docx, .epub) aloud with local Piper TTS.")
     sub = parser.add_subparsers(dest="command", required=True)
     read = sub.add_parser("read", help="extract a document (.pdf, .txt, .text, .md, .docx, .epub), synthesize audio, and create a resumable browser player")
     read.add_argument("document", type=Path, metavar="DOCUMENT", help="Path to document (.pdf, .txt, .text, .md, .docx, .epub)")
-    read.add_argument("--voice", required=True, help="installed Piper voice model name or Kokoro voice id")
+    read.add_argument("--voice", required=True, type=_voice_argument, help="installed Piper voice model name or Kokoro voice id")
     read.add_argument("--engine", choices=("piper", "kokoro"), default="piper", help="local speech engine")
     read.add_argument("--resource-profile", choices=("low_resource", "standard", "high_performance"), default="standard", help="resource policy; does not change the selected model or voice")
     read.add_argument("--kokoro-dir", type=Path, default=Path("models/kokoro"), help="directory containing Kokoro ONNX and voice files")
