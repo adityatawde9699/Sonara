@@ -56,8 +56,20 @@ def self_check() -> int:
     """Load every included CPU inference package without loading model weights."""
     import importlib.metadata
 
+    import importlib.util
+
     results: dict[str, object] = {}
     failures = False
+    # diskcache unpickles its cache files (PYSEC-2026-2447) and must never ship;
+    # llama_cpp gets a disabled stand-in from llama_runtime instead.
+    if importlib.util.find_spec("diskcache") is not None:
+        failures = True
+        results["diskcache"] = {"bundled": True, "error": "diskcache must not be bundled"}
+    else:
+        results["diskcache"] = {"bundled": False}
+    from llama_runtime import install_diskcache_guard
+
+    install_diskcache_guard()
     for distribution, module_name in (
         ("piper-tts", "piper"),
         ("onnxruntime", "onnxruntime"),

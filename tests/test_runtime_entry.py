@@ -47,6 +47,17 @@ class RuntimeEntryTests(unittest.TestCase):
         worker.assert_called_once_with()
         self.assertEqual(sys.argv, original_argv)
 
+    def test_self_check_fails_when_diskcache_is_bundled(self):
+        import json
+        found = {"diskcache": object()}
+        with patch.object(importlib.util, "find_spec", side_effect=lambda name: found.get(name)):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = runtime_entry.self_check()
+        report = json.loads(output.getvalue())
+        self.assertEqual(status, 1)
+        self.assertEqual(report["runtimes"]["diskcache"]["bundled"], True)
+
     def test_frozen_runtime_preserves_python_module_invocation(self):
         original_argv = sys.argv
         with patch.object(runtime_entry.runpy, "run_module") as run_module:

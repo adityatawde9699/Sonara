@@ -99,6 +99,29 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertEqual(selected[0]["platform"], "linux")
         self.assertEqual(len(release_matrix.release_matrix("all")["include"]), 4)
 
+    def test_runtime_pins_are_read_from_the_requirements_file(self):
+        build_runtime = load_module("sonara_build_runtime", "packaging/build_runtime.py")
+        self.assertEqual(build_runtime.REQUIRED_PACKAGES["piper-tts"], "1.8.0")
+        self.assertIn("pyinstaller", build_runtime.REQUIRED_PACKAGES)
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            loose = Path(tmp) / "reqs.txt"
+            loose.write_text("piper-tts>=1.8\n", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                build_runtime.read_pinned_requirements(loose)
+
+    def test_runtime_build_refuses_an_environment_with_diskcache(self):
+        build_runtime = load_module("sonara_build_runtime", "packaging/build_runtime.py")
+        self.assertEqual(build_runtime.REQUIRED_PACKAGES["llama-cpp-python"], "0.3.36")
+        self.assertNotIn("diskcache", build_runtime.REQUIRED_PACKAGES)
+        pins = dict(build_runtime.REQUIRED_PACKAGES, diskcache="5.6.3")
+        from unittest.mock import patch
+        with patch.object(build_runtime.sys, "version_info", (3, 12, 0)), \
+                patch.object(build_runtime.importlib.metadata, "version", side_effect=lambda name: pins[name]):
+            with self.assertRaisesRegex(SystemExit, "diskcache 5.6.3 is installed but must not be bundled"):
+                build_runtime.verify_build_environment()
+
     def test_unix_target_excludes_windows(self):
         platforms = [t["platform"] for t in release_matrix.release_matrix("unix")["include"]]
         self.assertEqual(sorted(platforms), ["linux", "macos", "macos"])

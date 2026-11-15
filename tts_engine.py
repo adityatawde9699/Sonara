@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from narration import NarrationPlan, NarrationUnit
+from audio_processing import AUDIO_FINISH_VERSION, finish_wav
+from narration import NarrationPlan, NarrationUnit, VoiceProfile, voice_profile
 
 
 class TtsError(RuntimeError):
@@ -242,6 +243,12 @@ class SynthesisStream:
                             f"Synthesis of narration unit {unit.id} exceeded "
                             f"{self.synthesis_timeout_seconds:g} seconds."
                         )
+                    # Trim edge silence, match level and fade before caching,
+                    # so cached and fresh chunks sound the same.
+                    try:
+                        finish_wav(wav_path)
+                    except (OSError, ValueError, wave.Error) as exc:
+                        raise TtsError(f"Could not finish synthesized audio for unit {unit.id}: {exc}") from exc
                     if self.cache_dir is not None:
                         wav_path = self._cache_store(wav_path, unit)
                 audio_format, duration = _inspect_wav(
@@ -282,6 +289,7 @@ class SynthesisStream:
             "document_source_sha256": self.plan.document_source_sha256,
             "plan_schema": self.plan.schema_version,
             "ruleset": self.plan.ruleset_version,
+            "audio_finish": AUDIO_FINISH_VERSION,
             "engine": self.engine.cache_identity,
             "voice": self.engine.capabilities.voice,
             "speed": self.settings.speed,
@@ -399,11 +407,15 @@ class PiperEngine:
         *,
         load_timeout_seconds: float = 180.0,
         variation: str = "voice_default",
+        profile: VoiceProfile | None = None,
     ) -> None:
         if variation not in {"voice_default", "less", "more"}:
             raise ValueError("variation must be voice_default, less, or more")
         self.variation = variation
         self.model_path = model_path.expanduser().resolve()
+        # "en_US-ryan-medium.onnx" -> the measured profile for that voice.
+        self.profile = profile or voice_profile(self.model_path.name.removesuffix(".onnx"))
+        self.noise_scales = self.profile.noise_scales(variation)
         self.config_path = (config_path or self.model_path.with_suffix(self.model_path.suffix + ".json")).expanduser().resolve()
         if not self.model_path.is_file() or self.model_path.stat().st_size == 0:
             raise TtsError(f"Piper model is missing or empty: {self.model_path}")
@@ -444,6 +456,8 @@ class PiperEngine:
             _sha256_file(self.model_path),
             _sha256_file(self.config_path),
             f"variation={self.variation}",
+            f"noise={self.noise_scales}",
+            f"sentence_pause_ms={self.profile.sentence_pause_ms}",
         ))
         self._worker: _PiperWorkerClient | None = None
         self._worker_lock = threading.Lock()
@@ -492,6 +506,8 @@ class PiperEngine:
             output_path,
             timeout=timeout_seconds,
             cancel_event=cancel_event,
+            noise_scales=self.noise_scales,
+            sentence_pause_ms=self.profile.sentence_pause_ms,
         )
         audio_format = AudioFormat(
             response.get("sample_rate", 0),
@@ -678,6 +694,8 @@ class _PiperWorkerClient:
         *,
         timeout: float,
         cancel_event: threading.Event,
+        noise_scales: tuple[float, float] | None = None,
+        sentence_pause_ms: int | None = None,
     ) -> dict:
         if not self.is_alive or self.process.stdin is None:
             raise TtsError("Piper worker is not running.")
@@ -688,6 +706,10 @@ class _PiperWorkerClient:
             "variation": variation,
             "output_path": str(output_path),
         }
+        if noise_scales is not None:
+            request["noise_scale"], request["noise_w_scale"] = noise_scales
+        if sentence_pause_ms is not None:
+            request["sentence_pause_ms"] = sentence_pause_ms
         try:
             self.process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
             self.process.stdin.flush()

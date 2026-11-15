@@ -1,4 +1,5 @@
-import { type FC, useEffect } from "react";
+import { type FC } from "react";
+import { useModalDialog } from "../hooks/useModalDialog";
 
 interface Props {
   isOpen: boolean;
@@ -13,28 +14,22 @@ const SHORTCUTS = [
   { key: "↓ / [", description: "Decrease listening speed (-0.1×)" },
   { key: "Home", description: "Jump to beginning of document" },
   { key: "End", description: "Jump to end of document" },
-  { key: "?", description: "Toggle this keyboard shortcuts cheatsheet" },
-  { key: "Esc", description: "Close dialogs" },
+  { key: "A", description: "Open or close the document assistant" },
+  { key: "Ctrl / ⌘ + K", description: "Search your library" },
+  { key: "?", description: "Open this keyboard shortcuts cheatsheet" },
+  { key: "Esc", description: "Close the open dialog" },
 ];
 
 export const ShortcutsModal: FC<Props> = ({ isOpen, onClose }) => {
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  const dialogRef = useModalDialog<HTMLDivElement>(isOpen, onClose);
 
   if (!isOpen) return null;
 
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal-card"
         role="dialog"
         aria-modal="true"

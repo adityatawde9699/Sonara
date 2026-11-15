@@ -85,4 +85,23 @@ describe("Sonara workspace", () => {
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     localStorage.removeItem("sonara_theme");
   });
+
+  it("opens the assistant with A but leaves Ctrl+A and Cmd+A to the browser", async () => {
+    render(<App />);
+    fireEvent.keyDown(window, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "a", metaKey: true });
+    expect(screen.queryByRole("dialog", { name: "Document Assistant" })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "a" });
+    expect(await screen.findByRole("dialog", { name: "Document Assistant" })).toBeInTheDocument();
+  });
+
+  it("does not trigger shortcuts behind an open dialog", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Listening history" }));
+    expect(await screen.findByRole("dialog", { name: "Document History" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "a" });
+    expect(screen.queryByRole("dialog", { name: "Document Assistant" })).not.toBeInTheDocument();
+  });
 });

@@ -65,3 +65,20 @@ Keep source text and source offsets immutable. Apply conservative English abbrev
 
 Add a repeatable blind comparison pack with randomized IDs, a broader corpus, RMS level matching, and a separate facilitator key. Treat the pack as an evaluation protocol, not a quality result. Kokoro figures in the existing benchmark remain estimates until run and listened to on Sonara's target hardware.
 
+## 2026-11-16: Measured voice profiles, audio finishing, and wider spoken-text rules
+
+**Voice profiles.** Replace the proportional `less`/`more` factors with measured per-voice `noise_scale`/`noise_w_scale` presets. Keep `voice_default` unchanged. Scale planned pauses per voice from measured tempo. The measurements are in `docs/BENCHMARKS.md` §6. They are objective, not listener-validated, so the default profile does not change.
+
+**Audio finishing.** Finish every synthesized chunk before caching:
+- trim edge silence to fixed pads;
+- match gated speech level with a peak ceiling;
+- add short fades.
+
+This removes voice-dependent silence from planned pauses, removes level jumps between voices, and leaves headroom under Piper's full-scale peaks. The finish version is part of the TTS cache key.
+
+**Spoken-text rules.** Extend the English rules only where the bundled espeak-ng front end was observed to misread or split text:
+- titles and reference abbreviations, whose periods made Piper start a new sentence;
+- context-gated years, decades, ranges, currency, times, fractions and Roman numerals;
+- a small case-sensitive lexicon.
+
+Leave numbers that are ambiguous without context ("in 1500 samples", "3:2", "555-1234") for the voice to read. User pronunciation overrides still take precedence over every automatic rule.

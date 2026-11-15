@@ -4,3 +4,7 @@ piper-tts==1.8.0
 # Pin Piper's ONNX inference runtime for a repeatable local baseline.
 # This is a dependency of piper-tts, not imported directly by sonara.py.
 onnxruntime==1.31.0
+
+# Audio finishing (trim, level match, fades) and the Piper worker use numpy
+# directly; it is also an onnxruntime dependency.
+numpy==2.5.4

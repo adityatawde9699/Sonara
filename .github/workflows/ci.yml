@@ -11,14 +11,20 @@ permissions:
 
 jobs:
   python:
-    name: Python unit tests
+    name: Python unit tests (${{ matrix.python }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is what the packaged release runtime is built with; 3.14 is
+        # the development baseline.
+        python: ["3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements.txt
       - name: Install runtime dependencies
@@ -35,20 +41,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: ui-react/package-lock.json
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
           cache: pip
           cache-dependency-path: requirements.txt
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
         with:
-          components: rustfmt
+          toolchain: stable
+          components: rustfmt, clippy
       - name: Install Tauri Linux build dependencies
         run: |
           sudo apt-get update
@@ -74,5 +81,42 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - name: Prepare Tauri resource path for Rust tests
         run: mkdir -p packaging/staging/sonara && touch packaging/staging/sonara/.ci-placeholder
+      - name: Lint Rust
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+  audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
+        with:
+          toolchain: stable
+      - name: Audit frontend dependencies
+        working-directory: ui-react
+        run: npm audit --audit-level=moderate
+      - name: Install pip-audit
+        run: python -m pip install pip-audit==2.10.1
+      # llama-cpp-python is installed with --no-deps so its diskcache dependency
+      # (PYSEC-2026-2447, unsafe pickle, no fixed release) is never installed;
+      # the *-nodeps files are audited the same way. No advisory is ignored.
+      - name: Audit Python dependencies
+        run: |
+          python -m pip_audit -r requirements.txt --progress-spinner off
+          python -m pip_audit -r requirements-llm.txt --progress-spinner off
+          python -m pip_audit -r requirements-llm-nodeps.txt --no-deps --disable-pip --progress-spinner off
+          python -m pip_audit -r packaging/requirements-runtime.txt --progress-spinner off
+          python -m pip_audit -r packaging/requirements-runtime-nodeps.txt --no-deps --disable-pip --progress-spinner off
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.23.0
+      - name: Audit Rust dependencies
+        run: cargo audit --file src-tauri/Cargo.lock

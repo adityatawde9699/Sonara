@@ -25,6 +25,7 @@ import {
   saveRecentDocument,
   clearRecentDocuments,
 } from "../lib/history";
+import { isModalDialogOpen } from "./useModalDialog";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -650,9 +651,29 @@ export function useSonara() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger shortcuts if focus is in an input or textarea
-      const target = e.target as HTMLElement | null;
-      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable) {
+      // Ctrl/Cmd/Alt combinations belong to the browser and other handlers
+      // (Ctrl+A selects, Ctrl+K opens search); only bare keys are shortcuts.
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      // An open dialog owns the keyboard; it handles Escape itself.
+      if (isModalDialogOpen()) return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.tagName === "SELECT" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      // Let focused controls keep their own keys: Space/Enter activate a
+      // button or link, and arrows/Home/End move within composite widgets.
+      if ((e.key === " " || e.key === "Enter") && target?.closest("button, a[href], summary, [role='button']")) {
+        return;
+      }
+      if (
+        /^(Arrow|Home$|End$)/.test(e.key) &&
+        target?.closest("[role='slider'], [role='tab'], [role='tablist'], [role='listbox'], [role='option'], [role='menu'], [role='menuitem'], [role='radiogroup']")
+      ) {
         return;
       }
 
@@ -665,14 +686,6 @@ export function useSonara() {
       if (e.key === "a" || e.key === "A") {
         e.preventDefault();
         setIsAssistantOpen((prev) => !prev);
-        return;
-      }
-
-      if (e.key === "Escape") {
-        if (isShortcutsOpen) setIsShortcutsOpen(false);
-        if (isSettingsOpen) setIsSettingsOpen(false);
-        if (isHistoryOpen) setIsHistoryOpen(false);
-        if (isAssistantOpen) setIsAssistantOpen(false);
         return;
       }
 
@@ -711,10 +724,6 @@ export function useSonara() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
     phase,
-    isShortcutsOpen,
-    isSettingsOpen,
-    isHistoryOpen,
-    isAssistantOpen,
     pausePlayback,
     startPlayback,
     seekRelative,

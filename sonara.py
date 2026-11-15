@@ -116,15 +116,17 @@ def extract_pdf_document(pdf: Path, pdftotext: str = "pdftotext") -> Document:
         )
     except ValueError as exc:
         if "No selectable text was found" in str(exc):
-            from ocr import is_tesseract_available, extract_scanned_pdf
+            from ocr import is_tesseract_available, extract_scanned_pdf, page_sizes_from_bbox_layout
             if is_tesseract_available():
                 try:
-                    return extract_scanned_pdf(pdf)
+                    # The bbox pass already lists every page and its size, so
+                    # OCR does not need pdfinfo (which packaged builds omit).
+                    return extract_scanned_pdf(pdf, page_sizes=page_sizes_from_bbox_layout(markup) or None)
                 except Exception as ocr_err:
                     raise SonaraError(f"No selectable text was found, and OCR failed: {ocr_err}") from ocr_err
             raise SonaraError(
-                "No selectable text was found. This may be a scanned PDF; OCR is not implemented yet "
-                "or Tesseract OCR is not installed. To enable reading for scanned documents, install 'tesseract-ocr' "
+                "No selectable text was found. This may be a scanned PDF, and Tesseract OCR is not installed. "
+                "To enable reading for scanned documents, install 'tesseract-ocr' "
                 "or provide a document with selectable text."
             )
         raise SonaraError(str(exc)) from exc
@@ -377,6 +379,7 @@ def read_document(args: argparse.Namespace) -> Path:
             language="en_US" if getattr(args, "engine", "piper") == "kokoro" else _voice_language(args.voice),
             expand_dates=getattr(args, "expand_dates", False),
             expand_citations=getattr(args, "expand_citations", False),
+            voice=args.voice,
         )
     except NarrationError as exc:
         raise SonaraError(f"Could not plan document narration: {exc}") from exc
@@ -427,6 +430,7 @@ def preview_document(args: argparse.Namespace) -> dict[str, Any]:
         language=_voice_language(args.voice),
         expand_dates=getattr(args, "expand_dates", False),
         expand_citations=getattr(args, "expand_citations", False),
+        voice=args.voice,
     )
     units = []
     for unit in plan.units[:12]:
@@ -519,6 +523,13 @@ def _synthesize_plan(
                             or source.getsampwidth() != combined.getsampwidth()
                         ):
                             raise SonaraError("Piper returned incompatible audio chunk formats.")
+                        if chunk.sequence > 0:
+                            # Chunks are trimmed to short edge pads, so write the
+                            # planned pause the player would leave between them.
+                            pause_frames = round(
+                                combined.getframerate() * plan.units[chunk.sequence - 1].pause_after_ms / 1000
+                            )
+                            combined.writeframes(bytes(pause_frames * combined.getnchannels() * combined.getsampwidth()))
                         frames_left = source.getnframes()
                         while frames_left:
                             frames = source.readframes(min(frames_left, 65_536))

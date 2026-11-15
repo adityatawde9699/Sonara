@@ -1,4 +1,5 @@
 import { type FC, useState, useEffect } from "react";
+import { useModalDialog } from "../hooks/useModalDialog";
 import {
   type FrontendSession,
   type VoiceInfo,
@@ -82,17 +83,7 @@ export const SettingsModal: FC<Props> = ({
   });
   const llmProvider = llmConfig.provider;
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  const dialogRef = useModalDialog<HTMLDivElement>(isOpen, onClose);
 
   useEffect(() => {
     if (!isOpen || llmProvider !== "embedded_llama_cpp") return;
@@ -198,6 +189,8 @@ export const SettingsModal: FC<Props> = ({
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal-card"
         role="dialog"
         aria-modal="true"

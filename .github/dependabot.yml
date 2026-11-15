@@ -14,6 +14,14 @@ updates:
     groups:
       python-runtime:
         patterns: ["*"]
+  # Release-build pins; packaging/build_runtime.py reads this file directly.
+  - package-ecosystem: pip
+    directory: "/packaging"
+    schedule:
+      interval: weekly
+    groups:
+      packaged-runtime:
+        patterns: ["*"]
   - package-ecosystem: npm
     directory: "/ui-react"
     schedule:

@@ -1,4 +1,5 @@
 import { type FC, useState, useEffect, useRef } from "react";
+import { useModalDialog } from "../hooks/useModalDialog";
 import {
   type FrontendSession,
   type LlmConfig,
@@ -49,6 +50,7 @@ export const AssistantDrawer: FC<Props> = ({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const dialogRef = useModalDialog<HTMLElement>(isOpen, onClose);
 
   const llmConfig: LlmConfig = loadStoredLlmConfig();
   const docTitle = documentName || session?.sourceName || "Active Document";
@@ -68,18 +70,10 @@ export const AssistantDrawer: FC<Props> = ({
         // Text retrieval will fall back to empty context if not ready
       });
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
     return () => {
       mounted = false;
-      window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   // Scroll to bottom when messages update
   useEffect(() => {
@@ -317,6 +311,8 @@ export const AssistantDrawer: FC<Props> = ({
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
       <aside
+        ref={dialogRef}
+        tabIndex={-1}
         className="assistant-drawer"
         role="dialog"
         aria-modal="true"

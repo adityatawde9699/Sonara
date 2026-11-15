@@ -10,7 +10,7 @@ Include the affected commit or version, operating system, component, impact, rep
 
 ## Supported versions
 
-There are no tagged releases or published support windows identified in this checkout. Until a release policy is adopted, reports should identify the exact commit tested.
+Tags `v1.0.0` and `v1.0.1` exist, but no installers have been published and no support window is defined. Until a release policy is adopted, reports should identify the exact commit or tag tested.
 
 ## Maintainer action
 

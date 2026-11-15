@@ -109,3 +109,37 @@ Each voice was evaluated across four passage types designed to test sentence bou
 `listening_eval.py` generates blind, randomized, RMS-level-matched comparison packs for Piper voice-config defaults and the optional `less`/`more` variation profiles. Its eight-passage corpus covers report prose, technical terms, numbers and units, questions, citations/dates, and dialogue. Participant files contain randomized IDs; the key is kept separately under `facilitator-only/`. Use the generated ratings to assess naturalness and intelligibility before changing the default profile.
 
 No participant ratings have been collected as part of this implementation, so there is no supported claim that either variation profile sounds better. RMS matching with a peak ceiling is approximate loudness control, not LUFS normalization. Piper's `noise_scale` and `noise_w_scale` are left unset for the default profile so voice-specific config values apply; they are generator noise and phoneme-width variation, not pitch controls.
+
+## 6. Voice profiles and audio finishing (2026-11-16)
+
+Measured on this host with piper-tts 1.8.0 by synthesizing one fixed six-sentence passage (mixed statement, question, list-like and heading text) with each bundled voice at speed 1.0. Pitch was tracked by autocorrelation over 40 ms windows. "Duration spread" is the standard deviation of the total passage duration over three runs with the same settings. These are objective measurements, not listening results.
+
+| Voice | Words/s of speech | Built-in edge silence per sentence (lead + trail) | Gated speech level | Median F0 | Pitch spread |
+|---|---|---|---|---|---|
+| ryan | 3.26 | 3 ms | −14.8 dBFS | 153 Hz | 4.5 semitones |
+| lessac | 3.32 | 160 ms | −14.6 dBFS | 185 Hz | 4.5 semitones |
+| bryce | 2.42 | 163 ms | −16.9 dBFS | 134 Hz | 3.5 semitones |
+| john | 2.47 | 195 ms | −16.7 dBFS | 115 Hz | 3.1 semitones |
+
+Sweeping `noise_scale` over 0.33/0.667/0.9 and `noise_w_scale` over 0.4/0.8/1.0 moved pitch spread by less than 0.2 semitones for every voice. These settings do not widen intonation. `noise_w_scale` changes rhythm: higher values slow the passage by 4–8% and make timing vary more from run to run. john is the outlier. At its default `noise_w` of 0.8, its duration spread is 0.38–0.71 s, against 0.2 s or less for the other voices. The previous `less`/`more` presets (0.85×/1.10× of the voice config) made no measurable difference.
+
+What Sonara does with this (`narration.VoiceProfile`):
+
+- **Pauses** scale with the square root of the tempo ratio to ryan. bryce and john get 1.15× planned pauses (a heading pause becomes 828 ms instead of 720 ms) and 230 ms between sentences instead of 200 ms.
+- **Variation presets.** For ryan, lessac and bryce, `less` is `noise_scale` 0.5 / `noise_w` 0.5 and `more` is 0.8 / 1.0. john's are 0.5 / 0.4 and 0.75 / 0.85, so "more" stays clear of its unstable range. `voice_default` still sends nothing and uses the voice's own config.
+- **Finishing** (`audio_processing.py`, applied to every chunk before caching):
+  - Edge silence is trimmed to 15 ms before and 40 ms after the speech. A frame counts as silence when it is more than 45 dB under the loudest frame.
+  - Speech is matched to −18 dBFS by two-stage gated RMS, with a −1 dBFS peak ceiling and at most ±12 dB of gain.
+  - Each chunk gets a 5 ms fade-in and a 15 ms fade-out.
+  - The Piper worker also trims each sentence's edges before inserting the sentence pause.
+
+End-to-end result through `SynthesisStream` (two-sentence passage, real Piper):
+
+| Voice | Speech level before → after | Peak before → after | Longest gap inside the passage before → after |
+|---|---|---|---|
+| ryan | −13.1 → −18.0 dBFS | 0.0 → −4.7 dBFS | 200 → 200 ms |
+| lessac | −13.3 → −18.0 dBFS | 0.0 → −5.1 dBFS | 290 → 350 ms (a comma pause; timing varies run to run) |
+| bryce | −15.4 → −18.0 dBFS | 0.0 → −2.8 dBFS | 300 → 290 ms |
+| john | −14.1 → −18.0 dBFS | 0.0 → −3.8 dBFS | 400 → 290 ms |
+
+Raw Piper chunks peak at full scale. The finished chunks leave headroom and no longer change level when the voice changes. The profiles still need a blind listening check with `listening_eval.py` before anyone claims they sound better.

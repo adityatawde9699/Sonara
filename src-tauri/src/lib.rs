@@ -9,6 +9,7 @@ use std::os::windows::process::CommandExt as WindowsCommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -113,12 +114,72 @@ struct AppState {
     active: Mutex<Option<ActiveJob>>,
     session: Mutex<Option<ReaderSession>>,
     llm_worker: Mutex<Option<LlmWorker>>,
+    /// A second handle to the worker process, locked only briefly. `llm_worker`
+    /// is held for the whole of a request, so shutdown uses this one to kill a
+    /// busy worker instead of waiting behind the in-flight call.
+    llm_child: Mutex<Option<Arc<Mutex<Child>>>>,
+}
+
+/// Longest wait for one LLM worker reply. Embedded CPU inference on a large
+/// model can be slow; HTTP providers time out after 60 s inside the worker.
+const LLM_RPC_TIMEOUT: Duration = Duration::from_secs(300);
+const LLM_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_LLM_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
+enum LlmLine {
+    Line(Vec<u8>),
+    TooLarge,
+    ReadError(String),
 }
 
 struct LlmWorker {
-    child: Child,
+    child: Arc<Mutex<Child>>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pid: u32,
     stdin: std::process::ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    /// Lines read from the worker's stdout by a dedicated thread, so requests
+    /// can wait with a timeout instead of blocking forever.
+    lines: Receiver<LlmLine>,
+}
+
+impl LlmWorker {
+    fn kill(&self) {
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn spawn_llm_line_reader(stdout: std::process::ChildStdout) -> Receiver<LlmLine> {
+    let (sender, receiver) = mpsc::channel();
+    let spawned = thread::Builder::new()
+        .name("sonara-llm-stdout".to_owned())
+        .spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = Vec::new();
+                let message = match (&mut reader)
+                    .take(MAX_LLM_RESPONSE_BYTES + 1)
+                    .read_until(b'\n', &mut line)
+                {
+                    Ok(0) => break, // EOF: dropping the sender signals the exit.
+                    Ok(read) if read as u64 > MAX_LLM_RESPONSE_BYTES => LlmLine::TooLarge,
+                    Ok(_) => LlmLine::Line(line),
+                    Err(error) => LlmLine::ReadError(error.to_string()),
+                };
+                let stop = !matches!(message, LlmLine::Line(_));
+                if sender.send(message).is_err() || stop {
+                    break;
+                }
+            }
+        });
+    if spawned.is_err() {
+        // Without a reader every request reports a disconnected worker.
+        let (_, receiver) = mpsc::channel();
+        return receiver;
+    }
+    receiver
 }
 
 struct AudioServer {
@@ -689,6 +750,9 @@ fn parse_voice_metadata(json_path: &Path, id: &str) -> (String, String, String) 
     (friendly_name, quality, language)
 }
 
+// Each parameter is a top-level key in the frontend's `invoke` payload, so
+// grouping them into a struct would change the IPC contract.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn start_reading(
     app: AppHandle,
@@ -795,20 +859,16 @@ fn start_reading(
         .try_clone()
         .map_err(|error| format!("Could not prepare the local worker log: {error}"))?;
 
-    let child = spawn_sonara_worker(
-        &runtime,
-        &document,
-        &output_dir,
-        &selected_voice,
-        &selected_variation,
-        &selected_engine,
-        expand_dates.unwrap_or(false),
-        expand_citations.unwrap_or(false),
-        &selected_profile,
-        log,
-        error_log,
-    )
-    .map_err(|error| format!("Could not start the Sonara Python worker: {error}"))?;
+    let options = WorkerOptions {
+        voice: &selected_voice,
+        variation: &selected_variation,
+        engine: &selected_engine,
+        resource_profile: &selected_profile,
+        expand_dates: expand_dates.unwrap_or(false),
+        expand_citations: expand_citations.unwrap_or(false),
+    };
+    let child = spawn_sonara_worker(&runtime, &document, &output_dir, &options, log, error_log)
+        .map_err(|error| format!("Could not start the Sonara Python worker: {error}"))?;
     let job_id = make_job_id();
     let child = Arc::new(Mutex::new(child));
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -922,10 +982,14 @@ fn invoke_llm_rpc(
         .llm_worker
         .lock()
         .map_err(|_| "LLM worker state is unavailable.".to_owned())?;
-    if worker_guard
-        .as_mut()
-        .is_some_and(|worker| worker.child.try_wait().ok().flatten().is_some())
-    {
+    let exited = worker_guard.as_ref().is_some_and(|worker| {
+        worker
+            .child
+            .lock()
+            .map(|mut child| child.try_wait().ok().flatten().is_some())
+            .unwrap_or(true)
+    });
+    if exited {
         *worker_guard = None;
     }
     if worker_guard.is_none() {
@@ -938,10 +1002,9 @@ fn invoke_llm_rpc(
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         configure_runtime_command(&mut command, &runtime);
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|error| format!("Failed to start Sonara's local LLM worker: {error}"))?;
-        let mut child = child;
         let stdin = child
             .stdin
             .take()
@@ -950,54 +1013,68 @@ fn invoke_llm_rpc(
             .stdout
             .take()
             .ok_or_else(|| "LLM worker stdout was unavailable.".to_owned())?;
+        let pid = child.id();
+        let child = Arc::new(Mutex::new(child));
+        if let Ok(mut handle) = state.llm_child.lock() {
+            *handle = Some(Arc::clone(&child));
+        }
         *worker_guard = Some(LlmWorker {
             child,
+            pid,
             stdin,
-            stdout: BufReader::new(stdout),
+            lines: spawn_llm_line_reader(stdout),
         });
     }
-    let worker = worker_guard.as_mut().expect("worker was started");
+    let Some(worker) = worker_guard.as_mut() else {
+        return Err("Sonara's local LLM worker could not be started.".to_owned());
+    };
     let mut request_line = serde_json::to_vec(request)
         .map_err(|error| format!("Failed to serialize LLM request: {error}"))?;
     if request_line.len() > 4 * 1024 * 1024 {
         return Err("LLM request exceeded the 4 MiB limit.".to_owned());
     }
     request_line.push(b'\n');
-    worker
+    if let Err(error) = worker
         .stdin
         .write_all(&request_line)
         .and_then(|_| worker.stdin.flush())
-        .map_err(|error| format!("Could not send request to Sonara's local LLM worker: {error}"))?;
+    {
+        discard_llm_worker(state, &mut worker_guard);
+        return Err(format!(
+            "Could not send request to Sonara's local LLM worker: {error}"
+        ));
+    }
 
-    const MAX_LLM_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
-    let mut response_line = Vec::new();
-    let bytes_read = (&mut worker.stdout)
-        .take(MAX_LLM_RESPONSE_BYTES + 1)
-        .read_until(b'\n', &mut response_line)
-        .map_err(|error| {
+    let reply = worker.lines.recv_timeout(LLM_RPC_TIMEOUT);
+    let failure = match reply {
+        Ok(LlmLine::Line(line)) => match serde_json::from_slice(&line) {
+            Ok(result) => return Ok(result),
+            Err(error) => format!("Sonara's local LLM worker returned invalid JSON: {error}"),
+        },
+        Ok(LlmLine::TooLarge) => "LLM response exceeded the 16 MiB limit.".to_owned(),
+        Ok(LlmLine::ReadError(error)) => {
             format!("Could not read response from Sonara's local LLM worker: {error}")
-        })?;
-    if bytes_read == 0 {
-        return Err("Sonara's local LLM worker exited without a response.".to_owned());
-    }
-    if bytes_read as u64 > MAX_LLM_RESPONSE_BYTES {
-        if let Some(mut worker) = worker_guard.take() {
-            let _ = worker.child.kill();
-            let _ = worker.child.wait();
         }
-        return Err("LLM response exceeded the 16 MiB limit.".to_owned());
-    }
-    match serde_json::from_slice(&response_line) {
-        Ok(result) => Ok(result),
-        Err(error) => {
-            if let Some(mut worker) = worker_guard.take() {
-                let _ = worker.child.kill();
-                let _ = worker.child.wait();
-            }
-            Err(format!(
-                "Sonara's local LLM worker returned invalid JSON: {error}"
-            ))
+        Err(RecvTimeoutError::Timeout) => format!(
+            "Sonara's local LLM worker did not answer within {} seconds and was stopped.",
+            LLM_RPC_TIMEOUT.as_secs()
+        ),
+        Err(RecvTimeoutError::Disconnected) => {
+            "Sonara's local LLM worker exited without a response.".to_owned()
         }
+    };
+    // Any failure leaves the stream out of step with requests, so the worker
+    // is replaced rather than reused; a late reply can never answer the next call.
+    discard_llm_worker(state, &mut worker_guard);
+    Err(failure)
+}
+
+fn discard_llm_worker(state: &AppState, worker_guard: &mut Option<LlmWorker>) {
+    if let Some(worker) = worker_guard.take() {
+        worker.kill();
+    }
+    if let Ok(mut handle) = state.llm_child.lock() {
+        *handle = None;
     }
 }
 
@@ -1130,18 +1207,35 @@ async fn llm_discover_models(
 }
 
 fn shutdown_llm_worker(state: &AppState) {
-    let Ok(mut guard) = state.llm_worker.lock() else {
-        return;
+    // If a request is in flight the worker lock is held for its whole
+    // duration; kill the process through the side handle so closing the app
+    // never waits on a slow model. The in-flight call then sees the worker exit.
+    let mut guard = match state.llm_worker.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            if let Ok(mut handle) = state.llm_child.lock() {
+                if let Some(child) = handle.take() {
+                    if let Ok(mut child) = child.lock() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+            }
+            return;
+        }
     };
     let Some(mut worker) = guard.take() else {
         return;
     };
+    if let Ok(mut handle) = state.llm_child.lock() {
+        *handle = None;
+    }
     let shutdown = b"{\"action\":\"shutdown\",\"config\":{\"provider\":\"embedded_llama_cpp\"}}\n";
     let _ = worker.stdin.write_all(shutdown);
     let _ = worker.stdin.flush();
-    let mut response = Vec::new();
-    let _ = worker.stdout.read_until(b'\n', &mut response);
-    let _ = worker.child.wait();
+    // Give the worker a moment to unload its model, then stop it regardless.
+    let _ = worker.lines.recv_timeout(LLM_SHUTDOWN_TIMEOUT);
+    worker.kill();
 }
 
 #[tauri::command]
@@ -1504,20 +1598,25 @@ struct RuntimePaths {
     packaged: bool,
 }
 
+/// Validated narration settings passed to the synthesis worker.
+struct WorkerOptions<'a> {
+    voice: &'a str,
+    variation: &'a str,
+    engine: &'a str,
+    resource_profile: &'a str,
+    expand_dates: bool,
+    expand_citations: bool,
+}
+
 fn spawn_sonara_worker(
     runtime: &RuntimePaths,
     document: &Path,
     output_dir: &Path,
-    voice: &str,
-    variation: &str,
-    engine: &str,
-    expand_dates: bool,
-    expand_citations: bool,
-    resource_profile: &str,
+    options: &WorkerOptions<'_>,
     stdout: File,
     stderr: File,
 ) -> std::io::Result<Child> {
-    let python = if engine == "kokoro" {
+    let python = if options.engine == "kokoro" {
         if !runtime.kokoro_python.is_file() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -1543,13 +1642,13 @@ fn spawn_sonara_worker(
         .arg("read")
         .arg(document)
         .arg("--voice")
-        .arg(voice)
+        .arg(options.voice)
         .arg("--variation")
-        .arg(variation)
+        .arg(options.variation)
         .arg("--engine")
-        .arg(engine)
+        .arg(options.engine)
         .arg("--resource-profile")
-        .arg(resource_profile)
+        .arg(options.resource_profile)
         .arg("--data-dir")
         .arg(&runtime.model_dir)
         .arg("--kokoro-dir")
@@ -1562,10 +1661,10 @@ fn spawn_sonara_worker(
         .stderr(Stdio::from(stderr))
         .env("PYTHONUNBUFFERED", "1");
     configure_runtime_command(&mut command, runtime);
-    if expand_dates {
+    if options.expand_dates {
         command.arg("--expand-dates");
     }
-    if expand_citations {
+    if options.expand_citations {
         command.arg("--expand-citations");
     }
     #[cfg(unix)]
@@ -1876,8 +1975,26 @@ fn is_safe_relative_audio_path(path: &Path) -> bool {
             .all(|item| matches!(item, Component::Normal(_)))
 }
 
-fn serve_audio_http_request(
-    app: &AppHandle,
+fn serve_audio_http_request(app: &AppHandle, token: &str, expected_host: &str, stream: TcpStream) {
+    let reader_output = app
+        .path()
+        .app_local_data_dir()
+        .ok()
+        .map(|path| path.join("reader-output"));
+    serve_audio_request(
+        app.state::<AppState>().inner(),
+        reader_output.as_deref(),
+        token,
+        expected_host,
+        stream,
+    );
+}
+
+/// Serve one audio request. Takes the app state and output directory
+/// directly, rather than an `AppHandle`, so tests can drive it over a socket.
+fn serve_audio_request(
+    state: &AppState,
+    reader_output: Option<&Path>,
     token: &str,
     expected_host: &str,
     mut stream: TcpStream,
@@ -1990,7 +2107,7 @@ fn serve_audio_http_request(
             return;
         }
     };
-    let session = match app.state::<AppState>().session.lock() {
+    let session = match state.session.lock() {
         Ok(session) => session.clone(),
         Err(_) => {
             write_audio_http_response(
@@ -2026,12 +2143,8 @@ fn serve_audio_http_request(
         );
         return;
     };
-    let output_root = match app
-        .path()
-        .app_local_data_dir()
-        .map(|path| path.join("reader-output").canonicalize())
-    {
-        Ok(Ok(path)) => path,
+    let output_root = match reader_output.map(Path::canonicalize) {
+        Some(Ok(path)) => path,
         _ => {
             write_audio_http_response(
                 &mut stream,
@@ -2643,6 +2756,250 @@ mod tests {
         assert!(result.error.is_some());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn llm_line_reader_reports_lines_then_disconnects_at_eof() {
+        let mut child = Command::new("echo")
+            .arg(r#"{"ok":true}"#)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let lines = spawn_llm_line_reader(child.stdout.take().unwrap());
+        match lines.recv_timeout(Duration::from_secs(5)) {
+            Ok(LlmLine::Line(line)) => assert_eq!(line, b"{\"ok\":true}\n"),
+            _ => panic!("expected one response line"),
+        }
+        assert!(matches!(
+            lines.recv_timeout(Duration::from_secs(5)),
+            Err(RecvTimeoutError::Disconnected)
+        ));
+        let _ = child.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_kills_a_busy_llm_worker_without_waiting_for_its_reply() {
+        let state = Arc::new(AppState::default());
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let pid = child.id();
+        let child = Arc::new(Mutex::new(child));
+        *state.llm_child.lock().unwrap() = Some(Arc::clone(&child));
+        *state.llm_worker.lock().unwrap() = Some(LlmWorker {
+            child: Arc::clone(&child),
+            pid,
+            stdin,
+            lines: spawn_llm_line_reader(stdout),
+        });
+
+        // Simulate an in-flight request: hold the worker lock, as invoke_llm_rpc does.
+        let (held, release) = (Arc::new(std::sync::Barrier::new(2)), Arc::clone(&state));
+        let held_clone = Arc::clone(&held);
+        let busy = thread::spawn(move || {
+            let guard = release.llm_worker.lock().unwrap();
+            held_clone.wait();
+            thread::sleep(Duration::from_millis(500));
+            drop(guard);
+        });
+        held.wait();
+
+        let started = std::time::Instant::now();
+        shutdown_llm_worker(&state);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "shutdown must not wait for the request"
+        );
+        let status = child.lock().unwrap().try_wait().unwrap();
+        assert!(status.is_some(), "busy worker should have been killed");
+        busy.join().unwrap();
+    }
+
+    /// A temporary reader-output tree served by `serve_audio_request`.
+    struct AudioFixture {
+        root: PathBuf,
+        state: AppState,
+        hash: String,
+        token: String,
+    }
+
+    impl AudioFixture {
+        const BODY_LEN: usize = 1000;
+
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("sonara-audio-test-{}", make_job_id()));
+            let chunks = root.join("reader-output/chunks/doc");
+            fs::create_dir_all(&chunks).unwrap();
+            let body: Vec<u8> = (0..Self::BODY_LEN).map(|i| (i % 251) as u8).collect();
+            let good = chunks.join("chunk-0.wav");
+            fs::write(&good, &body).unwrap();
+            // Inside reader-output but outside chunks/: must not be served.
+            let outside = root.join("reader-output/secret.wav");
+            fs::write(&outside, b"not audio").unwrap();
+            let mut chunk_files = vec![good, outside.clone()];
+            #[cfg(unix)]
+            {
+                let link = chunks.join("escape.wav");
+                std::os::unix::fs::symlink(&outside, &link).unwrap();
+                chunk_files.push(link);
+            }
+            let hash = "ab".repeat(32);
+            let session = ReaderSession {
+                source_name: "doc.pdf".to_owned(),
+                source_sha256: hash.clone(),
+                narration_ruleset_version: "rules-test".to_owned(),
+                voice: "test".to_owned(),
+                engine: "piper".to_owned(),
+                sample_rate: 22050,
+                channels: 1,
+                sample_width_bytes: 2,
+                chunks: chunk_files
+                    .into_iter()
+                    .map(|path| ReaderChunk {
+                        audio_file: path.to_string_lossy().into_owned(),
+                        duration_seconds: 1.0,
+                        pause_after_ms: 0,
+                    })
+                    .collect(),
+            };
+            let state = AppState::default();
+            *state.session.lock().unwrap() = Some(session);
+            Self {
+                root,
+                state,
+                hash,
+                token: "f".repeat(64),
+            }
+        }
+
+        fn path(&self, index: usize) -> String {
+            format!("/v1/{}/{}/{index}", self.token, self.hash)
+        }
+
+        /// Send a raw request and return (status, headers, body).
+        fn send(&self, raw: &str) -> (u16, String, Vec<u8>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let host = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+            let raw = raw.replace("{HOST}", &host);
+            let reader_output = self.root.join("reader-output");
+            thread::scope(|scope| {
+                scope.spawn(|| {
+                    let (stream, _) = listener.accept().unwrap();
+                    serve_audio_request(
+                        &self.state,
+                        Some(&reader_output),
+                        &self.token,
+                        &host,
+                        stream,
+                    );
+                });
+                let mut client = TcpStream::connect(&host).unwrap();
+                client.write_all(raw.as_bytes()).unwrap();
+                let mut response = Vec::new();
+                client.read_to_end(&mut response).unwrap();
+                let split = response
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .expect("response has a header terminator");
+                let headers = String::from_utf8_lossy(&response[..split]).into_owned();
+                let status = headers[9..12].parse().unwrap();
+                (status, headers, response[split + 4..].to_vec())
+            })
+        }
+
+        fn get(&self, path: &str, extra_headers: &str) -> (u16, String, Vec<u8>) {
+            self.send(&format!(
+                "GET {path} HTTP/1.1\r\nHost: {{HOST}}\r\n{extra_headers}\r\n"
+            ))
+        }
+    }
+
+    impl Drop for AudioFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn audio_server_serves_whole_ranged_and_head_requests() {
+        let fixture = AudioFixture::new();
+        let (status, headers, body) = fixture.get(&fixture.path(0), "");
+        assert_eq!(status, 200);
+        assert_eq!(body.len(), AudioFixture::BODY_LEN);
+        assert!(headers.contains("Accept-Ranges: bytes"));
+        assert!(headers.contains("Cache-Control: no-store"));
+
+        let (status, headers, body) = fixture.get(&fixture.path(0), "Range: bytes=10-19\r\n");
+        assert_eq!(status, 206);
+        assert!(headers.contains("Content-Range: bytes 10-19/1000"));
+        assert_eq!(body, (10..20).map(|i| (i % 251) as u8).collect::<Vec<_>>());
+
+        let (status, headers, _) = fixture.get(&fixture.path(0), "Range: bytes=5000-\r\n");
+        assert_eq!(status, 416);
+        assert!(headers.contains("Content-Range: bytes */1000"));
+
+        let (status, headers, body) = fixture.send(&format!(
+            "HEAD {} HTTP/1.1\r\nHost: {{HOST}}\r\n\r\n",
+            fixture.path(0)
+        ));
+        assert_eq!(status, 200);
+        assert!(headers.contains("Content-Length: 1000"));
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn audio_server_rejects_bad_host_token_method_and_query() {
+        let fixture = AudioFixture::new();
+        let wrong_host = fixture.send(&format!(
+            "GET {} HTTP/1.1\r\nHost: evil.example:80\r\n\r\n",
+            fixture.path(0)
+        ));
+        assert_eq!(wrong_host.0, 421, "DNS-rebinding hosts must be refused");
+
+        let wrong_token = format!("/v1/{}/{}/0", "0".repeat(64), fixture.hash);
+        assert_eq!(fixture.get(&wrong_token, "").0, 404);
+
+        let post = fixture.send(&format!(
+            "POST {} HTTP/1.1\r\nHost: {{HOST}}\r\n\r\n",
+            fixture.path(0)
+        ));
+        assert_eq!(post.0, 405);
+
+        let query = format!("{}?x=1", fixture.path(0));
+        assert_eq!(fixture.get(&query, "").0, 400);
+
+        let oversized = format!(
+            "GET {} HTTP/1.1\r\nHost: {{HOST}}\r\nX-Pad: {}\r\n\r\n",
+            fixture.path(0),
+            "a".repeat(MAX_HTTP_REQUEST_BYTES)
+        );
+        assert_eq!(fixture.send(&oversized).0, 431);
+    }
+
+    #[test]
+    fn audio_server_serves_only_files_inside_the_active_chunks_directory() {
+        let fixture = AudioFixture::new();
+        let other_document = format!("/v1/{}/{}/0", fixture.token, "cd".repeat(32));
+        assert_eq!(fixture.get(&other_document, "").0, 404);
+        assert_eq!(fixture.get(&fixture.path(99), "").0, 404);
+        // A manifest entry outside chunks/ is refused even though it exists.
+        let (status, _, body) = fixture.get(&fixture.path(1), "");
+        assert_eq!(status, 404);
+        assert!(!body.starts_with(b"not audio"));
+        #[cfg(unix)]
+        {
+            // A symlink inside chunks/ that points outside it is refused.
+            let (status, _, body) = fixture.get(&fixture.path(2), "");
+            assert_eq!(status, 404);
+            assert!(!body.starts_with(b"not audio"));
+        }
+    }
+
     #[test]
     fn embedded_llm_worker_is_reused_without_startup_model_load() {
         let state = AppState::default();
@@ -2652,25 +3009,11 @@ mod tests {
         });
         let first = invoke_llm_rpc(None, &state, &request).expect("status request should complete");
         assert_eq!(first["state"], "UNLOADED");
-        let first_pid = state
-            .llm_worker
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .child
-            .id();
+        let first_pid = state.llm_worker.lock().unwrap().as_ref().unwrap().pid;
 
         let second =
             invoke_llm_rpc(None, &state, &request).expect("second status request should complete");
-        let second_pid = state
-            .llm_worker
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .child
-            .id();
+        let second_pid = state.llm_worker.lock().unwrap().as_ref().unwrap().pid;
         assert_eq!(second["state"], "UNLOADED");
         assert_eq!(first_pid, second_pid);
         shutdown_llm_worker(&state);

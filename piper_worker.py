@@ -8,8 +8,11 @@ import sys
 import wave
 from pathlib import Path
 
+from audio_processing import apply_fades, float_to_pcm16, pcm16_to_float, trim_silence
+
 
 PIPER_SENTENCE_PAUSE_MS = 200
+MAX_SENTENCE_PAUSE_MS = 2000
 
 
 def _send(message: dict) -> None:
@@ -58,6 +61,7 @@ def main() -> int:
                 raise ValueError("text must be a non-empty string")
             if not 0.5 <= speed <= 2.0:
                 raise ValueError("speed must be between 0.5 and 2.0")
+            sentence_pause_ms = _sentence_pause_ms(request.get("sentence_pause_ms"))
             noise_scale, noise_w_scale = _variation_scales(
                 voice.config,
                 variation,
@@ -73,7 +77,7 @@ def main() -> int:
                 wav_file.setframerate(voice.config.sample_rate)
                 wav_file.setsampwidth(2)
                 wav_file.setnchannels(1)
-                _write_sentences_with_pauses(voice, text, wav_file, config)
+                _write_sentences_with_pauses(voice, text, wav_file, config, sentence_pause_ms)
                 if wav_file.tell() == 0:
                     # Text contained only punctuation/symbols with no speakable phonemes (e.g. "...", "---", "•").
                     # Emit a brief slice of silence (0.1s) so the chunk is a valid, playable audio file.
@@ -102,17 +106,36 @@ def main() -> int:
     return 0
 
 
-def _write_sentences_with_pauses(voice, text: str, wav_file: wave.Wave_write, config) -> None:
-    """Write Piper's sentence chunks with a short pause, without a trailing gap."""
+def _sentence_pause_ms(value) -> int:
+    if value is None:
+        return PIPER_SENTENCE_PAUSE_MS
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError("sentence_pause_ms must be a number")
+    if not 0 <= value <= MAX_SENTENCE_PAUSE_MS:
+        raise ValueError(f"sentence_pause_ms must be between 0 and {MAX_SENTENCE_PAUSE_MS}")
+    return int(round(value))
+
+
+def _trimmed_sentence(audio: bytes, sample_rate: int) -> bytes:
+    """Trim a sentence's built-in edge silence so the planned pause is the real gap."""
+    samples = trim_silence(pcm16_to_float(audio), sample_rate)
+    return float_to_pcm16(apply_fades(samples, sample_rate))
+
+
+def _write_sentences_with_pauses(
+    voice, text: str, wav_file: wave.Wave_write, config, pause_ms: int = PIPER_SENTENCE_PAUSE_MS,
+) -> None:
+    """Write Piper's sentence chunks with a fixed pause, without a trailing gap."""
     chunks = iter(voice.synthesize(text, syn_config=config))
     try:
         current = next(chunks)
     except StopIteration:
         return
 
-    silence = bytes(round(voice.config.sample_rate * PIPER_SENTENCE_PAUSE_MS / 1000) * 2)
+    sample_rate = voice.config.sample_rate
+    silence = bytes(round(sample_rate * pause_ms / 1000) * 2)
     while True:
-        wav_file.writeframes(current.audio_int16_bytes)
+        wav_file.writeframes(_trimmed_sentence(current.audio_int16_bytes, sample_rate))
         try:
             current = next(chunks)
         except StopIteration:

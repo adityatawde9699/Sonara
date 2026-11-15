@@ -305,7 +305,7 @@ class PdfCorpusIntegrationTests(unittest.TestCase):
             )
 
             scanned_only = make_corpus_pdf(root / "scanned-only.pdf", [[]], image_pages={1})
-            with self.assertRaisesRegex(sonara.SonaraError, "scanned PDF; OCR is not implemented"):
+            with self.assertRaisesRegex(sonara.SonaraError, "No selectable text was found"):
                 sonara.extract_pdf_document(scanned_only)
 
             malformed = write_malformed_pdf(root / "malformed.pdf")

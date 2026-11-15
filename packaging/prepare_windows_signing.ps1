@@ -11,6 +11,9 @@ $certificatePath = Join-Path $env:RUNNER_TEMP "sonara-signing-certificate.pfx"
 $password = ConvertTo-SecureString $env:SONARA_WINDOWS_PFX_PASSWORD -AsPlainText -Force
 $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
 if (-not $certificate -or -not $certificate.HasPrivateKey) { throw "The Windows signing certificate has no private key." }
+# The identity now lives in the user certificate store; remove the PFX so the
+# key file and its password are not needed again for the rest of the job.
+Remove-Item -LiteralPath $certificatePath -Force
 
 $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
   Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
@@ -23,7 +26,9 @@ $executables = @("packaging/staging/sonara/sonara-runtime.exe") +
   @(Get-ChildItem $stagedTools -Filter "*.exe" -File | ForEach-Object { $_.FullName })
 foreach ($executable in $executables) {
   if (-not (Test-Path $executable)) { throw "Expected staged executable is missing: $executable" }
-  & $signTool.FullName sign /fd SHA256 /f $certificatePath /p $env:SONARA_WINDOWS_PFX_PASSWORD /tr "http://timestamp.digicert.com" /td SHA256 $executable
+  # Select the imported certificate by thumbprint so the PFX password never
+  # appears on a command line, where process listings and logs can capture it.
+  & $signTool.FullName sign /fd SHA256 /sha1 $certificate.Thumbprint /s My /tr "http://timestamp.digicert.com" /td SHA256 $executable
   if ($LASTEXITCODE -ne 0) { throw "signtool failed to sign $executable with exit code $LASTEXITCODE." }
   & $signTool.FullName verify /pa /all $executable
   if ($LASTEXITCODE -ne 0) { throw "signtool could not verify $executable." }

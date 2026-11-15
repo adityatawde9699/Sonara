@@ -1,5 +1,22 @@
 # Testing Sonara
 
+## Current state (2026-11-16)
+
+This is the latest verified run. The dated sections below are historical records, and their counts reflect the suite at that time.
+
+| Check | Command | Result |
+|---|---|---|
+| Python unit tests | `python -m unittest discover -s tests` | 154 run, 7 skipped, all pass on Python 3.14 and 3.12 |
+| Python integration (Poppler + Piper) | `SONARA_RUN_INTEGRATION=1 .venv/bin/python -m unittest discover -s tests -p test_integration_sonara.py` | 6 pass |
+| Frontend | `cd ui-react && npm test` | 71 pass across 14 files |
+| Frontend types and lint | `npx tsc -b --noEmit`, `npm run lint` | clean |
+| Rust | `cargo test --manifest-path src-tauri/Cargo.toml --locked` | 18 pass, including end-to-end loopback tests of the audio server |
+| Rust lint | `cargo clippy --locked --all-targets -- -D warnings` | clean (now enforced in CI) |
+| Site | `node --test site/scripts/downloads.test.mjs` | 4 pass |
+| Dependency audits | `npm audit`, `pip-audit`, `cargo audit` | no vulnerabilities and no ignored advisories. llama-cpp-python is installed with `--no-deps`, so `diskcache` (CVE-2025-69872) is not installed, and the release build refuses to run if it is present |
+
+Not verified: listener judgement of the voice profiles and normalization rules (only objective measurements, `docs/BENCHMARKS.md` §6), OCR end to end with a real Tesseract (not installed on this host; covered by mocked tests), the GUI by automation, and any installer or clean-machine install.
+
 ## Implementation checks (2026-10-27)
 
 - `.venv/bin/python -m unittest discover -s tests -v` — 77 passed, 6 opt-in integration tests skipped.

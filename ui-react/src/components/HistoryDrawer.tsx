@@ -1,4 +1,5 @@
-import { type FC, useEffect } from "react";
+import { type FC } from "react";
+import { useModalDialog } from "../hooks/useModalDialog";
 import type { RecentDocument } from "../lib/history";
 
 interface Props {
@@ -32,23 +33,15 @@ export const HistoryDrawer: FC<Props> = ({
   recentDocs,
   onClearHistory,
 }) => {
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  const dialogRef = useModalDialog<HTMLDivElement>(isOpen, onClose);
 
   if (!isOpen) return null;
 
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal-card drawer-card"
         role="dialog"
         aria-modal="true"

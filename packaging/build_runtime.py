@@ -14,13 +14,33 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 STAGING = ROOT / "packaging" / "staging"
 RESOURCE_ROOT = STAGING / "sonara"
-REQUIRED_PACKAGES = {
-    "piper-tts": "1.8.0",
-    "onnxruntime": "1.31.0",
-    "kokoro-onnx": "0.6.1",
-    "llama-cpp-python": "0.3.36",
-    "pyinstaller": "6.22.3",
-}
+RUNTIME_REQUIREMENTS = ROOT / "packaging" / "requirements-runtime.txt"
+# Installed with ``pip install --no-deps`` so llama-cpp-python's diskcache
+# dependency (PYSEC-2026-2447, no fixed release) is never installed.
+RUNTIME_NODEPS_REQUIREMENTS = ROOT / "packaging" / "requirements-runtime-nodeps.txt"
+# Distributions that must not be present in the build environment.
+FORBIDDEN_PACKAGES = ("diskcache",)
+
+
+def read_pinned_requirements(path: Path = RUNTIME_REQUIREMENTS) -> dict[str, str]:
+    """Return ``{package: version}`` from exact ``name==version`` pins.
+
+    The requirements file is the single source of truth, so a Dependabot bump
+    there is also what the build checks for.
+    """
+    pins: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        name, separator, version = line.partition("==")
+        if not separator or not name.strip() or not version.strip():
+            raise SystemExit(f"{path.name} must pin every package exactly (name==version); found: {raw!r}")
+        pins[name.strip()] = version.strip()
+    return pins
+
+
+REQUIRED_PACKAGES = {**read_pinned_requirements(), **read_pinned_requirements(RUNTIME_NODEPS_REQUIREMENTS)}
 DATA_FILES = ("sonara.py", "llm_client.py", "piper_worker.py")
 COLLECT_PACKAGES = (
     "piper",
@@ -46,6 +66,15 @@ def verify_build_environment() -> None:
             continue
         if actual != expected:
             mismatches.append(f"{package} is {actual} (expected {expected})")
+    for package in FORBIDDEN_PACKAGES:
+        try:
+            version = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        mismatches.append(
+            f"{package} {version} is installed but must not be bundled; install "
+            f"{RUNTIME_NODEPS_REQUIREMENTS.name} with --no-deps and uninstall {package}"
+        )
     if mismatches:
         raise SystemExit("Runtime build environment is not pinned correctly:\n- " + "\n- ".join(mismatches))
 
@@ -85,6 +114,10 @@ def build(*, clean: bool = False) -> Path:
     # Piper's long-running worker is launched by filename through sys.executable
     # and therefore is not visible to PyInstaller's static import analysis.
     command.extend(("--hidden-import", "piper_worker"))
+    command.extend(("--hidden-import", "llama_runtime"))
+    # Belt and braces: never freeze diskcache even if it appears in the build env.
+    for package in FORBIDDEN_PACKAGES:
+        command.extend(("--exclude-module", package))
     for package in COPY_METADATA:
         command.extend(("--copy-metadata", package))
     command.append(str(Path(__file__).with_name("runtime_entry.py")))

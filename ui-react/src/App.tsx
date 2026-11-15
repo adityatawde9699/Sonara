@@ -9,6 +9,7 @@ import { HistoryDrawer } from "./components/HistoryDrawer";
 import { AssistantDrawer } from "./components/AssistantDrawer";
 import { NarrationPreviewModal } from "./components/NarrationPreviewModal";
 import { useSonara } from "./hooks/useSonara";
+import { isModalDialogOpen } from "./hooks/useModalDialog";
 import { AI_NARRATION_POLISH_STORAGE_KEY, type NarrationPreview } from "./lib/tauri";
 
 function formatDuration(seconds: number): string {
@@ -58,7 +59,7 @@ export default function App() {
   }, [theme]);
   useEffect(() => {
     const handleGlobalSearch = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "k") {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "k" && !isModalDialogOpen()) {
         event.preventDefault();
         setPage("library");
         requestAnimationFrame(() => document.getElementById("global-search-input")?.focus());

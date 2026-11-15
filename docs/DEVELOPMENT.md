@@ -27,9 +27,10 @@ Optional embedded llama.cpp support is separate and may require native compilati
 
 ```sh
 .venv/bin/python -m pip install -r requirements-llm.txt
+.venv/bin/python -m pip install --no-deps -r requirements-llm-nodeps.txt
 ```
 
-Do not install this optional dependency unless you need the embedded GGUF provider. Kokoro has a separate setup path; consult [Kokoro setup](KOKORO_SETUP.md) and verify its runtime prerequisites against your checkout.
+Keep `--no-deps` on the second command. It stops pip from installing llama-cpp-python's `diskcache` dependency, which deserializes its cache with pickle (CVE-2025-69872, no fixed release). `llama_runtime.py` explains the stand-in Sonara uses instead. Do not install this optional dependency unless you need the embedded GGUF provider. Kokoro has a separate setup path; consult [Kokoro setup](KOKORO_SETUP.md) and verify its runtime prerequisites against your checkout.
 
 ## Run the desktop app
 

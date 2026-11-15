@@ -1,5 +1,17 @@
 # Optional direct, embedded GGUF inference for the Sonara LLM worker.
 # This compiles/installs native llama.cpp bindings; it is intentionally separate
 # from the small default narration requirements.
+#
+# Install in two steps so llama-cpp-python's declared diskcache dependency is
+# never installed. diskcache unpickles its cache files (PYSEC-2026-2447 /
+# CVE-2025-69872) with no fixed release, and Sonara never uses it; see
+# llama_runtime.py.
+#
+#   python -m pip install -r requirements-llm.txt
+#   python -m pip install --no-deps -r requirements-llm-nodeps.txt
 -r requirements.txt
-llama-cpp-python==0.3.36
+
+# llama-cpp-python's runtime dependencies other than diskcache.
+jinja2==3.1.6
+MarkupSafe==3.0.4
+typing-extensions==4.16.0

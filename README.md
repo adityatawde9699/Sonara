@@ -2,7 +2,7 @@
 
 Sonara is a local document-to-speech reader with a Python CLI and a Tauri 2 desktop app featuring an accessible React + TypeScript interface. The desktop app and CLI extract PDF, plain text (`.txt`/`.text`), Markdown (`.md`), Word (`.docx`), and e-book (`.epub`) files, then generate mapped WAV chunks with a local Piper TTS worker. Native document selection, speech synthesis lifecycle, real-time chunk progress, audio playback, passage navigation, speed adjustment, keyboard shortcuts, document history, and Rust-owned reading progress are implemented.
 
-> **Project status:** Sonara is an actively developed prototype. The Tauri bundle is disabled, no tagged application releases are recorded, and cross-platform installers are not available. Sonara-authored source code and documentation in this repository are licensed under [GPL-3.0-only](LICENSE). Third-party dependencies, runtimes, models, fonts, and media retain their own licenses.
+> **Project status:** Sonara is an actively developed prototype. Tags `v1.0.0` and `v1.0.1` exist as GitHub releases, but neither has installer assets: the release workflow has not yet completed a run. Native installers are configured for Linux and macOS first; Windows packaging is blocked (see [Release process](docs/RELEASE_PROCESS.md)). Sonara-authored source code and documentation in this repository are licensed under [GPL-3.0-only](LICENSE). Third-party dependencies, runtimes, models, fonts, and media retain their own licenses.
 
 ## Screenshots
 
@@ -66,7 +66,7 @@ The default `--piper piper` path uses a persistent worker when `piper-tts` is in
 
 By default, the Python worker leaves Piper's `noise_scale` and `noise_w_scale` unset so each voice uses its own model configuration. `--variation less|more` applies a small experimental adjustment relative to those voice defaults; `voice_default` remains the default. These controls change generator noise and phoneme-width variation, not pitch or emotional acting. Compare them by listening before choosing a different default.
 
-The narration planner preserves source text and source offsets while creating a separate spoken-text layer. English rules expand a conservative set of abbreviations and common units. ISO dates and numeric bracket citations remain unchanged unless enabled with `--expand-dates` or `--expand-citations`. In the desktop app, use **Preview narration** on a selected document to review the original and spoken versions before starting synthesis.
+The narration planner preserves source text and source offsets while creating a separate spoken-text layer. English rules fix readings the voice would otherwise get wrong. These cover titles and reference abbreviations ("Dr.", "Fig. 3", "pp. 10–12"), units, currency, years and decades in context, times, fractions, Roman numerals after words such as "Chapter", and a small lexicon of technical terms. ISO dates and numeric bracket citations remain unchanged unless enabled with `--expand-dates` or `--expand-citations`. In the desktop app, use **Preview narration** on a selected document to review the original and spoken versions before starting synthesis.
 
 ## Desktop application
 
@@ -97,15 +97,18 @@ For frontend development with live hot-reloading:
 cd ui-react && npm run dev
 ```
 
-The default runtime expects `.venv/bin/python`, `sonara.py`, and `models/piper/en_US-john-medium.onnx` in this checkout. Override those locations with `SONARA_PROJECT_ROOT`, `SONARA_PYTHON`, and `SONARA_MODEL_DIR` when needed.
+The default runtime expects `.venv/bin/python`, `sonara.py`, and a Piper voice in `models/piper/` in this checkout (the desktop default is `en_US-ryan-medium`). Override those locations with `SONARA_PROJECT_ROOT`, `SONARA_PYTHON`, and `SONARA_MODEL_DIR` when needed.
 
 ### Embedded llama.cpp assistant
 
-Sonara can run a local GGUF directly through the optional `llama-cpp-python` runtime. It does not start or contact `llama-server`. Install the pinned optional dependency into the Python environment selected by `SONARA_PYTHON`:
+Sonara can run a local GGUF directly through the optional `llama-cpp-python` runtime. It does not start or contact `llama-server`. Install the pinned optional dependency into the Python environment selected by `SONARA_PYTHON`, in two steps:
 
 ```sh
 .venv/bin/python -m pip install -r requirements-llm.txt
+.venv/bin/python -m pip install --no-deps -r requirements-llm-nodeps.txt
 ```
+
+The second step uses `--no-deps` on purpose. llama-cpp-python declares a dependency on `diskcache`, and every diskcache release unpickles its cache files (CVE-2025-69872); there is no fixed version. Sonara never uses a llama.cpp disk cache, so diskcache is not installed. `llama_runtime.py` gives llama.cpp a disabled stand-in that refuses to create a disk cache. If an older install left diskcache behind, remove it with `.venv/bin/python -m pip uninstall diskcache`.
 
 In **Settings → AI Assistant & Smart Narration**, choose **llama.cpp embedded**, browse to a readable `.gguf` model, and use **Test Connection**. That test loads the model and runs a short completion. The model is loaded lazily, reused by subsequent requests, and unloaded after the configured idle timeout (five minutes by default). Context size, CPU threads, batch size, temperature, token limit, and idle timeout are configurable there. `0` CPU threads delegates thread selection to llama.cpp; `0` idle timeout keeps the model until the app closes.
 
@@ -114,7 +117,7 @@ The legacy **llama.cpp server** provider remains an HTTP integration and still r
 ## Performance Benchmarks & Packaging
 
 - **Performance Benchmarks**: See [Benchmark Report](docs/BENCHMARKS.md) for multi-voice latency, Time to First Audio (TTFA), and Real-Time Factor (RTF) figures on CPU execution.
-- **Packaging:** [Packaging notes](docs/PACKAGING.md) describe exploratory options only. The Tauri bundle is currently disabled; no installer workflow is verified.
+- **Packaging:** The Tauri bundle is enabled and `.github/workflows/package.yml` builds, smoke-tests, and publishes installers. It has not yet completed a successful run, so no installer has been published. See [Packaging notes](docs/PACKAGING.md) and [Release process](docs/RELEASE_PROCESS.md).
 
 ```sh
 # Benchmark single voice
@@ -160,7 +163,7 @@ See [testing instructions and current evidence](docs/TESTING.md). Node.js syntax
 - A blinded listening-pack generator is available as `.venv/bin/python listening_eval.py --voice en_US-john-medium --output-dir /tmp/sonara-listening-evaluation`. It generates randomized, RMS-level-matched samples for voice-default/less/more variation and separates participant sheets from the facilitator key. A pack was generated successfully, but no human listening result is claimed until participants rate the samples.
 - The Tauri UI has compiled but has not been opened interactively here: GTK initialization fails because this environment has no usable display. The earlier generated HTML player also remains without browser verification. Historical performance benchmark results are documented separately; they are not human listening results.
 - The installed model and config have recorded hashes and upstream revision; runtime, model, phonemizer, and application licensing must be assessed separately before distribution.
-- This repository has no tagged application releases in the current history. Build and test evidence is recorded in [docs/TESTING.md](docs/TESTING.md); see the dated entries there for environment-specific limitations.
+- Tags `v1.0.0` and `v1.0.1` exist but their GitHub releases have no installer assets. Build and test evidence is recorded in [docs/TESTING.md](docs/TESTING.md); see the dated entries there for environment-specific limitations.
 
 Sonara has a desktop development prototype, not a distributable desktop release. See [the roadmap](docs/ROADMAP.md) for the staged plan.
 
@@ -177,4 +180,4 @@ Sonara-authored source code and documentation in this repository are licensed un
 - [Marketing site and GitHub Pages deployment](site/README.md)
 - [Repository](https://github.com/adityatawde9699/Sonara)
 
-No release download link is shown because no published application release has been verified.
+No release download link is shown because no installer has been published yet.

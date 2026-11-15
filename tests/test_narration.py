@@ -2,7 +2,7 @@ import json
 import unittest
 
 from document import Document, DocumentBlock, SourceBox
-from narration import NarrationError, PronunciationOverride, build_narration_plan
+from narration import NarrationError, PronunciationOverride, build_narration_plan, voice_profile
 
 
 def make_document(*blocks):
@@ -35,10 +35,23 @@ class NarrationSegmentationTests(unittest.TestCase):
         plan = build_narration_plan(document)
         self.assertEqual(len(plan.units), 1)
         self.assertEqual(plan.units[0].spoken_text,
-            "Dr. Ada measures three point one four centimeters. She cites for example a study. It works!")
+            "Doctor Ada measures three point one four centimeters. She cites for example a study. It works!")
         self.assertEqual("".join(unit.source_text for unit in plan.units), original)
         # A pause belongs after the paragraph, not each sentence.
         self.assertEqual(plan.units[0].pause_after_ms, 520)
+
+    def test_long_single_paragraph_plans_in_linear_time(self):
+        # The abbreviation check used to rescan the text before every period,
+        # so an 80 KB paragraph took about 20 s. It should take well under 1 s now.
+        import time
+        from narration import _MAX_PASSAGE_CHARS
+        original = "Dr. Ada said hi. " * 12_000  # about 200 KB in one block
+        started = time.perf_counter()
+        plan = build_narration_plan(make_document(("paragraph", "txt_paragraph", original)))
+        elapsed = time.perf_counter() - started
+        self.assertLess(elapsed, 10.0)
+        self.assertEqual("".join(unit.source_text for unit in plan.units), original)
+        self.assertTrue(all(len(unit.source_text) <= _MAX_PASSAGE_CHARS for unit in plan.units))
 
     def test_question_ellipsis_and_closing_quote_boundaries(self):
         text = '“Ready?” she asked. Wait… Then go!'
@@ -95,7 +108,7 @@ class NarrationSegmentationTests(unittest.TestCase):
         text = "At 3 p.m., Dr. Li meets in the U.S. Café. Bonjour — 你好！"
         plan = build_narration_plan(make_document(("paragraph", "poppler_block", text)))
         self.assertEqual([unit.spoken_text for unit in plan.units], [
-            "At 3 p.m., Dr. Li meets in the U.S. Café. Bonjour — 你好！",
+            "At 3 p.m., Doctor Li meets in the U.S. Café. Bonjour — 你好！",
         ])
         self.assertEqual("".join(unit.source_text for unit in plan.units), text)
 
@@ -259,6 +272,121 @@ class PronunciationOverrideTests(unittest.TestCase):
                 two_blocks,
                 [PronunciationOverride("cross-block", "Sonara. Then", "changed")],
             )
+
+
+def spoken(text, **kwargs):
+    plan = build_narration_plan(make_document(("paragraph", "poppler_block", text)), **kwargs)
+    return " ".join(unit.spoken_text for unit in plan.units)
+
+
+class SpokenNormalizationTests(unittest.TestCase):
+    """Each case is a reading the bundled espeak-ng front end gets wrong without the rule."""
+
+    def assertSpoken(self, cases):
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(spoken(source), expected)
+
+    def test_abbreviations_lose_the_period_that_would_split_a_sentence(self):
+        self.assertSpoken([
+            ("Dr. Smith met Mr. Jones.", "Doctor Smith met Mister Jones."),
+            ("He lives on Main St. in St. Louis.", "He lives on Main Street in Saint Louis."),
+            ("She lived on Elm St. Then she left.", "She lived on Elm Street. Then she left."),
+            ("See Fig. 3, Eq. (2) and pp. 10-12.", "See Figure 3, Equation (2) and pages 10 to 12."),
+            ("Read p. 4 of Vol. 2, No. 5.", "Read page 4 of Volume 2, Number 5."),
+            ("Smith et al. (2020) agree.", "Smith et al (twenty twenty) agree."),
+            ("Apples, pears, etc. Then more.", "Apples, pears, and so on. Then more."),
+            ("Ask John Smith Jr. about it.", "Ask John Smith Junior about it."),
+            ("Compare cf. the result, viz. this.", "Compare compare the result, namely this."),
+        ])
+
+    def test_ambiguous_units_and_decades_are_not_misread(self):
+        self.assertSpoken([
+            ("Ranked 3 in the world.", "Ranked 3 in the world."),
+            ("A 12in pipe and 5 s.", "A twelve inches pipe and five seconds."),
+            ("The 1990s and the 80s.", "The nineteen nineties and the eighties."),
+            ("In the mid-60s and '70s.", "In the mid-sixties and seventies."),
+        ])
+
+    def test_years_are_read_as_years_only_in_context(self):
+        self.assertSpoken([
+            ("In 1905 and since 1800.", "In nineteen oh five and since eighteen hundred."),
+            ("It ended by 2024.", "It ended by twenty twenty-four."),
+            ("From 1990–1995 it grew.", "From nineteen ninety to nineteen ninety-five it grew."),
+            ("Between 1990 and 2010.", "Between nineteen ninety and twenty ten."),
+            ("Built c. 1500.", "Built circa fifteen hundred."),
+            # A count, not a year: left for the voice.
+            ("We used 1500 samples, in 1500 trials.", "We used 1500 samples, in 1500 trials."),
+            ("On January 5, 2024 and 5 March 2021.",
+             "On January fifth, twenty twenty-four and the fifth of March, twenty twenty-one."),
+        ])
+
+    def test_money_times_ranges_fractions_and_symbols(self):
+        self.assertSpoken([
+            ("It cost $5.99 or $1.2 million.", "It cost five dollars and ninety-nine cents or one point two million dollars."),
+            ("Pay €30, £4.50 or $0.99.", "Pay thirty euros, four pounds and fifty pence or ninety-nine cents."),
+            ("Meet at 10:05 am or 3:00 p.m. today.", "Meet at ten oh five AM or three PM today."),
+            ("Arrive at 14:30.", "Arrive at fourteen thirty."),
+            ("A 3:2 win.", "A 3:2 win."),
+            ("Pages 10–20; call 555-1234.", "Pages 10 to 20; call 555-1234."),
+            ("Add 1/2 cup, then 2 3/4 cups.", "Add one half cup, then two and three quarters cups."),
+            ("Born 1/2/2024, scored 10/10.", "Born 1/2/2024, scored 10/10."),
+            ("About ~5 km, the #1 hit, 4x faster at 1920x1080.",
+             "About about five kilometers, the number 1 hit, 4 times faster at 1920 by 1080."),
+            ("Version 2.10.3 or v2.1.", "Version two point ten point three or version two point one."),
+        ])
+
+    def test_roman_numerals_after_counting_words_and_regnal_names(self):
+        self.assertSpoken([
+            ("Chapter IV and World War II.", "Chapter four and World War two."),
+            ("Henry VIII and Elizabeth I.", "Henry the eighth and Elizabeth the first."),
+            ("In Part I describe it.", "In Part I describe it."),
+            ("Call Chapter VIIII.", "Call Chapter VIIII."),
+        ])
+
+    def test_lexicon_terms_are_whole_word_and_case_sensitive(self):
+        self.assertSpoken([
+            ("Use LaTeX on x86_64 with the CLI.", "Use lay tek on x eighty-six sixty-four with the C L I."),
+            ("Two IDEs and an IDE.", "Two I D Es and an I D E."),
+            ("A latex glove and a client.", "A latex glove and a client."),
+        ])
+
+    def test_normalization_is_recorded_against_source_text(self):
+        plan = build_narration_plan(make_document(("paragraph", "poppler_block", "Dr. Li paid $5.99.")))
+        changes = {change.matched_source_text: change for change in plan.units[0].applied_overrides}
+        self.assertEqual(set(changes), {"Dr.", "$5.99"})
+        self.assertEqual(changes["$5.99"].override_id, "auto:en_us:number.currency")
+        self.assertEqual(plan.units[0].source_text, "Dr. Li paid $5.99.")
+
+    def test_user_overrides_still_win_over_the_lexicon(self):
+        override = PronunciationOverride("latex", "LaTeX", "lah tech", case_sensitive=True)
+        self.assertEqual(spoken("Use LaTeX.", pronunciation_overrides=[override]), "Use lah tech.")
+
+    def test_other_languages_are_not_rewritten(self):
+        self.assertEqual(spoken("Dr. Smith paid $5.99.", language="de_DE"), "Dr. Smith paid $5.99.")
+
+
+class VoiceProfileTests(unittest.TestCase):
+    def test_slower_voices_get_proportionally_longer_pauses(self):
+        document = make_document(("heading", "poppler_block", "Results"), ("paragraph", "poppler_block", "It works."))
+        ryan = build_narration_plan(document, voice="en_US-ryan-medium")
+        john = build_narration_plan(document, voice="en_US-john-medium")
+        unknown = build_narration_plan(document, voice="en_US-amy-low")
+        self.assertEqual([unit.pause_after_ms for unit in ryan.units], [720, 520])
+        self.assertEqual([unit.pause_after_ms for unit in john.units], [828, 598])
+        self.assertEqual([unit.pause_after_ms for unit in unknown.units], [720, 520])
+
+    def test_profiles_define_variation_presets_within_piper_range(self):
+        for name in ("en_US-ryan-medium", "en_US-lessac-medium", "en_US-bryce-medium", "en_US-john-medium"):
+            profile = voice_profile(name)
+            self.assertIsNone(profile.noise_scales("voice_default"))
+            less, more = profile.noise_scales("less"), profile.noise_scales("more")
+            for values in (less, more):
+                self.assertTrue(all(0 <= value <= 1 for value in values))
+            self.assertLess(less[1], more[1])
+        # john's timing is unstable at high noise_w, so its "more" stays lower.
+        self.assertLess(voice_profile("en_US-john-medium").more[1], voice_profile("en_US-ryan-medium").more[1])
+        self.assertIsNone(voice_profile("unknown").noise_scales("more"))
 
 
 if __name__ == "__main__":

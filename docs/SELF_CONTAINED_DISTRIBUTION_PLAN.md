@@ -6,7 +6,7 @@
 
 ## Repository gaps found
 
-- `src-tauri/tauri.conf.json` sets `bundle.active` to `false`; there is no release packaging workflow.
+- *(Resolved since the 2026-10-30 baseline.)* `bundle.active` is now `true` and `.github/workflows/package.yml` exists; it has not yet completed a successful run.
 - `resolve_runtime()` in `src-tauri/src/lib.rs` derives the project root from `CARGO_MANIFEST_DIR`, defaults to `.venv/bin/python`, and assumes `sonara.py` plus `models/piper` under a checkout. This is Linux/development-layout-specific and cannot locate a Windows or installed app runtime.
 - Rust launches Python scripts by path. `tts_engine.py` launches `piper_worker.py` via `sys.executable`; embedded LLM startup launches `llm_client.py worker`. A packaged runtime must preserve these worker lifecycles and stdout protocols.
 - PDF extraction requires the external `pdftotext` executable; scanned-PDF OCR additionally requires `pdftoppm` and Tesseract. Native file pickers also rely on platform facilities.
@@ -41,7 +41,7 @@
 
 ### Phase 4 — Installers and automated release builds
 
-**Status: scaffolded, unverified.** Tauri bundle targets and a native CI workflow request Windows NSIS, Linux `.deb`/AppImage, and macOS `.dmg` artifacts. Jobs upload unsigned artifacts for inspection. They do not stage all runtime resources, and have not been run on target runners. Checksums, SBOM/license inventory, signing, notarization, and release publishing are still open.
+**Status: implemented, not yet passing.** The workflow stages Poppler/Tesseract and the frozen runtime, signs (Windows Authenticode, macOS codesign and notarization through Tauri), smoke-tests installs on clean runners, and publishes with per-target SHA-256 checksums. No run has completed successfully, and Windows is blocked on its Tesseract dependency. SBOM and license inventory remain open.
 
 **Exit evidence:** repeatable tagged build; artifact inspection; clean installation, upgrade, launch, and uninstall checks on fresh supported OS images; persistent user data survives upgrades and is not silently deleted on uninstall.
 

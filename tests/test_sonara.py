@@ -65,8 +65,9 @@ class ExtractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             pdf = Path(temp) / "scan.pdf"
             pdf.write_bytes(b"test pdf")
-            with self.assertRaisesRegex(sonara.SonaraError, "OCR is not implemented"):
-                sonara.extract_pdf(pdf)
+            with patch("ocr.is_tesseract_available", return_value=False):
+                with self.assertRaisesRegex(sonara.SonaraError, "No selectable text was found.*Tesseract OCR is not installed"):
+                    sonara.extract_pdf(pdf)
 
     @patch("sonara._pdftotext_version", return_value="test")
     @patch("sonara.subprocess.Popen")

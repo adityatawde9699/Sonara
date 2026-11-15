@@ -1,0 +1,4 @@
+# Installed with `pip install --no-deps` after requirements-runtime.txt, so
+# llama-cpp-python's diskcache dependency (PYSEC-2026-2447, no fixed release)
+# is never installed or bundled. build_runtime.py checks both files.
+llama-cpp-python==0.3.36

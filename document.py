@@ -190,7 +190,7 @@ def parse_bbox_layout(
         page_items.append(items)
 
     if not line_heights:
-        raise ValueError("No selectable text was found. This may be a scanned PDF; OCR is not implemented yet.")
+        raise ValueError("No selectable text was found. This may be a scanned PDF.")
     median_line_height = statistics.median(line_heights)
 
     seen_text: dict[str, str] = {}
@@ -198,7 +198,7 @@ def parse_bbox_layout(
         if not items:
             notes.append(ExtractionNote(
                 "page_without_selectable_text",
-                "This page contains no selectable text; it may be blank or scanned. OCR is not implemented.",
+                "This page contains no selectable text; it may be blank or scanned, and its image content is not read.",
                 page_number,
             ))
             continue
@@ -266,7 +266,7 @@ def parse_bbox_layout(
                 ))
 
     if not all_blocks:
-        raise ValueError("No selectable text was found. This may be a scanned PDF; OCR is not implemented yet.")
+        raise ValueError("No selectable text was found. This may be a scanned PDF.")
 
     return Document(
         schema_version=SCHEMA_VERSION,

@@ -1,4 +1,5 @@
-import { useEffect, type FC } from "react";
+import { type FC } from "react";
+import { useModalDialog } from "../hooks/useModalDialog";
 import type { NarrationPreview } from "../lib/tauri";
 
 interface Props {
@@ -10,21 +11,16 @@ interface Props {
 }
 
 export const NarrationPreviewModal: FC<Props> = ({ isOpen, onClose, preview, loading, error }) => {
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  const dialogRef = useModalDialog<HTMLElement>(isOpen, onClose);
 
   if (!isOpen) return null;
   const changed = preview?.units.reduce((total, unit) => total + unit.changes.length, 0) ?? 0;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal-card narration-preview-modal"
         role="dialog"
         aria-modal="true"

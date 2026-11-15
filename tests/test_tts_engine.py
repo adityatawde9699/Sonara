@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import os
@@ -5,6 +6,9 @@ import unittest
 import wave
 from pathlib import Path
 
+import numpy as np
+
+from audio_processing import speech_level_dbfs
 from document import Document, DocumentBlock, SourceBox
 from narration import build_narration_plan
 from tts_engine import (
@@ -212,6 +216,81 @@ class SynthesisStreamTests(unittest.TestCase):
             SynthesisSettings(speed=2.1)
         with self.assertRaises(ValueError):
             SynthesisStream(FakeEngine(), make_plan(), prefetch_chunks=0)
+
+
+class ToneEngine(FakeEngine):
+    """Writes speech-like tone with 300 ms of built-in silence on each side."""
+
+    def __init__(self, amplitude):
+        super().__init__()
+        self.amplitude = amplitude
+
+    def synthesize_to_wav(self, text, speed, output_path, cancel_event, timeout_seconds):
+        self.calls.append((text, speed))
+        rate = FORMAT.sample_rate
+        tone = self.amplitude * np.sin(2 * np.pi * 180 * np.arange(rate // 2) / rate)
+        samples = np.concatenate([np.zeros(rate * 3 // 10), tone, np.zeros(rate * 3 // 10)])
+        with wave.open(str(output_path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(rate)
+            output.writeframes((samples * 32767).astype("<i2").tobytes())
+        return FORMAT
+
+
+class AudioFinishingTests(unittest.TestCase):
+    def _levels(self, engine, cache_dir=None):
+        chunks = read_all(SynthesisStream(engine, make_plan("Only sentence."), cache_dir=cache_dir))
+        with wave.open(str(chunks[0].wav_path), "rb") as source:
+            samples = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2").astype(np.float32) / 32768
+        return chunks[0], speech_level_dbfs(samples, FORMAT.sample_rate)
+
+    def test_chunks_are_trimmed_and_level_matched_across_voices(self):
+        with tempfile.TemporaryDirectory() as temp:
+            loud, loud_level = self._levels(ToneEngine(0.5), Path(temp) / "a")
+            soft, soft_level = self._levels(ToneEngine(0.08), Path(temp) / "b")
+            # 0.5 s of tone plus short pads, not the 1.1 s the engine wrote.
+            self.assertLess(loud.duration_seconds, 0.6)
+            self.assertAlmostEqual(loud.duration_seconds, soft.duration_seconds, delta=0.02)
+            self.assertAlmostEqual(loud_level, soft_level, delta=0.3)
+            # Cached chunks are already finished.
+            cached, cached_level = self._levels(ToneEngine(0.5), Path(temp) / "a")
+            self.assertTrue(cached.cached)
+            self.assertAlmostEqual(cached_level, loud_level, delta=0.01)
+
+
+class PiperProfileTests(unittest.TestCase):
+    def _engine(self, root, voice, variation):
+        model = root / f"{voice}.onnx"
+        model.write_bytes(b"model placeholder")
+        (root / f"{voice}.onnx.json").write_text(json.dumps({"audio": {"sample_rate": 22050}}), encoding="utf-8")
+        return PiperEngine(model, variation=variation)
+
+    def test_measured_voice_profile_reaches_the_worker_request(self):
+        sent = {}
+
+        class FakeClient:
+            def synthesize(self, request_id, text, speed, variation, output_path, **kwargs):
+                sent.update(kwargs, variation=variation)
+                with wave.open(str(output_path), "wb") as output:
+                    output.setnchannels(1)
+                    output.setsampwidth(2)
+                    output.setframerate(22050)
+                    output.writeframes(b"\1\0" * 100)
+                return {"sample_rate": 22050, "channels": 1, "sample_width_bytes": 2}
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = self._engine(root, "en_US-john-medium", "more")
+            engine._get_worker = lambda cancel_event: FakeClient()
+            engine.synthesize_to_wav("Hello.", 1.0, root / "out.wav", threading.Event(), 5)
+            self.assertEqual(sent["noise_scales"], (0.75, 0.85))
+            self.assertEqual(sent["sentence_pause_ms"], 230)
+            # Changing a profile value must not reuse audio made with the old one.
+            self.assertIn("noise=(0.75, 0.85)", engine.cache_identity)
+            default = self._engine(root, "en_US-ryan-medium", "voice_default")
+            self.assertIsNone(default.noise_scales)
+            self.assertIn("sentence_pause_ms=200", default.cache_identity)
 
 
 if __name__ == "__main__":

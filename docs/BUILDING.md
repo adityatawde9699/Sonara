@@ -2,7 +2,7 @@
 
 ## Current status
 
-The repository supports development builds from source. `src-tauri/tauri.conf.json` sets `bundle.active` to `false`; there are no verified installers or tagged releases in the current checkout. A successful local build is not a supported-platform release.
+The repository supports development builds from source. `src-tauri/tauri.conf.json` enables bundling, and tags `v1.0.0` and `v1.0.1` exist, but no installer has been published or verified on a clean machine. A successful local build is not a supported-platform release.
 
 ## Frontend
 
@@ -46,7 +46,7 @@ For developer packaging and release limitations, see [PACKAGING.md](PACKAGING.md
 
 ## Native installer workflow (initial packaging phase)
 
-The native package workflow is defined in `.github/workflows/package.yml`. It builds on Windows x64, Linux x64, and both macOS architectures, then installs each artifact on a separate hosted runner and exercises bundled document tools. Push a `v*` tag to run the release workflow. Publication requires signing secrets documented in [RELEASE_PROCESS.md](RELEASE_PROCESS.md). Install `cargo-tauri` before invoking the build locally:
+The native package workflow is defined in `.github/workflows/package.yml`. By default it builds Linux x64 and both macOS architectures (the `unix` target); Windows x64 is included only with `target=all`, which is blocked until the Windows Tesseract dependency is updated. The workflow then installs each artifact on a separate hosted runner and exercises bundled document tools. Push a `v*` tag to run the release workflow. Publication requires signing secrets documented in [RELEASE_PROCESS.md](RELEASE_PROCESS.md). Install `cargo-tauri` before invoking the build locally:
 
 ```sh
 cargo install tauri-cli --locked

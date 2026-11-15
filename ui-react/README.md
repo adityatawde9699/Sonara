@@ -1,32 +1,23 @@
-# React + TypeScript + Vite
+# Sonara desktop frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The React 19 + TypeScript interface for the Sonara Tauri app. It runs inside the Tauri WebView and talks to the Rust backend only through typed `invoke` commands in `src/lib/tauri.ts`; it has no filesystem or shell access of its own.
 
-Currently, two official plugins are available:
+## Layout
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- `src/App.tsx`: page routing (home, library, reader, about) and app-level state.
+- `src/hooks/useSonara.ts`: the reading session, the audio player, and global keyboard shortcuts.
+- `src/hooks/useModalDialog.ts`: shared dialog behaviour (focus trap, focus restore, topmost-only Escape).
+- `src/components/`: the player, reader, assistant, settings, history, and shortcuts UI, each with a `*.test.tsx` beside it.
+- `src/lib/`: the Tauri command wrapper and local history storage.
 
-## React Compiler
+## Commands
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+npm ci            # install exact locked dependencies
+npm run dev       # Vite dev server on port 1420 (browser preview; desktop commands are disabled)
+npm test          # Vitest
+npm run lint      # oxlint
+npm run build     # type-check and production build into dist/, which Tauri bundles
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+To run the full desktop app, see [Development setup](../docs/DEVELOPMENT.md).

@@ -170,7 +170,9 @@ class EmbeddedModelManager:
         if self._model_factory is not None:
             return self._model_factory
         try:
-            from llama_cpp import Llama
+            from llama_runtime import import_llama
+
+            Llama = import_llama()
         except ImportError as exc:
             raise RuntimeError(
                 "Embedded llama.cpp runtime is unavailable. Install Sonara's optional llama-cpp-python dependency."
