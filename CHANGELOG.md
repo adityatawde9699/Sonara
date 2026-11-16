@@ -4,6 +4,10 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 ## Unreleased
 
+Nothing yet.
+
+## v1.0.8 - 2026-11-16
+
 ### Fixed
 
 - The Linux AppImage crashed at startup on newer systems (seen on Ubuntu 26.04 with an NVIDIA driver under Wayland). It bundled the build machine's `libwayland-client`, which the system GPU driver's EGL library called into. The release build now removes the bundled Wayland libraries so the system's are used, and the install check fails if they come back. The `.deb` was not affected.
