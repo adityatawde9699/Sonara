@@ -2861,7 +2861,7 @@ dependencies = [
 
 [[package]]
 name = "sonara-desktop"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "getrandom 0.4.2",
  "libc",

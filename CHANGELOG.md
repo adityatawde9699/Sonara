@@ -6,7 +6,16 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 Nothing yet.
 
+## v1.0.5 - 2026-11-16
+
+### Fixed
+
+- macOS installer builds no longer hang. Staging Poppler and Tesseract used `dylibbundler`, which could not resolve Homebrew poppler's `@rpath` library and waited on stdin until the job timed out. It now gets Homebrew's library directories to search, and fails at once if a library still cannot be found. A CI job runs this staging on both macOS runners for every push.
+
 ## v1.0.4 - 2026-11-16
+
+The v1.0.4 release has no installers; its macOS builds hung on the tool staging fixed in v1.0.5.
+
 
 ### Fixed
 
@@ -23,7 +32,7 @@ The v1.0.3 release has no installers; its AppImage build failed on the missing i
 
 ## v1.0.2 - 2026-11-16
 
-The v1.0.2 release has no installers; its build failed on the bundle category fixed in v1.0.3. Everything below ships in v1.0.4.
+The v1.0.2 release has no installers; its build failed on the bundle category fixed in v1.0.3. Everything below ships in v1.0.5.
 
 
 ### Security
