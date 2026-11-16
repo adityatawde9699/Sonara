@@ -6,7 +6,16 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 Nothing yet.
 
+## v1.0.3 - 2026-11-16
+
+### Fixed
+
+- Installers can be built again: the bundle category `AudioVideo` is not one Tauri accepts, and every installer build stopped with "invalid category". It is now `Productivity` (Linux menus list Sonara under Office).
+
 ## v1.0.2 - 2026-11-16
+
+The v1.0.2 release has no installers; its build failed on the bundle category fixed in v1.0.3. Everything below ships in v1.0.3.
+
 
 ### Security
 
