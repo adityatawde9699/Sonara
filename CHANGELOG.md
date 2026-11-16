@@ -4,6 +4,10 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 ## Unreleased
 
+Nothing yet.
+
+## v1.0.6 - 2026-11-16
+
 ### Changed
 
 - macOS installers are built for Apple Silicon only. The Intel (x86_64) target is removed from the release matrix, the asset checks, the CI staging job and the download page; the pinned onnxruntime 1.31.0 has no Intel macOS wheel.
@@ -14,6 +18,8 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 - Releases can publish without Apple Developer credentials. The macOS app and its bundled tools are then signed ad hoc (Apple Silicon will not run unsigned code), the install check skips only the Gatekeeper and notarization checks, and the release notes explain how to open the unnotarized app. With the `APPLE_*` secrets set, signing and notarization stay mandatory.
 
 ## v1.0.5 - 2026-11-16
+
+The v1.0.5 release has no installers; its macOS builds failed on code signing and on the Intel onnxruntime wheel, both addressed in v1.0.6.
 
 ### Fixed
 
@@ -39,7 +45,7 @@ The v1.0.3 release has no installers; its AppImage build failed on the missing i
 
 ## v1.0.2 - 2026-11-16
 
-The v1.0.2 release has no installers; its build failed on the bundle category fixed in v1.0.3. Everything below ships in v1.0.5.
+The v1.0.2 release has no installers; its build failed on the bundle category fixed in v1.0.3. Everything below ships in v1.0.6.
 
 
 ### Security
