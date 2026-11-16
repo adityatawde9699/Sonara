@@ -5,7 +5,6 @@ const ASSET_BY_TARGET = {
   'windows/x86_64': 'Sonara-windows-x86_64-setup.exe',
   'linux/x86_64': 'Sonara-linux-x86_64.AppImage',
   'macos/aarch64': 'Sonara-macos-aarch64.dmg',
-  'macos/x86_64': 'Sonara-macos-x86_64.dmg',
 };
 
 export function normalizePlatform(value = '') {

@@ -4,7 +4,14 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 ## Unreleased
 
-Nothing yet.
+### Changed
+
+- macOS installers are built for Apple Silicon only. The Intel (x86_64) target is removed from the release matrix, the asset checks, the CI staging job and the download page; the pinned onnxruntime 1.31.0 has no Intel macOS wheel.
+
+### Fixed
+
+- The macOS build no longer fails in `security import` when no Apple signing secrets are configured. Empty signing variables are no longer passed to Tauri.
+- Releases can publish without Apple Developer credentials. The macOS app and its bundled tools are then signed ad hoc (Apple Silicon will not run unsigned code), the install check skips only the Gatekeeper and notarization checks, and the release notes explain how to open the unnotarized app. With the `APPLE_*` secrets set, signing and notarization stay mandatory.
 
 ## v1.0.5 - 2026-11-16
 

@@ -18,8 +18,13 @@ fi
 app="$install_root/Sonara.app"
 ditto "$app_source" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
-spctl --assess --type execute --verbose=2 "$app"
-xcrun stapler validate "$dmg"
+if [[ "${SONARA_MACOS_UNSIGNED:-}" == "1" ]]; then
+  signing="ad hoc signature (Gatekeeper and notarization not checked: unsigned build)"
+else
+  spctl --assess --type execute --verbose=2 "$app"
+  xcrun stapler validate "$dmg"
+  signing="code-signature, notarization"
+fi
 
 app_executable="$(find "$app/Contents/MacOS" -type f -perm -111 -print -quit)"
 tools="$app/Contents/Resources/sonara/tools"
@@ -30,4 +35,4 @@ bash packaging/smoke_installed_tools.sh "$tools"
 hdiutil detach "$device" -quiet
 rm -rf "$app" "$install_root" "$mount"
 test -f "$sentinel"
-echo "macOS clean DMG install, resource discovery, PDF/OCR, code-signature, notarization, and user-data checks passed."
+echo "macOS clean DMG install, resource discovery, PDF/OCR, ${signing}, and user-data checks passed."

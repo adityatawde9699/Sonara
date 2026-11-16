@@ -178,15 +178,32 @@ jobs:
         working-directory: ui-react
         run: npm run build
       - name: Build native installer
-        # Tauri signs and notarizes macOS bundles from these; other platforms get empty values.
+        # Tauri signs and notarizes macOS bundles from the APPLE_* variables.
+        # It treats a variable that is set but empty as a certificate to
+        # import, so unset every empty one: without the secrets the macOS
+        # bundle is built unsigned instead of failing in `security import`.
+        shell: bash
         env:
-          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
-        run: tauri build --bundles ${{ matrix.bundle }}
+          SONARA_APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          SONARA_APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          SONARA_APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          SONARA_APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          SONARA_APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
+          SONARA_APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            value="SONARA_$name"
+            if [[ -n "${!value}" ]]; then export "$name=${!value}"; fi
+            unset "$value"
+          done
+          if [[ "$RUNNER_OS" == "macOS" && -z "${APPLE_CERTIFICATE:-}" ]]; then
+            # No Developer ID certificate: sign the app ad hoc ("-"), which
+            # Apple Silicon needs to run it. It is not notarized.
+            echo "::warning::Apple signing secrets are not configured; building an ad hoc signed, unnotarized macOS app."
+            export APPLE_SIGNING_IDENTITY=-
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          tauri build --bundles ${{ matrix.bundle }}
       - name: Remove temporary macOS signing identity
         if: runner.os == 'macOS' && always()
         run: bash packaging/cleanup_macos_signing.sh
@@ -244,8 +261,12 @@ jobs:
       - name: Install Linux package and verify AppImage
         if: runner.os == 'Linux'
         run: bash packaging/smoke_installed_linux.sh release-assets
-      - name: Install macOS image and verify the signed app
+      - name: Install macOS image and verify the app
         if: runner.os == 'macOS'
+        env:
+          # Without a Developer ID the build is ad hoc signed and unnotarized,
+          # so the Gatekeeper and stapler checks are skipped; the rest still run.
+          SONARA_MACOS_UNSIGNED: ${{ secrets.APPLE_CERTIFICATE == '' && '1' || '' }}
         run: bash packaging/smoke_installed_macos.sh "release-assets/Sonara-macos-${{ matrix.arch }}.dmg"
 
   publish:
@@ -278,8 +299,14 @@ jobs:
             test -n "$WINDOWS_PFX" && test -n "$WINDOWS_PFX_PASSWORD" || { echo "Windows signing secrets are required."; exit 1; }
           fi
           if [[ "$RELEASE_TARGET" == "all" || "$RELEASE_TARGET" == "unix" || "$RELEASE_TARGET" == "macos" ]]; then
-            test -n "$APPLE_CERTIFICATE" && test -n "$APPLE_CERTIFICATE_PASSWORD" && test -n "$APPLE_SIGNING_IDENTITY" || { echo "Apple Developer signing secrets are required."; exit 1; }
-            test -n "$APPLE_ID" && test -n "$APPLE_PASSWORD" && test -n "$APPLE_TEAM_ID" || { echo "Apple notarization credentials are required."; exit 1; }
+            if [[ -z "$APPLE_CERTIFICATE" ]]; then
+              # No Developer ID yet: the macOS image is ad hoc signed and
+              # unnotarized, and the release notes say so.
+              echo "::warning::Publishing an unsigned, unnotarized macOS image."
+            else
+              test -n "$APPLE_CERTIFICATE_PASSWORD" && test -n "$APPLE_SIGNING_IDENTITY" || { echo "Apple Developer signing secrets are incomplete."; exit 1; }
+              test -n "$APPLE_ID" && test -n "$APPLE_PASSWORD" && test -n "$APPLE_TEAM_ID" || { echo "Apple notarization credentials are required."; exit 1; }
+            fi
           fi
       - name: Download all installer assets
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -310,11 +337,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          MACOS_UNSIGNED: ${{ secrets.APPLE_CERTIFICATE == '' && '1' || '' }}
         run: |
+          notice=""
+          if [[ "$MACOS_UNSIGNED" == "1" ]] && ls release-assets/Sonara-macos-*.dmg >/dev/null 2>&1; then
+            notice="**macOS:** this build is not signed with an Apple Developer ID or notarized, so macOS blocks it on first launch. Open it once from System Settings → Privacy & Security → Open Anyway, or run \`xattr -dr com.apple.quarantine /Applications/Sonara.app\`."
+          fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
+            body="$(gh release view "$RELEASE_TAG" --json body --jq .body)"
+            if [[ -n "$notice" && "$body" != *"Apple Developer ID"* ]]; then
+              gh release edit "$RELEASE_TAG" --notes "$(printf '%s\n\n%s' "$notice" "$body")"
+            fi
           else
             gh release create "$RELEASE_TAG" release-assets/* \
               --title "Sonara $RELEASE_TAG" \
+              --notes "$notice" \
               --generate-notes
           fi

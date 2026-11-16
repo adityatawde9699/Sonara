@@ -150,7 +150,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel]
+        os: [macos-15]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -160,6 +160,9 @@ jobs:
         run: brew install poppler tesseract dylibbundler
       - name: Stage Poppler and Tesseract
         run: bash packaging/stage_macos_tools.sh packaging/staging/sonara/tools
+      - name: Sign the staged tools ad hoc
+        # No secrets here, so this takes the unsigned-release path.
+        run: bash packaging/sign_macos_tools.sh packaging/staging/sonara/tools
       - name: Smoke-check staged PDF and OCR tools
         run: python packaging/check_native_tools.py --tools packaging/staging/sonara/tools
 

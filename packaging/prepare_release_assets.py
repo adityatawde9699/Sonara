@@ -14,7 +14,6 @@ ASSET_SUFFIXES = {
         (".appimage", "Sonara-linux-x86_64.AppImage"),
     ],
     ("macos", "aarch64"): [(".dmg", "Sonara-macos-aarch64.dmg")],
-    ("macos", "x86_64"): [(".dmg", "Sonara-macos-x86_64.dmg")],
 }
 
 

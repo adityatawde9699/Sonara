@@ -9,7 +9,7 @@ import sys
 REQUIRED_BY_PLATFORM = {
     "windows": {"Sonara-windows-x86_64-setup.exe"},
     "linux": {"Sonara-linux-x86_64.deb", "Sonara-linux-x86_64.AppImage"},
-    "macos": {"Sonara-macos-aarch64.dmg", "Sonara-macos-x86_64.dmg"},
+    "macos": {"Sonara-macos-aarch64.dmg"},
 }
 REQUIRED_ALL = set().union(*REQUIRED_BY_PLATFORM.values())
 # Linux and macOS only, used while the Windows installer is blocked.
@@ -18,7 +18,7 @@ REQUIRED_UNIX = REQUIRED_BY_PLATFORM["linux"] | REQUIRED_BY_PLATFORM["macos"]
 SBOM_BY_PLATFORM = {
     "windows": {"Sonara-windows-x86_64.cdx.json"},
     "linux": {"Sonara-linux-x86_64.cdx.json"},
-    "macos": {"Sonara-macos-aarch64.cdx.json", "Sonara-macos-x86_64.cdx.json"},
+    "macos": {"Sonara-macos-aarch64.cdx.json"},
 }
 
 

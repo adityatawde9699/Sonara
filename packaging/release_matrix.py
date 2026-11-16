@@ -6,11 +6,12 @@ import json
 import sys
 
 
+# macOS ships for Apple Silicon only: onnxruntime publishes no Intel macOS
+# wheel for the pinned version, and Intel Macs are not a supported target.
 TARGETS = {
     "windows": {"label": "Windows x86_64", "os": "windows-latest", "platform": "windows", "arch": "x86_64", "bundle": "nsis"},
     "linux": {"label": "Linux x86_64", "os": "ubuntu-24.04", "platform": "linux", "arch": "x86_64", "bundle": "deb,appimage"},
     "macos-aarch64": {"label": "macOS aarch64", "os": "macos-15", "platform": "macos", "arch": "aarch64", "bundle": "dmg"},
-    "macos-x86_64": {"label": "macOS x86_64", "os": "macos-15-intel", "platform": "macos", "arch": "x86_64", "bundle": "dmg"},
 }
 
 
@@ -18,9 +19,9 @@ def release_matrix(target: str) -> dict[str, list[dict[str, str]]]:
     if target == "all":
         selected = list(TARGETS.values())
     elif target == "unix":
-        selected = [TARGETS["linux"], TARGETS["macos-aarch64"], TARGETS["macos-x86_64"]]
+        selected = [TARGETS["linux"], TARGETS["macos-aarch64"]]
     elif target == "macos":
-        selected = [TARGETS["macos-aarch64"], TARGETS["macos-x86_64"]]
+        selected = [TARGETS["macos-aarch64"]]
     elif target in TARGETS:
         selected = [TARGETS[target]]
     else:

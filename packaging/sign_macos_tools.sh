@@ -3,7 +3,16 @@ set -euo pipefail
 
 tools="${1:?Usage: sign_macos_tools.sh <tools-directory>}"
 if [[ -z "${APPLE_CERTIFICATE:-}" || -z "${APPLE_CERTIFICATE_PASSWORD:-}" || -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-  echo "Apple signing credentials are unavailable; staged tools will remain unsigned and the install smoke check will fail." >&2
+  # No Developer ID: sign ad hoc. Apple Silicon will not run code without a
+  # valid signature, and stage_macos_tools.sh rewrote install names, which
+  # invalidates the signatures the files came with.
+  echo "Apple signing credentials are unavailable; signing the staged tools ad hoc." >&2
+  while IFS= read -r -d '' file; do
+    if file "$file" | grep -q 'Mach-O'; then
+      codesign --force --sign - "$file"
+      codesign --verify --strict --verbose=2 "$file"
+    fi
+  done < <(find "$tools/lib" "$tools/bin" -type f -print0 | sort -z)
   exit 0
 fi
 

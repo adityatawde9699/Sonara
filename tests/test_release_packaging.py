@@ -100,7 +100,7 @@ class ReleasePackagingTests(unittest.TestCase):
         selected = release_matrix.release_matrix("linux")["include"]
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["platform"], "linux")
-        self.assertEqual(len(release_matrix.release_matrix("all")["include"]), 4)
+        self.assertEqual(len(release_matrix.release_matrix("all")["include"]), 3)
 
     def test_runtime_pins_are_read_from_the_requirements_file(self):
         build_runtime = load_module("sonara_build_runtime", "packaging/build_runtime.py")
@@ -127,7 +127,7 @@ class ReleasePackagingTests(unittest.TestCase):
 
     def test_unix_target_excludes_windows(self):
         platforms = [t["platform"] for t in release_matrix.release_matrix("unix")["include"]]
-        self.assertEqual(sorted(platforms), ["linux", "macos", "macos"])
+        self.assertEqual(sorted(platforms), ["linux", "macos"])
 
     def test_unix_assets_do_not_require_windows_installer(self):
         import tempfile
