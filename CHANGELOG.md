@@ -2,11 +2,16 @@
 
 This file records notable user-facing changes. The `v1.0.0` GitHub release exists but has no installer assets. Historical implementation notes and validation evidence remain in `docs/TESTING.md` and `docs/ROADMAP.md`.
 
-## Unreleased
+## v1.0.10 - 2026-11-17
 
 ### Added
 
 - Settings → Speech models downloads the supported Piper voices (Ryan, Lessac, Bryce, John) and Kokoro, which installers do not include. Each file comes over HTTPS from a fixed upstream revision, is capped at its published size, and is installed only after its pinned SHA-256 matches; a download can be cancelled, and a cancelled or failed download leaves nothing behind. The voice list updates when a voice is installed. Downloads happen only when you press Download (see docs/PRIVACY.md).
+
+### Changed
+
+- The desktop interface is redesigned: warm graphite surfaces with one amber accent, plainer wording, a reading view set in Newsreader with the spoken sentence highlighted in amber, and a passage strip that shows progress in the Continue card and the player. Icons now come from one set (lucide) at consistent sizes, and the Inter and Newsreader fonts are bundled with the app. The light theme uses the same palette.
+- Short documents show their length in seconds instead of "0 min".
 
 ### Fixed
 
