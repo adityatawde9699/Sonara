@@ -3,7 +3,9 @@ set -euo pipefail
 
 dmg="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 mount="$(mktemp -d)"
-install_root="$(mktemp -d)"
+# Resolve symlinks: mktemp lands under /var, a symlink to /private/var, and
+# Tauri refuses to start an executable whose path contains a symlink.
+install_root="$(cd "$(mktemp -d)" && pwd -P)"
 user_data="$HOME/Library/Application Support/com.sonara.reader"
 sentinel="$user_data/uninstall-preservation-check.txt"
 mkdir -p "$user_data"

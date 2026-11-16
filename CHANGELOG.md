@@ -4,7 +4,9 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 ## Unreleased
 
-Nothing yet.
+### Fixed
+
+- The release install checks failed on correct installers. On Linux the check looked for the bundled runtime under a `resources/` folder (Tauri installs it at `/usr/lib/Sonara/sonara/`), started the extracted AppImage without its `AppRun` launcher, and removed the package by the wrong name (`sonara`, not `sonara-desktop`); a missing part now fails with a message. On macOS the check installed the app under `/var`, a symlink, and Tauri will not start from a path that contains one.
 
 ## v1.0.6 - 2026-11-16
 

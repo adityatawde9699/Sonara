@@ -9,10 +9,23 @@ mkdir -p "$(dirname "$sentinel")"
 echo "Keep this user data during package removal." > "$sentinel"
 
 sudo apt-get install --yes "$deb"
-installed_app="$(command -v sonara-desktop)"
-installed_runtime="$(find /usr -type f -path '*/resources/sonara/sonara-runtime' -print -quit)"
-installed_tools="$(find /usr -type d -path '*/resources/sonara/tools' -print -quit)"
-test -n "$installed_app" && test -n "$installed_runtime" && test -n "$installed_tools"
+# Fail with a message, not a later "command not found", when a part is
+# missing. (`set -e` ignores a failure inside an `a && b && c` list.)
+require() {
+  if [[ -z "$2" ]]; then
+    echo "Installed package is missing $1." >&2
+    exit 1
+  fi
+}
+
+# Tauri installs bundle resources under /usr/lib/<product>/ on Linux, so
+# the staged tree lands at /usr/lib/Sonara/sonara/.
+installed_app="$(command -v sonara-desktop || true)"
+installed_runtime="$(find /usr/lib -type f -path '*/sonara/sonara-runtime' -print -quit)"
+installed_tools="$(find /usr/lib -type d -path '*/sonara/tools' -print -quit)"
+require "the sonara-desktop launcher" "$installed_app"
+require "the bundled inference runtime" "$installed_runtime"
+require "the bundled document tools" "$installed_tools"
 xvfb-run --auto-servernum "$installed_app" --sonara-smoke-check
 bash "$GITHUB_WORKSPACE/packaging/smoke_installed_tools.sh" "$installed_tools"
 
@@ -22,11 +35,16 @@ cd "$work"
 chmod +x "$appimage"
 "$appimage" --appimage-extract >/dev/null
 appimage_app="$(find squashfs-root -type f -name sonara-desktop -print -quit)"
-appimage_tools="$(find squashfs-root -type d -path '*/resources/sonara/tools' -print -quit)"
-test -n "$appimage_app" && test -n "$appimage_tools"
-xvfb-run --auto-servernum "$appimage_app" --sonara-smoke-check
+appimage_tools="$(find squashfs-root -type d -path '*/sonara/tools' -print -quit)"
+require "the AppImage executable" "$appimage_app"
+require "the AppImage document tools" "$appimage_tools"
+# Start through AppRun, as the AppImage does: Tauri's AppImage rewrites
+# WebKit's helper paths to be relative to the directory AppRun enters.
+test -x squashfs-root/AppRun || { echo "The AppImage has no AppRun launcher." >&2; exit 1; }
+xvfb-run --auto-servernum squashfs-root/AppRun --sonara-smoke-check
 bash "$GITHUB_WORKSPACE/packaging/smoke_installed_tools.sh" "$appimage_tools"
 
-sudo apt-get remove --yes sonara-desktop
+# Remove by the package's own name (Tauri derives it from the product name).
+sudo apt-get remove --yes "$(dpkg-deb --field "$deb" Package)"
 test -f "$sentinel"
 echo "Linux clean .deb/AppImage install, resource discovery, PDF/OCR, and user-data preservation checks passed."
