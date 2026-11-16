@@ -2,18 +2,11 @@
 
 This file records notable user-facing changes. The `v1.0.0` GitHub release exists but has no installer assets. Historical implementation notes and validation evidence remain in `docs/TESTING.md` and `docs/ROADMAP.md`.
 
-## v1.0.1 - 2026-10-30
-
-### Added
-
-- Added native GitHub Actions packaging, installed-app smoke checks, and release asset publishing for supported Windows, Linux, and macOS targets.
-- Added automatic operating-system and architecture detection, manual platform selection, and latest-release asset lookup to the marketing site's download section.
-
-### Fixed
-
-- Prepared the Tauri resource directory during Rust CI so tests work from a clean checkout.
-
 ## Unreleased
+
+Nothing yet.
+
+## v1.0.2 - 2026-11-16
 
 ### Security
 
@@ -83,5 +76,16 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 - Added a GitHub Pages workflow that publishes the independent `site/` directory.
 - Made the OCR page-count test independent of whether Poppler's `pdfinfo` is installed and prepared Python for Rust worker tests in CI.
 - Added contributor, support, security, development, configuration, privacy, testing, and release guidance.
+
+## v1.0.1 - 2026-10-30
+
+### Added
+
+- Added native GitHub Actions packaging, installed-app smoke checks, and release asset publishing for supported Windows, Linux, and macOS targets.
+- Added automatic operating-system and architecture detection, manual platform selection, and latest-release asset lookup to the marketing site's download section.
+
+### Fixed
+
+- Prepared the Tauri resource directory during Rust CI so tests work from a clean checkout.
 
 When preparing a release, summarize shipped changes here under the actual version and date. Do not treat this unreleased section as a published release.
