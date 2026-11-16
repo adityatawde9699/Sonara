@@ -85,7 +85,7 @@ import { detectDevice, LATEST_RELEASE_URL, REPOSITORY, selectReleaseAsset } from
         downloadStatus.textContent = state.error;
         downloadMeta.textContent = 'You can still open the GitHub releases page to check availability.';
         downloadButton.href = LATEST_RELEASE_URL;
-        downloadButton.textContent = 'Browse releases ↗';
+        downloadButton.textContent = 'Browse releases';
         return;
       }
       const platform = platformSelect.value;
@@ -95,26 +95,22 @@ import { detectDevice, LATEST_RELEASE_URL, REPOSITORY, selectReleaseAsset } from
       const asset = selectReleaseAsset(state.release, platform, architecture);
       if (asset) {
         downloadButton.href = asset.browser_download_url;
-        downloadButton.textContent = `Download for ${platformSelect.selectedOptions[0].text} `;
-        const arrow = document.createElement('span');
-        arrow.setAttribute('aria-hidden', 'true');
-        arrow.textContent = '↓';
-        downloadButton.append(arrow);
+        downloadButton.textContent = `Download for ${platformSelect.selectedOptions[0].text}`;
         downloadStatus.textContent = `Sonara ${state.release.tag_name} · ${platformSelect.selectedOptions[0].text} · ${architecture}`;
         downloadMeta.textContent = `${asset.name}${asset.size ? ` · ${formatBytes(asset.size)}` : ''}`;
         return;
       }
 
       downloadButton.href = state.release?.html_url || LATEST_RELEASE_URL;
-      downloadButton.textContent = state.release ? 'View release assets ↗' : 'Browse releases ↗';
+      downloadButton.textContent = state.release ? 'View release files' : 'Browse releases';
       if (!platform) {
-        downloadStatus.textContent = state.release ? `Sonara ${state.release.tag_name} is available. Choose a platform.` : 'Choose your platform to find an installer.';
+        downloadStatus.textContent = state.release ? `Sonara ${state.release.tag_name} is available. Choose a platform` : 'Choose your platform to find an installer';
       } else if (!architecture) {
-        downloadStatus.textContent = 'Choose an architecture to find the matching installer.';
+        downloadStatus.textContent = 'Choose an architecture to find the matching installer';
       } else {
-        downloadStatus.textContent = `No installer is published for ${platformSelect.selectedOptions[0].text} · ${architecture}.`;
+        downloadStatus.textContent = `No installer is published for ${platformSelect.selectedOptions[0].text} · ${architecture} yet`;
       }
-      downloadMeta.textContent = state.release ? `Latest release: ${state.release.tag_name}.` : 'Installer details will appear here.';
+      downloadMeta.textContent = state.release ? `Latest release: ${state.release.tag_name}` : 'Installer details will appear here';
     };
 
     platformSelect.addEventListener('change', () => {

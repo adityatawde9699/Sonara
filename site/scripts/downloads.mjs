@@ -2,7 +2,6 @@ export const REPOSITORY = 'adityatawde9699/Sonara';
 export const LATEST_RELEASE_URL = `https://github.com/${REPOSITORY}/releases/latest`;
 
 const ASSET_BY_TARGET = {
-  'windows/x86_64': 'Sonara-windows-x86_64-setup.exe',
   'linux/x86_64': 'Sonara-linux-x86_64.AppImage',
   'macos/aarch64': 'Sonara-macos-aarch64.dmg',
 };

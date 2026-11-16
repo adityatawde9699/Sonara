@@ -42,7 +42,8 @@ Before changing a product claim, verify it against the desktop implementation an
 - `assets/sonara-mark.svg` is the inline-independent brand mark used in the page.
 - `assets/favicon.svg` is the browser icon.
 - `assets/og-card.svg` is the social preview illustration.
-- `assets/images/sonara-home.webp` and `assets/images/sonara-home-light.webp` are optimized dark and light captures used by the hero when the site theme changes. Their original PNGs are retained in the repository.
+- `assets/images/sonara-reader.webp` and `assets/images/sonara-reader-light.webp` are dark and light captures of the reading view, used by the hero when the site theme changes. `sonara-player*.webp` are crops of the same captures. The text shown is Thoreau's *Walden* from Project Gutenberg (public domain).
+- `assets/fonts/` holds the Latin subsets of Inter and Newsreader, both under the SIL Open Font License (texts alongside).
 
 Replace or add optimized assets under `assets/`. Update the relative references in `index.html` and preserve image dimensions (or specify `width` and `height`) to avoid layout shifts. The home screenshot is an authentic application capture; the additional reader and workflow fragments are illustrative website visuals, not screenshots.
 

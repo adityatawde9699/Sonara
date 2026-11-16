@@ -4,17 +4,18 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark light">
-    <meta name="theme-color" content="#101010">
-    <meta name="description" content="Sonara is a local-first desktop reader that turns PDF, EPUB, TXT, Markdown, and DOCX documents into narrated listening sessions.">
+    <meta name="theme-color" content="#161513">
+    <meta name="description" content="Sonara is a desktop app that reads your PDF, EPUB, Word, Markdown and text documents aloud on your own computer, and highlights each passage as it speaks.">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="Sonara — Your documents, ready to be heard">
-    <meta property="og:description" content="A focused desktop listening experience for the documents you already have.">
+    <meta property="og:title" content="Sonara — your documents, read aloud on your own computer">
+    <meta property="og:description" content="A desktop reader that narrates your documents with a voice that runs on your machine.">
     <meta property="og:image" content="assets/og-card.svg">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Sonara — Your documents, ready to be heard">
-    <meta name="twitter:description" content="A focused desktop listening experience for the documents you already have.">
-    <title>Sonara — Your documents, ready to be heard</title>
+    <meta name="twitter:title" content="Sonara — your documents, read aloud on your own computer">
+    <meta name="twitter:description" content="A desktop reader that narrates your documents with a voice that runs on your machine.">
+    <title>Sonara — your documents, read aloud on your own computer</title>
     <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+    <link rel="preload" href="assets/fonts/newsreader-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="styles/main.css">
     <script src="scripts/theme.js"></script>
     <script type="module" src="scripts/main.js"></script>
@@ -25,8 +26,8 @@
     <header class="site-header" id="top">
       <div class="header-inner">
         <a class="wordmark" href="#top" aria-label="Sonara home">
-          <img src="assets/sonara-mark.svg" width="28" height="28" alt="">
-          <span>sonara</span>
+          <img src="assets/sonara-mark.svg" width="24" height="24" alt="">
+          <span>Sonara</span>
         </a>
         <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-navigation" aria-label="Open navigation">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
@@ -42,7 +43,7 @@
             <svg class="sun-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>
             <svg class="moon-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 15.5A8.5 8.5 0 0 1 8.5 3.6 8.6 8.6 0 1 0 20.4 15.5Z"/></svg>
           </button>
-          <a class="button button-small button-dark" href="https://github.com/adityatawde9699/Sonara" target="_blank" rel="noopener noreferrer">Explore the source <span aria-hidden="true">↗</span></a>
+          <a class="header-link" href="https://github.com/adityatawde9699/Sonara" target="_blank" rel="noopener noreferrer">GitHub</a>
         </div>
       </div>
     </header>
@@ -50,17 +51,12 @@
     <main id="main-content">
       <section class="hero section-wrap" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <h1 id="hero-title">Your documents,<br>ready to be heard.</h1>
-          <p>Sonara turns the files you already read into a focused desktop listening session, with speech prepared on your device.</p>
-          <div class="hero-actions">
-            <a class="button button-primary" href="#download">Download Sonara <span aria-hidden="true">↓</span></a>
-            <a class="text-link" href="https://github.com/adityatawde9699/Sonara" target="_blank" rel="noopener noreferrer">Explore the project <span aria-hidden="true">↗</span></a>
-          </div>
+          <h1 id="hero-title">Your documents, read aloud on your own computer</h1>
+          <p>Sonara narrates PDFs, e-books, Word files and notes with a voice that runs on your machine, and highlights each passage as it reads.</p>
           <section class="download-card" id="download" aria-labelledby="download-title" data-ui>
             <div class="download-heading">
-              <span class="download-eyebrow">SONARA DESKTOP</span>
-              <h2 id="download-title">Get the right build.</h2>
-              <p id="download-status" role="status" aria-live="polite">Checking the latest release…</p>
+              <h2 id="download-title">Download Sonara</h2>
+              <p id="download-status" role="status" aria-live="polite">Checking the latest release</p>
             </div>
             <div class="download-controls">
               <div class="download-selects">
@@ -68,7 +64,6 @@
                   <span>Platform</span>
                   <select id="download-platform" autocomplete="off">
                     <option value="">Choose platform</option>
-                    <option value="windows">Windows</option>
                     <option value="linux">Linux</option>
                     <option value="macos">macOS</option>
                   </select>
@@ -76,51 +71,51 @@
                 <label>
                   <span>Architecture</span>
                   <select id="download-arch" autocomplete="off">
-                    <option value="auto">Detected / choose</option>
-                    <option value="x86_64">x86_64 · Intel / AMD</option>
+                    <option value="auto">Detected</option>
+                    <option value="x86_64">x86_64</option>
                     <option value="aarch64">ARM64</option>
                   </select>
                 </label>
               </div>
               <div class="download-actions">
-                <a class="button button-primary download-button" id="download-button" href="https://github.com/adityatawde9699/Sonara/releases" aria-describedby="download-status">Browse releases <span aria-hidden="true">↗</span></a>
-                <a class="text-link" id="latest-release-link" href="https://github.com/adityatawde9699/Sonara/releases/latest" target="_blank" rel="noopener noreferrer">Latest GitHub Release <span aria-hidden="true">↗</span></a>
+                <a class="button button-primary download-button" id="download-button" href="https://github.com/adityatawde9699/Sonara/releases" aria-describedby="download-status">Browse releases</a>
+                <a class="text-link" id="latest-release-link" href="https://github.com/adityatawde9699/Sonara/releases/latest" target="_blank" rel="noopener noreferrer">All files on GitHub</a>
               </div>
             </div>
-            <p class="download-meta" id="download-meta">Installer details will appear here.</p>
+            <p class="download-meta" id="download-meta">Installer details will appear here</p>
           </section>
         </div>
 
-        <figure class="product-window actual-product-shot" aria-labelledby="preview-label">
-          <figcaption class="preview-label" id="preview-label">Sonara desktop · Home view · captured 29 October 2026</figcaption>
-          <img src="assets/images/sonara-home.webp" data-theme-src-dark="assets/images/sonara-home.webp" data-theme-src-light="assets/images/sonara-home-light.webp" width="1920" height="1080" alt="Sonara's home screen with the listening dashboard, recently prepared documents, a continue listening card, and the persistent player." fetchpriority="high">
+        <figure class="product-window actual-product-shot">
+          <img src="assets/images/sonara-reader.webp" data-theme-src-dark="assets/images/sonara-reader.webp" data-theme-src-light="assets/images/sonara-reader-light.webp" width="1920" height="1200" alt="Sonara's reading view with a chapter of Thoreau's Walden open. The paragraph beginning “I went to the woods because I wished to live deliberately” is highlighted while it is read, and the player at the bottom shows passage 7 of 15." fetchpriority="high">
+          <figcaption>Sonara 1.0.10, reading view. Text: Henry David Thoreau, Walden (1854), from Project Gutenberg</figcaption>
         </figure>
       </section>
 
       <section class="intro section-wrap" aria-labelledby="intro-title">
-        <h2 id="intro-title">Make room for listening.</h2>
+        <h2 id="intro-title">Make room for listening</h2>
         <div class="intro-copy">
-          <p>Reports, research, books, and notes do not always fit into a quiet hour with a screen. Sonara gives those documents a spoken form you can follow, pause, and come back to.</p>
-          <p>It is a desktop reader built around the source document and its narration—not a new library to fill or a service that needs your files.</p>
+          <p>Reports, research, books and notes do not always fit into a quiet hour with a screen. Sonara gives those documents a spoken form you can follow, pause and come back to.</p>
+          <p>It is a desktop reader built around the source document and its narration, not a new library to fill or a service that needs your files.</p>
         </div>
       </section>
 
       <section class="feature-section section-wrap" id="features" aria-labelledby="features-title">
         <div class="feature-heading">
-          <h2 id="features-title">The document stays yours.</h2>
+          <h2 id="features-title">The document stays yours</h2>
         </div>
         <div class="feature-list">
           <article class="feature-row">
             <h3>Bring the formats you use</h3>
-            <p>Prepare PDF, EPUB, TXT/TEXT, Markdown, and DOCX files in the desktop app. Extraction can vary with document layout; scanned PDFs need local OCR tools.</p>
+            <p>PDF, EPUB, DOCX, Markdown and plain text. Scanned PDFs are read with OCR, which ships with the app. Complex layouts can still extract imperfectly.</p>
           </article>
           <article class="feature-row">
-            <h3>Choose an available voice</h3>
-            <p>Use installed Piper voices, or configure the optional Kokoro integration and its local model files. Kokoro remains unverified on the currently documented runtime.</p>
+            <h3>Choose a voice</h3>
+            <p>Download Piper voices or Kokoro from Settings. Each file comes from a fixed upstream release and is checked against a pinned SHA-256 hash before Sonara uses it.</p>
           </article>
           <article class="feature-row">
-            <h3>Stay with the passage</h3>
-            <p>Play, pause, seek, move between generated passages, adjust speed, and save a listening position for the current document.</p>
+            <h3>Follow the passage</h3>
+            <p>The reading view highlights the passage being spoken. Play, pause, seek, change speed from 0.7× to 1.5×, and start from any paragraph. Sonara remembers where you stopped.</p>
           </article>
           <article class="feature-row">
             <h3>Review spoken changes</h3>
@@ -128,7 +123,7 @@
           </article>
           <article class="feature-row">
             <h3>Keep assistance optional</h3>
-            <p>The document assistant is separate from basic reading and speech. Its provider is configured independently and may be local or remote.</p>
+            <p>The document assistant is separate from reading and speech. Its provider is configured on its own and may be local or remote.</p>
           </article>
         </div>
       </section>
@@ -136,8 +131,8 @@
       <section class="formats-section" aria-labelledby="formats-title">
         <div class="formats-inner section-wrap">
           <div class="formats-copy">
-            <h2 id="formats-title">Start with a file you have.</h2>
-            <p>Sonara extracts text locally, then prepares speech with a configured local engine. Some complex layouts may need a closer look.</p>
+            <h2 id="formats-title">Start with a file you have</h2>
+            <p>Sonara extracts text on your computer, then prepares speech with a local voice. Some complex layouts may need a closer look.</p>
           </div>
           <ul class="format-list" aria-label="Supported document formats">
             <li><span>PDF</span><small>Portable document</small></li>
@@ -146,35 +141,35 @@
             <li><span>TXT</span><small>Plain text</small></li>
             <li><span>MD</span><small>Markdown</small></li>
           </ul>
-          <p class="format-note">Scanned PDFs can use the optional local OCR path when its system tools are installed.</p>
+          <p class="format-note">Scanned PDFs are read with Tesseract OCR, included in the installers.</p>
         </div>
       </section>
 
       <section class="workflow section-wrap" id="how-it-works" aria-labelledby="workflow-title">
         <div class="workflow-heading">
-          <h2 id="workflow-title">From file to listening.</h2>
-          <p>Sonara keeps the steps close to the document and the controls you need.</p>
+          <h2 id="workflow-title">From file to listening</h2>
+          <p>Four steps, each one close to the document and the controls you need.</p>
         </div>
         <ol class="workflow-steps">
           <li>
-            <span class="step-mark" aria-hidden="true">↳</span>
+            <span class="step-strip" aria-hidden="true"><i class="is-lit"></i><i></i><i></i><i></i></span>
             <h3>Choose a document</h3>
-            <p>Open a supported file with the desktop app’s native picker.</p>
+            <p>Open a supported file with your system’s file picker.</p>
           </li>
           <li>
-            <span class="step-mark" aria-hidden="true">↳</span>
-            <h3>Choose speech</h3>
-            <p>Select an installed Piper voice or a configured Kokoro voice.</p>
+            <span class="step-strip" aria-hidden="true"><i class="is-done"></i><i class="is-lit"></i><i></i><i></i></span>
+            <h3>Choose a voice</h3>
+            <p>Pick a Piper or Kokoro voice you downloaded in Settings.</p>
           </li>
           <li>
-            <span class="step-mark" aria-hidden="true">↳</span>
+            <span class="step-strip" aria-hidden="true"><i class="is-done"></i><i class="is-done"></i><i class="is-lit"></i><i></i></span>
             <h3>Prepare the audio</h3>
-            <p>Sonara extracts the text and synthesizes mapped audio passages locally.</p>
+            <p>Sonara extracts the text and synthesizes it passage by passage on your computer.</p>
           </li>
           <li>
-            <span class="step-mark" aria-hidden="true">↳</span>
+            <span class="step-strip" aria-hidden="true"><i class="is-done"></i><i class="is-done"></i><i class="is-done"></i><i class="is-lit"></i></span>
             <h3>Listen and return</h3>
-            <p>Use the player controls and saved position to continue the current session.</p>
+            <p>Follow the highlighted passage, and pick up where you left off next time.</p>
           </li>
         </ol>
       </section>
@@ -182,8 +177,8 @@
       <section class="preview-section" aria-labelledby="preview-title">
         <div class="preview-section-inner section-wrap">
           <div class="preview-section-copy">
-            <h2 id="preview-title">Nothing is rewritten in place.</h2>
-            <p>Sonara keeps original text separate from supported pronunciation and measurement adjustments. Switch the example to see the difference.</p>
+            <h2 id="preview-title">Nothing is rewritten in place</h2>
+            <p>Sonara keeps the original text separate from supported pronunciation and measurement adjustments. Switch the example to see the difference.</p>
           </div>
           <div class="spoken-demo" data-ui>
             <div class="demo-topline">
@@ -200,28 +195,28 @@
             <div id="spoken-panel" class="demo-panel" role="tabpanel" aria-labelledby="spoken-tab" tabindex="0" hidden>
               <p>This guide covers five kilometers per hour. See for example the opening note.</p>
             </div>
-            <p class="demo-footnote">Example only. Your source document remains unchanged.</p>
+            <p class="demo-footnote">Example only. Your source document stays unchanged.</p>
           </div>
         </div>
       </section>
 
       <section class="engines section-wrap" aria-labelledby="engines-title">
         <div class="engines-intro">
-          <h2 id="engines-title">Different tools, clear roles.</h2>
-          <p>Speech engines create audio. Optional language models power separate assistant features.</p>
+          <h2 id="engines-title">Different tools, clear roles</h2>
+          <p>Speech engines create the audio. Language models only power the separate assistant.</p>
         </div>
         <div class="engine-list">
           <article class="engine-row">
-            <div class="engine-name"><h3>Piper</h3><span>Default path</span></div>
-            <p>Local text-to-speech through the installed Piper runtime and voice model. Voice availability depends on the models installed on your device.</p>
+            <div class="engine-name"><h3>Piper</h3><span>Default voice engine</span></div>
+            <p>Included in the app. Four American English voices, about 60 MB each, download from Settings.</p>
           </article>
           <article class="engine-row">
-            <div class="engine-name"><h3>Kokoro</h3><span>Optional setup</span></div>
-            <p>An optional local speech integration. It needs a compatible Python environment, the kokoro-onnx package, and local model files; this setup has not yet been verified for the current runtime.</p>
+            <div class="engine-name"><h3>Kokoro</h3><span>Second voice engine</span></div>
+            <p>Included in the app. Its model and voice files, about 350 MB, download from Settings.</p>
           </article>
           <article class="engine-row">
-            <div class="engine-name"><h3>llama.cpp</h3><span>Assistant only</span></div>
-            <p>An optional language-model integration for assistant features; it is not a speech engine and is not required to read a document aloud.</p>
+            <div class="engine-name"><h3>Assistant</h3><span>Optional, not for speech</span></div>
+            <p>An embedded llama.cpp model, a local Ollama server, or OpenAI and Gemini. None of them is needed to read a document aloud.</p>
           </article>
         </div>
       </section>
@@ -229,84 +224,59 @@
       <section class="privacy-section" id="privacy" aria-labelledby="privacy-title">
         <div class="privacy-inner section-wrap">
           <div class="privacy-statement">
-            <h2 id="privacy-title">Your document stays on your device for speech.</h2>
+            <h2 id="privacy-title">Your document stays on your computer for speech</h2>
           </div>
           <div class="privacy-detail">
-            <p>Document extraction, audio generation, and playback use local processing in the desktop workflow. Sonara does not automatically download voice models.</p>
-            <p>Assistant providers are configured separately. If you choose an external provider and use an assistant feature, relevant document context may be sent to that provider. Review the provider and settings before use.</p>
-            <a class="text-link" href="https://github.com/adityatawde9699/Sonara/blob/master/docs/ARCHITECTURE.md" target="_blank" rel="noopener noreferrer">Read the architecture notes <span aria-hidden="true">↗</span></a>
+            <p>Text extraction, OCR, audio generation and playback all run on your computer. Voice models download only when you press Download in Settings, from fixed sources, and are checked before use.</p>
+            <p>Assistant providers are configured separately. If you choose an external provider and use an assistant feature, relevant document text may be sent to that provider. Review the provider and settings before use.</p>
+            <a class="text-link" href="https://github.com/adityatawde9699/Sonara/blob/master/docs/PRIVACY.md" target="_blank" rel="noopener noreferrer">Read the privacy notes</a>
           </div>
         </div>
       </section>
 
       <section class="product-story section-wrap" aria-labelledby="story-title">
         <div class="story-heading">
-          <h2 id="story-title">Source text beside the player.</h2>
-          <p>The desktop session keeps extracted text and playback controls within reach. Audio progress is saved separately; paragraph-level highlighting is not currently provided.</p>
+          <h2 id="story-title">Text and audio stay in step</h2>
+          <p>The player marks every passage of the document, and the current one is lit. Jump to any passage, or click a paragraph in the reading view to listen from there.</p>
         </div>
-        <div class="story-states" data-ui aria-label="Illustrative three-stage Sonara workflow preview">
-          <article class="story-state">
-            <span class="state-name">Source</span>
-            <div class="state-panel source-state">
-              <span class="state-file">EXAMPLE · DOCX</span>
-              <h3>Notes from the field</h3>
-              <p>A document begins as its own text, with paragraph breaks preserved where extraction provides them.</p>
-              <div class="text-lines" aria-hidden="true"><i></i><i></i><i></i></div>
-            </div>
-          </article>
-          <article class="story-state">
-            <span class="state-name">Speech</span>
-            <div class="state-panel speech-state">
-              <span class="state-file">LOCAL VOICE</span>
-              <h3>Piper · installed voice</h3>
-              <p>Choose from the voice models available on this device before preparing audio.</p>
-              <div class="voice-select-illustration"><span>Installed voices</span><span aria-hidden="true">⌄</span></div>
-            </div>
-          </article>
-          <article class="story-state">
-            <span class="state-name">Listening</span>
-            <div class="state-panel listen-state">
-              <span class="state-file">CURRENT SESSION</span>
-              <h3>One player, clear controls</h3>
-              <p>Pause, seek, adjust speed, navigate audio passages, and save your position.</p>
-              <div class="mini-transport" aria-hidden="true"><span>◀</span><b>▶</b><span>▶|</span><span class="mini-rate">1×</span></div>
-            </div>
-          </article>
-        </div>
+        <figure class="story-shot actual-product-shot">
+          <img src="assets/images/sonara-player.webp" data-theme-src-dark="assets/images/sonara-player.webp" data-theme-src-light="assets/images/sonara-player-light.webp" width="1600" height="172" alt="Sonara's player bar: the Walden chapter paused at 3 minutes 23 seconds of 7 minutes 31, with a row of fifteen passage marks and the seventh lit." loading="lazy">
+          <figcaption>The player, paused on passage 7 of 15</figcaption>
+        </figure>
       </section>
 
       <section class="faq-section section-wrap" id="faq" aria-labelledby="faq-title">
         <div class="faq-heading">
-          <h2 id="faq-title">Questions, plainly answered.</h2>
+          <h2 id="faq-title">Questions, plainly answered</h2>
         </div>
         <div class="faq-list">
           <details>
             <summary>What is Sonara?</summary>
-            <p>Sonara is a desktop document reader that prepares local text-to-speech audio, with playback and saved progress for the current reading session.</p>
+            <p>A desktop document reader that turns your files into narration on your own computer, with a reading view that highlights the passage being spoken and saves your place.</p>
           </details>
           <details>
             <summary>Which document types can I open?</summary>
-            <p>The current desktop picker accepts PDF, EPUB, TXT/TEXT, Markdown, and DOCX. Extraction depends on the document’s structure; scanned PDFs require the optional local OCR tools.</p>
+            <p>PDF, EPUB, DOCX, Markdown and plain text. Scanned PDFs are read with the OCR included in the app. Extraction depends on the document’s structure.</p>
           </details>
           <details>
             <summary>Can Sonara work offline?</summary>
-            <p>Core extraction and speech can run locally once the required runtime, system tools, and voice/model files are available. They are not all bundled or downloaded automatically.</p>
+            <p>Yes, once you have downloaded a voice. Text extraction, OCR and speech run on your computer, and the runtime and tools they need ship inside the installer.</p>
           </details>
           <details>
-            <summary>Which voices and engines are included?</summary>
-            <p>Piper is the default engine and lists installed voice models. Kokoro has an optional integration, but its runtime setup remains unverified; it needs a compatible Python environment and local model files. Voices depend on your local setup.</p>
+            <summary>Which voices are included?</summary>
+            <p>The installers include the Piper and Kokoro engines but no voice files. Four American English Piper voices (Ryan, Lessac, Bryce and John) and Kokoro download from Settings → Speech models.</p>
           </details>
           <details>
             <summary>Does Sonara send my documents to a service?</summary>
-            <p>Document extraction and speech generation run locally. Assistant providers are configured separately; an external provider may receive document context when you use its assistant features.</p>
+            <p>Not for reading or speech, which run on your computer. Assistant providers are configured separately; an external provider may receive document text when you use its assistant features.</p>
           </details>
           <details>
             <summary>Is there an installer for my computer?</summary>
-            <p>The tagged-release workflow is configured to build installers for Windows, Linux, and macOS. A platform download appears above after a release is published; check the release page for all available files.</p>
+            <p>Linux on x86_64 (.deb and AppImage) and macOS on Apple silicon (.dmg). The macOS build is not yet signed, so macOS asks you to approve it in System Settings the first time you open it. Windows builds are not available yet.</p>
           </details>
           <details>
             <summary>Where can I get Sonara?</summary>
-            <p>Use the download selector above to find the latest build for your platform and architecture, or open the latest GitHub Release to browse every installer.</p>
+            <p>Use the download panel at the top of this page, or open the latest GitHub release to see every file, with checksums and a software bill of materials.</p>
           </details>
         </div>
       </section>
@@ -314,11 +284,11 @@
       <section class="closing-section" aria-labelledby="closing-title">
         <div class="closing-inner section-wrap">
           <div>
-            <h2 id="closing-title">Keep the page.<br>Take the sound.</h2>
+            <h2 id="closing-title">Keep the page.<br>Take the sound</h2>
           </div>
           <div class="closing-action">
-            <p>Choose your platform above for the current installer, or explore the source and release notes on GitHub.</p>
-            <a class="button button-light" href="https://github.com/adityatawde9699/Sonara/releases/latest" target="_blank" rel="noopener noreferrer">Open the latest release <span aria-hidden="true">↗</span></a>
+            <p>Sonara is free and open source under the GPL. Read the release notes, or look through the code.</p>
+            <a class="button button-light" href="https://github.com/adityatawde9699/Sonara/releases/latest" target="_blank" rel="noopener noreferrer">Open the latest release</a>
           </div>
         </div>
       </section>
@@ -326,20 +296,20 @@
 
     <footer class="site-footer">
       <div class="footer-inner section-wrap">
-        <a class="footer-wordmark" href="#top">sonara</a>
+        <a class="footer-wordmark" href="#top">Sonara</a>
         <div class="footer-content">
-          <p>A local-first desktop reader for documents worth hearing.</p>
+          <p>A desktop reader that narrates your documents on your own computer.</p>
           <nav class="footer-links" aria-label="Footer navigation">
-            <a href="https://github.com/adityatawde9699/Sonara" target="_blank" rel="noopener noreferrer">Source on GitHub <span aria-hidden="true">↗</span></a>
-            <a href="https://github.com/adityatawde9699/Sonara/tree/master/docs" target="_blank" rel="noopener noreferrer">Project documentation <span aria-hidden="true">↗</span></a>
-            <a href="https://github.com/adityatawde9699/Sonara/blob/master/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only License <span aria-hidden="true">↗</span></a>
-            <a href="#privacy">Privacy notes</a>
+            <a href="https://github.com/adityatawde9699/Sonara" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
+            <a href="https://github.com/adityatawde9699/Sonara/tree/master/docs" target="_blank" rel="noopener noreferrer">Documentation</a>
+            <a href="https://github.com/adityatawde9699/Sonara/blob/master/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0-only license</a>
+            <a href="#privacy">Privacy</a>
             <a href="#faq">FAQ</a>
           </nav>
         </div>
         <div class="footer-bottom">
-          <span>Sonara · Desktop project prototype</span>
-          <a href="#top">Back to top ↑</a>
+          <span>Fonts: Inter and Newsreader, SIL Open Font License</span>
+          <a href="#top">Back to top</a>
         </div>
       </div>
     </footer>

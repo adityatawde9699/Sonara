@@ -10,7 +10,7 @@
 
   function applyTheme(theme) {
     root.dataset.theme = theme;
-    themeMeta?.setAttribute('content', theme === 'light' ? '#f4f7f2' : '#101010');
+    themeMeta?.setAttribute('content', theme === 'light' ? '#f7f3ec' : '#161513');
     document.querySelectorAll('[data-theme-src-light][data-theme-src-dark]').forEach((image) => {
       const source = theme === 'light' ? image.dataset.themeSrcLight : image.dataset.themeSrcDark;
       if (source && image.getAttribute('src') !== source) image.setAttribute('src', source);
