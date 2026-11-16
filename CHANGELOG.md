@@ -6,7 +6,16 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 Nothing yet.
 
+## v1.0.4 - 2026-11-16
+
+### Fixed
+
+- AppImage builds failed because no app icons were configured; the only icon was a 128 px placeholder. Sonara now has a full icon set (PNG sizes, `.icns` for macOS, `.ico` for Windows) made from the sound-wave mark the website uses.
+
 ## v1.0.3 - 2026-11-16
+
+The v1.0.3 release has no installers; its AppImage build failed on the missing icons fixed in v1.0.4.
+
 
 ### Fixed
 
@@ -14,7 +23,7 @@ Nothing yet.
 
 ## v1.0.2 - 2026-11-16
 
-The v1.0.2 release has no installers; its build failed on the bundle category fixed in v1.0.3. Everything below ships in v1.0.3.
+The v1.0.2 release has no installers; its build failed on the bundle category fixed in v1.0.3. Everything below ships in v1.0.4.
 
 
 ### Security
