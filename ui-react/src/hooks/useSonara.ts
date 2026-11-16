@@ -296,6 +296,7 @@ export function useSonara() {
     // Voice and narration settings
     voices: settings.voices,
     kokoroVoices: settings.kokoroVoices,
+    refreshVoices: settings.refreshVoices,
     speechEngine,
     setSpeechEngine: settings.setSpeechEngine,
     resourceProfile,

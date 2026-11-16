@@ -47,7 +47,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip check
 ```
 
-The app requires system Poppler separately; it is not a Python package. Sonara does not download voice files automatically. If obtaining a voice, use Piper's documented voice acquisition workflow, review its model card and terms, and verify the provenance before using or redistributing it.
+The app requires system Poppler separately; it is not a Python package. Installers ship without voice models. In the desktop app, Settings → Speech models downloads the supported Piper voices and Kokoro on request, over HTTPS, and installs a file only after its pinned SHA-256 matches (see [privacy](docs/PRIVACY.md#model-downloads)). Nothing is downloaded without that button press. For other voices, use Piper's documented voice acquisition workflow, review its model card and terms, and verify the provenance before using or redistributing it.
 
 ## Read a Document
 

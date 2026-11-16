@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 mod audio_server;
 mod library;
 mod llm_rpc;
+mod models;
 mod pickers;
 mod process_tree;
 mod runtime;
@@ -257,6 +258,28 @@ fn current_session(
         .map_err(|_| "Reader session state is unavailable.".to_owned())?
         .as_ref()
         .map(|session| FrontendSession::from_session(session, &audio_server.base_url)))
+}
+
+/// Speech models the app can download, and whether each is installed.
+#[tauri::command]
+async fn list_models(app: AppHandle) -> Result<Vec<models::ModelStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || models::model_status(&app))
+        .await
+        .map_err(|error| format!("Model status task failed: {error}"))?
+}
+
+/// Downloads and verifies one model; progress arrives as
+/// `model-download-progress` events. Resolves when it is installed.
+#[tauri::command]
+async fn install_model(app: AppHandle, model: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || models::install_model(&app, &model))
+        .await
+        .map_err(|error| format!("Model download task failed: {error}"))?
+}
+
+#[tauri::command]
+fn cancel_model_download(downloads: State<'_, models::ModelDownloads>) -> bool {
+    models::cancel_download(downloads.inner())
 }
 
 #[tauri::command]
@@ -780,6 +803,7 @@ fn terminate_active(app: &AppHandle, job_id: &str) {
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .manage(models::ModelDownloads::default())
         .invoke_handler(tauri::generate_handler![
             pick_document,
             preview_narration,
@@ -790,6 +814,9 @@ pub fn run() {
             save_progress,
             list_voices,
             list_kokoro_voices,
+            list_models,
+            install_model,
+            cancel_model_download,
             get_reader_document,
             llm_test_connection,
             llm_chat,
@@ -839,6 +866,7 @@ pub fn run() {
                 let app = window.app_handle();
                 app.state::<AudioServer>().stop();
                 shutdown_llm_worker(app.state::<AppState>().inner());
+                models::cancel_download(app.state::<models::ModelDownloads>().inner());
                 if let Ok(mut active) = app.state::<AppState>().active.lock() {
                     if let Some(job) = active.take() {
                         job.cancelled.store(true, Ordering::SeqCst);

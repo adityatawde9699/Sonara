@@ -55,6 +55,9 @@ function initialVoice(): string {
 export function useSpeechSettings(tauriAvailable: boolean) {
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [kokoroVoices, setKokoroVoices] = useState<VoiceInfo[]>([]);
+  // Bumped after a model download so the installed voices are listed again.
+  const [voicesRevision, setVoicesRevision] = useState(0);
+  const refreshVoices = useCallback(() => setVoicesRevision((value) => value + 1), []);
   const [speechEngine, setSpeechEngineState] = useState<SpeechEngine>(() =>
     readSetting(KEYS.engine) === "kokoro" ? "kokoro" : "piper",
   );
@@ -139,11 +142,12 @@ export function useSpeechSettings(tauriAvailable: boolean) {
     return () => {
       cancelled = true;
     };
-  }, [tauriAvailable]);
+  }, [tauriAvailable, voicesRevision]);
 
   return {
     voices,
     kokoroVoices,
+    refreshVoices,
     speechEngine,
     setSpeechEngine,
     resourceProfile,

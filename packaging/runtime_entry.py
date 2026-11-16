@@ -43,6 +43,11 @@ def dispatch(arguments: Sequence[str]) -> int:
 
         return _run_with_argv(llm_client.main, entry, forwarded)
 
+    if entry == "model_downloads.py":
+        import model_downloads
+
+        return model_downloads.main(forwarded)
+
     if entry == "piper_worker.py":
         import piper_worker
 
@@ -86,6 +91,18 @@ def self_check() -> int:
         except Exception as error:
             failures = True
             results[distribution] = {"available": False, "error": str(error)[:500]}
+    # The in-app model installer, and the CA bundle its HTTPS downloads need.
+    try:
+        import certifi
+        import model_downloads
+
+        bundle = Path(certifi.where())
+        if not bundle.is_file():
+            raise FileNotFoundError(f"certifi CA bundle is missing: {bundle}")
+        results["model-installer"] = {"available": True, "models": len(model_downloads.CATALOG)}
+    except Exception as error:
+        failures = True
+        results["model-installer"] = {"available": False, "error": str(error)[:500]}
     print(json.dumps({"ok": not failures, "runtimes": results}, sort_keys=True))
     return 1 if failures else 0
 

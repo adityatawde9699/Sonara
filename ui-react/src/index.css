@@ -3598,3 +3598,62 @@ html[data-theme="light"] .about-privacy .continue-text-action { color: #830000; 
 @media (hover: none) { .reader-play-from { opacity: 0.7; } }
 @media (prefers-reduced-motion: reduce) { .reader-play-from { transition: none; } }
 @media (max-width: 700px) { .reader-play-from { position: static; margin-right: 6px; vertical-align: 1px; opacity: 0.7; } }
+
+/* Speech model downloads (Settings → Speech models) */
+.model-group-title {
+  margin: 14px 0 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.model-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.model-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 10px 12px;
+}
+
+.model-row + .model-row {
+  border-top: 1px solid var(--line);
+}
+
+.model-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.model-row-name {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.model-row-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-row-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-row-progress progress {
+  width: 120px;
+  height: 6px;
+  accent-color: var(--accent);
+}

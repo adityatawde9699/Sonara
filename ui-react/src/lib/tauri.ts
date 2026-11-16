@@ -186,6 +186,48 @@ export async function listKokoroVoices(): Promise<VoiceInfo[]> {
   return invoke<VoiceInfo[]>("list_kokoro_voices");
 }
 
+// ── Speech model downloads ──────────────────────────────────────────
+
+/** A model the app can download (installers ship without voice models). */
+export interface ModelStatus {
+  id: string;
+  kind: "piper" | "kokoro";
+  label: string;
+  sizeBytes: number;
+  installed: boolean;
+}
+
+export interface ModelDownloadProgress {
+  model: string;
+  received: number;
+  total: number;
+}
+
+export async function listModels(): Promise<ModelStatus[]> {
+  return invoke<ModelStatus[]>("list_models");
+}
+
+/** Downloads, verifies and installs a model; resolves once it is installed. */
+export async function installModel(model: string): Promise<void> {
+  return invoke<void>("install_model", { model });
+}
+
+export async function cancelModelDownload(): Promise<boolean> {
+  return invoke<boolean>("cancel_model_download");
+}
+
+export async function onModelDownloadProgress(
+  handler: (payload: ModelDownloadProgress) => void
+): Promise<() => void> {
+  const listen = getTauriListen();
+  if (!listen) throw new Error("Tauri event API is unavailable.");
+  return listen("model-download-progress", (event: unknown) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e = event as any;
+    handler(e.payload as ModelDownloadProgress);
+  });
+}
+
 /** The open document as blocks, matching the passages' source spans. */
 export async function getReaderDocument(): Promise<ReaderDocument> {
   return invoke<ReaderDocument>("get_reader_document");

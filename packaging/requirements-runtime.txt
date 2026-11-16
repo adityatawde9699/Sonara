@@ -4,6 +4,8 @@ piper-tts==1.8.0
 onnxruntime==1.31.0
 numpy==2.5.4
 kokoro-onnx==0.6.1
+# CA certificates for the in-app model installer (model_downloads.py).
+certifi==2026.10.23
 # llama-cpp-python's dependencies except diskcache; the package itself is in
 # requirements-runtime-nodeps.txt.
 jinja2==3.1.6

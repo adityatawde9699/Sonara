@@ -41,7 +41,7 @@ def read_pinned_requirements(path: Path = RUNTIME_REQUIREMENTS) -> dict[str, str
 
 
 REQUIRED_PACKAGES = {**read_pinned_requirements(), **read_pinned_requirements(RUNTIME_NODEPS_REQUIREMENTS)}
-DATA_FILES = ("sonara.py", "llm_client.py", "piper_worker.py")
+DATA_FILES = ("sonara.py", "llm_client.py", "piper_worker.py", "model_downloads.py")
 COLLECT_PACKAGES = (
     "piper",
     "onnxruntime",
@@ -116,6 +116,10 @@ def build(*, clean: bool = False) -> Path:
     command.extend(("--hidden-import", "piper_worker"))
     command.extend(("--hidden-import", "llama_runtime"))
     command.extend(("--hidden-import", "parent_watch"))
+    # The model installer is also launched by filename, and needs certifi's
+    # CA bundle because the frozen runtime cannot use the OS store everywhere.
+    command.extend(("--hidden-import", "model_downloads"))
+    command.extend(("--collect-data", "certifi"))
     # Belt and braces: never freeze diskcache even if it appears in the build env.
     for package in FORBIDDEN_PACKAGES:
         command.extend(("--exclude-module", package))

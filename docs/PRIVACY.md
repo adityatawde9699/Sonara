@@ -8,7 +8,11 @@ Sonara's document reader and default Piper synthesis path are designed to proces
 - Piper inference is invoked locally through the Python worker and installed model files.
 - The desktop audio server binds to loopback on an ephemeral port and serves generated audio to the local WebView. It uses a per-launch random token and checks the active generated session.
 - Local progress, the document library (which includes each prepared document's path on disk), preferences, generated audio, and caches may be written to application data, WebView storage, output directories, or cache directories as described in [configuration](CONFIGURATION.md).
-- Missing models are not silently downloaded by the default workflow.
+- Missing models are never downloaded silently. Installers ship without voice models, and Settings → Speech models downloads one only when you press its Download button.
+
+## Model downloads
+
+A model download (`model_downloads.py`) requests fixed files over HTTPS: Piper voices from `huggingface.co` (revision `v1.0.0` of `rhasspy/piper-voices`) and Kokoro from the `thewh1teagle/kokoro-onnx` GitHub release `model-files-v1.1`. Those hosts, and any they redirect to (redirects must stay on HTTPS), see an ordinary file request from your IP address with the user agent `Sonara model installer`. No document text, settings or identifiers are sent. Each file must match its published size and a pinned SHA-256 hash before it is installed. Proxy and certificate environment variables are honored.
 
 ## Optional external services
 

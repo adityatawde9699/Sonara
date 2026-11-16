@@ -1,5 +1,6 @@
 import { type FC, useState, useEffect } from "react";
 import { useModalDialog } from "../hooks/useModalDialog";
+import { ModelDownloads } from "./ModelDownloads";
 import {
   type FrontendSession,
   type VoiceInfo,
@@ -14,6 +15,7 @@ import {
   llmChooseModel,
   llmDiscoverModels,
   llmModelStatus,
+  isTauriAvailable,
 } from "../lib/tauri";
 
 interface Props {
@@ -36,6 +38,8 @@ interface Props {
   onExpandDatesChange?: (enabled: boolean) => void;
   expandCitations?: boolean;
   onExpandCitationsChange?: (enabled: boolean) => void;
+  /** Called after a speech model is downloaded; reloads the voice lists. */
+  onModelsChanged?: () => void;
 }
 
 const SPEED_PRESETS = [
@@ -65,6 +69,7 @@ export const SettingsModal: FC<Props> = ({
   onExpandDatesChange,
   expandCitations = false,
   onExpandCitationsChange,
+  onModelsChanged,
 }) => {
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(() => loadStoredLlmConfig());
   const [showApiKey, setShowApiKey] = useState(false);
@@ -218,8 +223,10 @@ export const SettingsModal: FC<Props> = ({
               <option value="kokoro">Kokoro · requires local model files and kokoro-onnx</option>
             </select>
           </label>
-          {speechEngine === "kokoro" && <p className="settings-section-desc">Kokoro runs on this device when configured. Sonara expects kokoro-v1.0.onnx and voices-v1.0.bin in models/kokoro, plus kokoro-onnx in its Python environment. Model downloads are not automatic.</p>}
+          {speechEngine === "kokoro" && <p className="settings-section-desc">Kokoro runs on this device. It needs its model files: download Kokoro under Speech models below if it is not installed yet.</p>}
         </div>
+
+        {isTauriAvailable() && <ModelDownloads onInstalled={onModelsChanged} />}
 
         <div className="settings-section">
           <div className="settings-section-head">

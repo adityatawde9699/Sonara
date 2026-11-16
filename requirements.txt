@@ -8,3 +8,5 @@ onnxruntime==1.31.0
 # Audio finishing (trim, level match, fades) and the Piper worker use numpy
 # directly; it is also an onnxruntime dependency.
 numpy==2.5.4
+# CA certificates for the in-app model installer (model_downloads.py).
+certifi==2026.10.23

@@ -390,6 +390,7 @@ export default function App() {
         onSpeedChange={(speed) => sonara.setSpeed(speed)}
         voices={sonara.voices}
         kokoroVoices={sonara.kokoroVoices}
+        onModelsChanged={sonara.refreshVoices}
         selectedVoice={sonara.selectedVoice}
         onVoiceChange={(voiceId) => sonara.setSelectedVoice(voiceId)}
         speechEngine={sonara.speechEngine}

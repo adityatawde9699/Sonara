@@ -15,7 +15,12 @@ Place these two files in `models/kokoro/`:
 
 The `kokoro-onnx` project documents those asset names, recommends Python 3.12, and identifies its wrapper as MIT and model as Apache 2.0. The upstream Kokoro model card also declares Apache 2.0. Review notices for the exact downloaded release before redistribution.
 
-Sonara does not fetch model files automatically. Until the runtime and both assets exist, choosing Kokoro reports the missing dependency/model instead of substituting Piper silently. Piper remains the default engine.
+In the installed desktop app, Settings → Speech models → Kokoro downloads both files into the app's data folder (`models/kokoro`) and checks them against these SHA-256 digests, which GitHub publishes for the release assets:
+
+- `kokoro-v1.0.onnx`: `beb0d1848dee9a49da392cc3df26958d46cfa35d321edf434f52949153f0df3a` (325,505,369 bytes)
+- `voices-v1.0.bin`: `bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d` (28,214,398 bytes)
+
+Installed builds already include `kokoro-onnx`. Nothing is downloaded until you press Download. Until the runtime and both assets exist, choosing Kokoro reports the missing dependency/model instead of substituting Piper silently. Piper remains the default engine.
 
 ## Languages
 

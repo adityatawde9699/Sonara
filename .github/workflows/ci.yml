@@ -32,7 +32,7 @@ jobs:
       - name: Check dependency consistency
         run: python -m pip check
       - name: Compile Python sources
-        run: python -m compileall -q benchmark.py document.py listening_eval.py llm_client.py narration.py ocr.py parent_watch.py piper_worker.py resource_policy.py retrieval.py retrieval_eval.py sonara.py tts_engine.py tests
+        run: python -m compileall -q benchmark.py document.py listening_eval.py llm_client.py model_downloads.py narration.py ocr.py parent_watch.py piper_worker.py resource_policy.py retrieval.py retrieval_eval.py sonara.py tts_engine.py tests
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 

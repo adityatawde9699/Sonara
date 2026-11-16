@@ -4,7 +4,13 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- Settings → Speech models downloads the supported Piper voices (Ryan, Lessac, Bryce, John) and Kokoro, which installers do not include. Each file comes over HTTPS from a fixed upstream revision, is capped at its published size, and is installed only after its pinned SHA-256 matches; a download can be cancelled, and a cancelled or failed download leaves nothing behind. The voice list updates when a voice is installed. Downloads happen only when you press Download (see docs/PRIVACY.md).
+
+### Fixed
+
+- `models/piper/README.md` listed the wrong size for the Ryan model; it is 63,201,294 bytes.
 
 ## v1.0.9 - 2026-11-16
 

@@ -658,7 +658,8 @@ class KokoroEngine:
         self.voices_path = self.model_dir / "voices-v1.0.bin"
         if not self.model_path.is_file() or not self.voices_path.is_file():
             raise TtsError(
-                f"Kokoro files are not installed. Expected {self.model_path.name} and {self.voices_path.name} in {self.model_dir}."
+                f"Kokoro files are not installed. Download Kokoro in Settings → Speech models, "
+                f"or place {self.model_path.name} and {self.voices_path.name} in {self.model_dir}."
             )
         try:
             import importlib.metadata
