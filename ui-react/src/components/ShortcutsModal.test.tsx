@@ -11,7 +11,7 @@ describe("ShortcutsModal component", () => {
   it("renders shortcuts table when isOpen is true", () => {
     render(<ShortcutsModal isOpen={true} onClose={vi.fn()} />);
 
-    expect(screen.getByText("Keyboard Shortcuts")).toBeInTheDocument();
+    expect(screen.getByText("Keyboard shortcuts")).toBeInTheDocument();
     expect(screen.getByText("Space / K")).toBeInTheDocument();
     expect(screen.getByText("Play or pause narration")).toBeInTheDocument();
   });

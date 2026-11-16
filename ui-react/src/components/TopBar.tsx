@@ -1,4 +1,5 @@
 import type { FC } from "react";
+import { History, MessageCircle, Search, Settings } from "lucide-react";
 
 interface Props {
   historyCount: number;
@@ -33,7 +34,7 @@ export const TopBar: FC<Props> = ({
     </a>
 
     {onSearchChange && <label className="global-search">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg>
+      <Search size={16} aria-hidden="true" />
       <input id="global-search-input" type="search" aria-label="Global library search" placeholder="Search your library" value={searchValue} onChange={(event) => onSearchChange(event.target.value)} />
       <kbd>Ctrl K</kbd>
     </label>}
@@ -45,9 +46,9 @@ export const TopBar: FC<Props> = ({
           className="topbar-action-btn assistant-btn"
           onClick={onOpenAssistant}
           aria-label="Open document assistant"
-          title="Document Assistant & Summaries"
+          title="Assistant"
         >
-          <span className="assistant-btn-spark" aria-hidden="true">AI</span>
+          <MessageCircle size={16} aria-hidden="true" />
           <span className="action-btn-text">Assistant</span>
         </button>
       )}
@@ -59,10 +60,7 @@ export const TopBar: FC<Props> = ({
         aria-label={`Open document history, ${historyCount} recent items`}
         title="Recent documents"
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="10" />
-          <polyline points="12 6 12 12 16 14" />
-        </svg>
+        <History size={16} aria-hidden="true" />
         <span className="action-btn-text">History</span>
         {historyCount > 0 && <span className="action-badge">{historyCount}</span>}
       </button>
@@ -72,12 +70,9 @@ export const TopBar: FC<Props> = ({
         className="topbar-action-btn"
         onClick={onOpenSettings}
         aria-label="Open audio specifications and settings"
-        title="Settings & Audio Specs"
+        title="Settings"
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
+        <Settings size={16} aria-hidden="true" />
         <span className="action-btn-text">Settings</span>
       </button>
 
@@ -91,10 +86,6 @@ export const TopBar: FC<Props> = ({
         <kbd className="topbar-kbd">?</kbd>
       </button>
 
-      <span className="local-badge" title="Document extraction and Piper narration run on this device">
-        <span className="local-dot" aria-hidden="true" />
-        <span>Core runs here</span>
-      </span>
     </div>
   </header>
 );

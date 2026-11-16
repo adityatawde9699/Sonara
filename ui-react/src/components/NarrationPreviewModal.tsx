@@ -1,6 +1,7 @@
 import { type FC } from "react";
 import { useModalDialog } from "../hooks/useModalDialog";
 import type { NarrationPreview } from "../lib/tauri";
+import { X } from "lucide-react";
 
 interface Props {
   isOpen: boolean;
@@ -29,11 +30,11 @@ export const NarrationPreviewModal: FC<Props> = ({ isOpen, onClose, preview, loa
       >
         <header className="modal-header">
           <div>
-            <p className="reader-eyebrow">LOCAL NARRATION PREVIEW</p>
+            <p className="reader-eyebrow">Narration preview</p>
             <h2 id="narration-preview-title">What Sonara will read</h2>
             <p className="settings-section-desc">Your source document remains unchanged. Previewing does not generate audio.</p>
           </div>
-          <button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close narration preview">×</button>
+          <button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close narration preview"><X size={16} aria-hidden="true" /></button>
         </header>
         <div className="narration-preview-body">
           {loading ? (

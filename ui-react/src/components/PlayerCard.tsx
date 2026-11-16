@@ -1,6 +1,7 @@
 import { type FC, useCallback, useRef } from "react";
 import type { FrontendSession } from "../lib/tauri";
 import type { PlayerState } from "../hooks/useSonara";
+import { FileText, Mic, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward } from "lucide-react";
 
 interface Props {
   session: FrontendSession;
@@ -73,13 +74,13 @@ export const PlayerCard: FC<Props> = ({
     <section className="player-card" aria-labelledby="player-title" role="region">
       <div className="player-heading">
         <span className="player-art" aria-hidden="true">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8"/></svg>
+          <FileText size={18} aria-hidden="true" />
         </span>
         <div className="player-copy">
-          <p className="player-kicker">NOW LISTENING</p>
+          <p className="player-kicker">Now listening</p>
           <h2 id="player-title" title={session.sourceName}>{session.sourceName}</h2>
           <span className="voice-label" title={`Voice: ${session.voice}`}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v4m-4 0h8"/></svg>
+            <Mic size={16} aria-hidden="true" />
             {voiceLabel || session.voice}
           </span>
         </div>
@@ -109,7 +110,7 @@ export const PlayerCard: FC<Props> = ({
           disabled={state.segment === 0}
           onClick={() => onSeekChunk(Math.max(0, state.segment - 1))}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h2v14H6zm12 0v14L9 12z" /></svg>
+          <SkipBack size={16} fill="currentColor" aria-hidden="true" />
         </button>
         <button
           className="player-icon-button skip-button"
@@ -119,7 +120,7 @@ export const PlayerCard: FC<Props> = ({
           disabled={state.globalPosition <= 0}
           onClick={() => onSeek(Math.max(0, state.globalPosition - 10))}
         >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.64-6.36L3 8"/><path d="M3 3v5h5M12 8v8m0-8-2 2"/><text x="8" y="20" fontSize="5" fill="currentColor" stroke="none">10</text></svg>
+          <RotateCcw size={16} aria-hidden="true" />
         </button>
         <button
           id={state.isPlaying ? "pause" : "play"}
@@ -130,8 +131,8 @@ export const PlayerCard: FC<Props> = ({
           aria-label={`${state.isPlaying ? "Pause" : "Play"} audio narration`}
         >
           {state.isPlaying
-            ? <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-            : <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3" /></svg>}
+            ? <Pause size={16} fill="currentColor" aria-hidden="true" />
+            : <Play size={16} fill="currentColor" aria-hidden="true" />}
         </button>
         <button
           className="player-icon-button skip-button"
@@ -141,7 +142,7 @@ export const PlayerCard: FC<Props> = ({
           disabled={state.globalPosition >= state.totalDuration}
           onClick={() => onSeek(Math.min(state.totalDuration, state.globalPosition + 10))}
         >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5M12 8v8m0-8 2 2"/><text x="10" y="20" fontSize="5" fill="currentColor" stroke="none">10</text></svg>
+          <RotateCw size={16} aria-hidden="true" />
         </button>
         <button
           className="player-icon-button"
@@ -151,16 +152,16 @@ export const PlayerCard: FC<Props> = ({
           disabled={state.segment >= session.chunks.length - 1}
           onClick={() => onSeekChunk(Math.min(session.chunks.length - 1, state.segment + 1))}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 5h2v14h-2zM6 5v14l9-7z" /></svg>
+          <SkipForward size={16} fill="currentColor" aria-hidden="true" />
         </button>
         {state.canRetry && (
           <button id="retry" className="text-button" type="button" onClick={onRetry} aria-label="Retry current passage">
-            ↻ Retry passage
+            <RotateCcw size={16} aria-hidden="true" />Retry passage
           </button>
         )}
         {state.canSkip && (
           <button id="skip" className="text-button" type="button" onClick={onSkip} aria-label="Skip to next passage">
-            ⏭ Skip passage
+            <SkipForward size={16} aria-hidden="true" />Skip passage
           </button>
         )}
       </div>
@@ -221,7 +222,7 @@ export const PlayerCard: FC<Props> = ({
           <span>Passage {state.segment + 1} of {session.chunks.length}</span>
         </div>
         <div className="passage-dots" role="group" aria-label={`Passages: currently on passage ${state.segment + 1} of ${session.chunks.length}`}>
-          {session.chunks.length <= 16 && session.chunks.map((chunk, i) => {
+          {session.chunks.length <= 64 && session.chunks.map((chunk, i) => {
             const isCurrent = i === state.segment;
             const isDone = i < state.segment;
             const startTime = chunkStarts[i] ?? 0;
@@ -237,7 +238,7 @@ export const PlayerCard: FC<Props> = ({
               />
             );
           })}
-          {session.chunks.length > 16 && (
+          {session.chunks.length > 64 && (
             <span className="passage-count">Use Position above to move through passages.</span>
           )}
         </div>

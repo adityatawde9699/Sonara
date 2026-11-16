@@ -1,6 +1,7 @@
 import { type FC } from "react";
 import { useModalDialog } from "../hooks/useModalDialog";
 import type { LibraryDocument } from "../lib/tauri";
+import { FileText, X } from "lucide-react";
 
 interface Props {
   isOpen: boolean;
@@ -56,21 +57,7 @@ export const HistoryDrawer: FC<Props> = ({
       >
         <div className="modal-header">
           <div className="modal-title-wrap">
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <polyline points="12 6 12 12 16 14" />
-            </svg>
-            <h2 id="history-title">Document History</h2>
+            <h2 id="history-title">History</h2>
           </div>
           <button
             type="button"
@@ -78,7 +65,7 @@ export const HistoryDrawer: FC<Props> = ({
             onClick={onClose}
             aria-label="Close history drawer"
           >
-            ✕
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
 
@@ -88,24 +75,7 @@ export const HistoryDrawer: FC<Props> = ({
 
         {recentDocs.length === 0 ? (
           <div className="history-empty">
-            <svg
-              width="36"
-              height="36"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="empty-icon"
-              aria-hidden="true"
-            >
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-              <line x1="16" y1="13" x2="8" y2="13" />
-              <line x1="16" y1="17" x2="8" y2="17" />
-              <polyline points="10 9 9 9 8 9" />
-            </svg>
+            
             <p>No recent documents yet.</p>
             <span>Open and prepare a document to begin listening.</span>
           </div>
@@ -114,10 +84,7 @@ export const HistoryDrawer: FC<Props> = ({
             {recentDocs.map((doc) => (
               <div key={doc.sourceSha256} className="history-item">
                 <div className="history-icon" aria-hidden="true">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                    <polyline points="14 2 14 8 20 8" />
-                  </svg>
+                  <FileText size={16} aria-hidden="true" />
                 </div>
                 <div className="history-meta">
                   <h4 className="history-doc-name" title={doc.sourceName}>

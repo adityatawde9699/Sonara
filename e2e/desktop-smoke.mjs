@@ -110,8 +110,8 @@ async function main() {
     const bodyText = () => run("return document.body.innerText");
 
     step("opening the library seeded by the backend");
-    await waitFor("the main window", async () => (await bodyText()).includes("What would you like to listen to?"));
-    await click("button[title='My Library']");
+    await waitFor("the main window", async () => (await bodyText()).includes("Listen to your documents"));
+    await click("button[title='Library']");
     await waitFor("the library row", async () => (await bodyText()).includes("smoke-notes.txt"));
 
     step("reopening the document by hash");
@@ -171,7 +171,7 @@ async function main() {
     await click("button[title='Home']");
 
     step("checking the library recorded the finished document");
-    await click("button[title='My Library']");
+    await click("button[title='Library']");
     await waitFor("the reader action", async () => (await bodyText()).includes("Open reader"));
     console.log("Desktop smoke test passed.");
   } finally {

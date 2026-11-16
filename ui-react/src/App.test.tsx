@@ -29,10 +29,9 @@ describe("Sonara workspace", () => {
   it("shows the honest first-run state and keeps desktop import disabled in browser preview", async () => {
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "What would you like to listen to?" })).toBeInTheDocument();
-    expect(screen.getByText("Nothing prepared yet.")).toBeInTheDocument();
-    expect(screen.getByText("Choose a PDF, text, Markdown, Word, or EPUB file. Extraction and speech generation stay local.")).toBeInTheDocument();
-    expect(screen.getByText("PDF · TXT/TEXT · MD · DOCX · EPUB")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Listen to your documents" })).toBeInTheDocument();
+    expect(screen.getByText("Nothing prepared yet")).toBeInTheDocument();
+    expect(screen.getByText("PDF, TXT, MD, DOCX or EPUB. Text extraction and speech run on this device.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Choose document/i })).toBeDisabled();
     expect(await screen.findByRole("note", { name: "Runtime notice" })).toBeInTheDocument();
   });
@@ -41,10 +40,10 @@ describe("Sonara workspace", () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Listening history" }));
-    expect(await screen.findByRole("dialog", { name: "Document History" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "History" })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Document History" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "History" })).not.toBeInTheDocument());
   });
 
   it("labels recent files from their names instead of assuming every session is a PDF", async () => {
@@ -72,7 +71,7 @@ describe("Sonara workspace", () => {
     );
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: /My Library/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Listen again: Field Notes.pdf" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_library_document", { sourceSha256: "field-notes" }));
     expect(await screen.findByText("Selected from your library · ready to prepare speech")).toBeInTheDocument();
@@ -82,11 +81,11 @@ describe("Sonara workspace", () => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(await screen.findByRole("dialog", { name: "Audio & Engine Settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Close settings dialog" }));
     fireEvent.click(screen.getByRole("button", { name: "Open keyboard shortcuts guide" }));
-    expect(await screen.findByRole("dialog", { name: "Keyboard Shortcuts" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
   });
 
   it("searches recent documents and persists favorite filtering in the library", async () => {
@@ -96,7 +95,7 @@ describe("Sonara workspace", () => {
     ]);
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: /My Library/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Library/ }));
     expect(await screen.findByText("Field Notes.pdf")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "Search your library" }), { target: { value: "annual" } });
     expect(screen.getByText("Annual Review.docx")).toBeInTheDocument();
@@ -124,18 +123,18 @@ describe("Sonara workspace", () => {
     render(<App />);
     fireEvent.keyDown(window, { key: "a", ctrlKey: true });
     fireEvent.keyDown(window, { key: "a", metaKey: true });
-    expect(screen.queryByRole("dialog", { name: "Document Assistant" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Assistant" })).not.toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "a" });
-    expect(await screen.findByRole("dialog", { name: "Document Assistant" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Assistant" })).toBeInTheDocument();
   });
 
   it("does not trigger shortcuts behind an open dialog", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Listening history" }));
-    expect(await screen.findByRole("dialog", { name: "Document History" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "History" })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "a" });
-    expect(screen.queryByRole("dialog", { name: "Document Assistant" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Assistant" })).not.toBeInTheDocument();
   });
 });

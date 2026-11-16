@@ -40,7 +40,7 @@ describe("SettingsModal component", () => {
       />
     );
 
-    expect(screen.getByText("Audio & Engine Settings")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(screen.getByText("1.0×")).toBeInTheDocument();
     expect(screen.getByText("1.2×")).toBeInTheDocument();
     expect(screen.getByText("en_US-john-medium")).toBeInTheDocument();

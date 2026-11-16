@@ -1,5 +1,6 @@
 import { type FC } from "react";
 import { useModalDialog } from "../hooks/useModalDialog";
+import { X } from "lucide-react";
 
 interface Props {
   isOpen: boolean;
@@ -38,27 +39,7 @@ export const ShortcutsModal: FC<Props> = ({ isOpen, onClose }) => {
       >
         <div className="modal-header">
           <div className="modal-title-wrap">
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="2" y="4" width="20" height="16" rx="2" />
-              <line x1="6" y1="8" x2="6" y2="8" />
-              <line x1="10" y1="8" x2="10" y2="8" />
-              <line x1="14" y1="8" x2="14" y2="8" />
-              <line x1="18" y1="8" x2="18" y2="8" />
-              <line x1="6" y1="12" x2="6" y2="12" />
-              <line x1="18" y1="12" x2="18" y2="12" />
-              <line x1="10" y1="16" x2="14" y2="16" />
-            </svg>
-            <h2 id="shortcuts-title">Keyboard Shortcuts</h2>
+            <h2 id="shortcuts-title">Keyboard shortcuts</h2>
           </div>
           <button
             type="button"
@@ -66,7 +47,7 @@ export const ShortcutsModal: FC<Props> = ({ isOpen, onClose }) => {
             onClick={onClose}
             aria-label="Close shortcuts dialog"
           >
-            ✕
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
 

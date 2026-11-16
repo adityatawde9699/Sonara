@@ -17,6 +17,7 @@ import {
   llmModelStatus,
   isTauriAvailable,
 } from "../lib/tauri";
+import { X } from "lucide-react";
 
 interface Props {
   isOpen: boolean;
@@ -187,21 +188,7 @@ export const SettingsModal: FC<Props> = ({
       >
         <div className="modal-header">
           <div className="modal-title-wrap">
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-            <h2 id="settings-title">Audio & Engine Settings</h2>
+            <h2 id="settings-title">Settings</h2>
           </div>
           <button
             type="button"
@@ -209,7 +196,7 @@ export const SettingsModal: FC<Props> = ({
             onClick={onClose}
             aria-label="Close settings dialog"
           >
-            ✕
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
 
@@ -230,7 +217,7 @@ export const SettingsModal: FC<Props> = ({
 
         <div className="settings-section">
           <div className="settings-section-head">
-            <h3 className="settings-section-title">Narration Voice</h3>
+            <h3 className="settings-section-title">Narration voice</h3>
             {speechEngine === "piper" && voices.length > 0 && (
               <span className="settings-badge" data-testid="voice-count-badge">
                 {voices.length} {voices.length === 1 ? "voice" : "voices"} installed
@@ -335,7 +322,7 @@ export const SettingsModal: FC<Props> = ({
         {/* AI Assistant */}
         <div className="settings-section">
           <div className="settings-section-head">
-            <h3 className="settings-section-title">AI Assistant</h3>
+            <h3 className="settings-section-title">Assistant</h3>
             <span className="settings-badge" data-testid="llm-provider-badge">
               {llmConfig.provider === "embedded_llama_cpp" ? "Local · embedded" : llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? "Local · loopback" : "Cloud API"}
             </span>
@@ -499,7 +486,7 @@ export const SettingsModal: FC<Props> = ({
 
         {/* Speed Presets */}
         <div className="settings-section">
-          <h3 className="settings-section-title">Speed Presets</h3>
+          <h3 className="settings-section-title">Speed presets</h3>
           <div className="speed-presets-grid">
             {SPEED_PRESETS.map((preset) => {
               const active = Math.abs(playbackRate - preset.value) < 0.05;
@@ -520,28 +507,28 @@ export const SettingsModal: FC<Props> = ({
 
         {/* Specs & Privacy */}
         <div className="settings-section">
-          <h3 className="settings-section-title">Speech Engine & Privacy</h3>
+          <h3 className="settings-section-title">Current setup</h3>
           <div className="specs-list">
             <div className="spec-row">
-              <span className="spec-label">Active Document Voice</span>
+              <span className="spec-label">Voice</span>
               <span className="spec-value">{session?.voice ?? activeVoiceId}</span>
             </div>
             <div className="spec-row">
-              <span className="spec-label">Engine Runtime</span>
+              <span className="spec-label">Engine</span>
               <span className="spec-value">{session?.engine ?? (speechEngine === "kokoro" ? "Kokoro · optional local runtime" : "Piper · ONNX Runtime CPU")}</span>
             </div>
             <div className="spec-row">
-              <span className="spec-label">Audio Quality</span>
+              <span className="spec-label">Audio</span>
               <span className="spec-value">
                 {session ? `${session.sampleRate} Hz · ${session.channels === 1 ? "Mono" : "Stereo"} · 16-bit PCM` : "22,050 Hz · Mono · 16-bit PCM"}
               </span>
             </div>
             <div className="spec-row">
-              <span className="spec-label">Narration Ruleset</span>
-              <span className="spec-value">v{session?.narrationRulesetVersion ?? "1"} (Deterministic pauses & spans)</span>
+              <span className="spec-label">Narration rules</span>
+              <span className="spec-value">v{session?.narrationRulesetVersion ?? "1"} (deterministic pauses and spans)</span>
             </div>
             <div className="spec-row">
-              <span className="spec-label">Privacy Guarantee</span>
+              <span className="spec-label">Privacy</span>
               <span className="spec-value highlight-green">Narration stays local. Assistant provider is configured separately.</span>
             </div>
           </div>

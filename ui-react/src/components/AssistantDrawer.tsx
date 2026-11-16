@@ -9,6 +9,7 @@ import {
   llmSummarize,
   getDocumentText,
 } from "../lib/tauri";
+import { Check, Copy, SendHorizontal, Settings, X } from "lucide-react";
 
 interface Props {
   isOpen: boolean;
@@ -322,14 +323,9 @@ export const AssistantDrawer: FC<Props> = ({
         {/* Header */}
         <div className="assistant-header">
           <div className="assistant-title-group">
-            <div className="assistant-spark-icon" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2l2.4 7.2L21.6 12l-7.2 2.4L12 21.6l-2.4-7.2L2.4 12l7.2-2.4z" />
-              </svg>
-            </div>
             <div>
               <div className="assistant-title-row">
-                <h2 id="assistant-title">Document Assistant</h2>
+                <h2 id="assistant-title">Assistant</h2>
                 <span className="assistant-model-pill" title={`Provider: ${llmConfig.provider}`}>
                   {llmConfig.model || "llama3.2"}
                 </span>
@@ -348,10 +344,7 @@ export const AssistantDrawer: FC<Props> = ({
                 title="Configure LLM Provider & Settings"
                 aria-label="Configure LLM Provider"
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="3" />
-                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                </svg>
+                <Settings size={16} aria-hidden="true" />
               </button>
             )}
             <button
@@ -360,7 +353,7 @@ export const AssistantDrawer: FC<Props> = ({
               onClick={onClose}
               aria-label="Close document assistant"
             >
-              ✕
+              <X size={16} aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -400,11 +393,9 @@ export const AssistantDrawer: FC<Props> = ({
         <div className="assistant-stream" tabIndex={0} aria-label="Conversation messages">
           {messages.length === 0 ? (
             <div className="assistant-empty">
-              <div className="assistant-empty-spark" aria-hidden="true">AI</div>
-              <h3>Ask anything about your document</h3>
+              <h3>Ask about this document</h3>
               <p>
-                Get instant summaries, find key insights, clarify difficult concepts,
-                or discuss themes while you listen.
+                Answers come from the assistant provider chosen in Settings.
               </p>
               <div className="assistant-sample-questions">
                 <button
@@ -412,14 +403,14 @@ export const AssistantDrawer: FC<Props> = ({
                   className="assistant-sample-btn"
                   onClick={() => handleSend("What is the central premise of this document?")}
                 >
-                  "What is the central premise of this document?"
+                  What is the central premise of this document?
                 </button>
                 <button
                   type="button"
                   className="assistant-sample-btn"
                   onClick={() => handleSend("Provide a 3-bullet executive summary.")}
                 >
-                  "Provide a 3-bullet executive summary."
+                  Provide a 3-bullet executive summary
                 </button>
               </div>
             </div>
@@ -442,7 +433,7 @@ export const AssistantDrawer: FC<Props> = ({
                         title="Copy to clipboard"
                         aria-label="Copy assistant answer"
                       >
-                        {copiedId === m.id ? "✓ Copied" : "Copy"}
+                        {copiedId === m.id ? <><Check size={16} aria-hidden="true" />Copied</> : <><Copy size={16} aria-hidden="true" />Copy</>}
                       </button>
                     )}
                   </div>
@@ -517,10 +508,7 @@ export const AssistantDrawer: FC<Props> = ({
               aria-label="Send message"
               title="Send message"
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
-              </svg>
+              <SendHorizontal size={16} aria-hidden="true" />
             </button>
           </form>
         </div>

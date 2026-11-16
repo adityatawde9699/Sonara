@@ -14,7 +14,6 @@ describe("TopBar component", () => {
     );
 
     expect(screen.getByText("Sonara")).toBeInTheDocument();
-    expect(screen.getByText("Core runs here")).toBeInTheDocument();
   });
 
   it("displays history count badge when count > 0", () => {
@@ -56,7 +55,7 @@ describe("TopBar component", () => {
     fireEvent.click(screen.getByTitle("Recent documents"));
     expect(onOpenHistory).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByTitle("Settings & Audio Specs"));
+    fireEvent.click(screen.getByTitle("Settings"));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByTitle("Shortcuts (?)"));

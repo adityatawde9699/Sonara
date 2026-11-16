@@ -54,13 +54,13 @@ describe("AssistantDrawer component", () => {
       />
     );
 
-    expect(screen.getByText("Document Assistant")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Assistant" })).toBeInTheDocument();
     expect(screen.getByText("llama3.2")).toBeInTheDocument();
     expect(screen.getByText("sample-story.pdf")).toBeInTheDocument();
     expect(screen.getByText("📋 Full Summary")).toBeInTheDocument();
     expect(screen.getByText("💡 Key Takeaways")).toBeInTheDocument();
     expect(screen.getByText("🔍 Explain Concepts")).toBeInTheDocument();
-    expect(screen.getByText("Ask anything about your document")).toBeInTheDocument();
+    expect(screen.getByText("Ask about this document")).toBeInTheDocument();
     await waitFor(() => expect(tauri.getDocumentText).toHaveBeenCalled());
   });
 

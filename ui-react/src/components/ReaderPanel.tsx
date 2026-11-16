@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type FrontendChunk, getDocumentText, getReaderDocument } from "../lib/tauri";
 import { splitAtCodePoints } from "../lib/readAlong";
+import { AArrowDown, AArrowUp, Play, Search } from "lucide-react";
 
 const BLOCKS_PER_PAGE = 28;
 
@@ -122,7 +123,6 @@ export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk
     <section className="reader-panel" aria-labelledby="reader-title">
       <header className="reader-header">
         <div className="reader-heading-copy">
-          <span className="reader-eyebrow">READING VIEW</span>
           <h2 id="reader-title" title={sourceName}>{sourceName}</h2>
           <p>
             {synced
@@ -142,13 +142,13 @@ export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk
             </button>
           )}
           <label className="reader-search" aria-label="Search in document">
-            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg>
+            <Search size={16} aria-hidden="true" />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find in document" />
             {query && <span className="reader-match-count" aria-live="polite">{matchCount}</span>}
           </label>
           <div className="reader-type-controls" aria-label="Text size">
-            <button type="button" onClick={() => setFontScale((value) => Math.max(0.9, Number((value - 0.1).toFixed(1))))} aria-label="Decrease text size" disabled={fontScale <= 0.9}>A−</button>
-            <button type="button" onClick={() => setFontScale((value) => Math.min(1.4, Number((value + 0.1).toFixed(1))))} aria-label="Increase text size" disabled={fontScale >= 1.4}>A+</button>
+            <button type="button" onClick={() => setFontScale((value) => Math.max(0.9, Number((value - 0.1).toFixed(1))))} aria-label="Decrease text size" disabled={fontScale <= 0.9}><AArrowDown size={16} aria-hidden="true" /></button>
+            <button type="button" onClick={() => setFontScale((value) => Math.min(1.4, Number((value + 0.1).toFixed(1))))} aria-label="Increase text size" disabled={fontScale >= 1.4}><AArrowUp size={16} aria-hidden="true" /></button>
           </div>
         </div>
       </header>
@@ -184,7 +184,7 @@ export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk
                         setFollowAlong(true);
                         onPlayFromChunk(firstChunk);
                       }}
-                    >▶</button>
+                    ><Play size={16} fill="currentColor" aria-hidden="true" /></button>
                   )}
                   {content}
                 </p>
