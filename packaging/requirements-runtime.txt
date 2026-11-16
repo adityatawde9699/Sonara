@@ -1,7 +1,7 @@
 # Keep the distributable runtime dependency set explicit and independent of
 # the caller's working directory.
 piper-tts==1.8.0
-onnxruntime==1.31.0
+onnxruntime==1.32.0
 numpy==2.5.4
 kokoro-onnx==0.6.1
 # CA certificates for the in-app model installer (model_downloads.py).
