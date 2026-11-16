@@ -9,7 +9,7 @@ const BASE = "http://127.0.0.1:5555/v1/token";
 const session: FrontendSession = {
   sourceName: "paper.pdf",
   sourceSha256: SHA,
-  narrationRulesetVersion: "rules-6",
+  narrationRulesetVersion: "rules-7",
   voice: "en_US-ryan-medium",
   sampleRate: 22050,
   channels: 1,
@@ -85,6 +85,19 @@ describe("useSonara player", () => {
     expect(result.current.playerState.playbackRate).toBe(1.2);
     expect(result.current.playerState.globalPosition).toBe(15);
     expect(result.current.playerState.statusMessage).toBe("Reading progress restored.");
+  });
+
+  it("loads the restored passage when the audio element mounts after the restore", async () => {
+    // The player mounts in the same render that shows the session, and the
+    // progress restore can finish first. Found by the desktop E2E test.
+    tauri.savedProgress = { version: 1, sourceSha256: SHA, segment: 2, offsetSeconds: 4, playbackRate: 1 } as Progress;
+    const { result } = renderHook(() => useSonara());
+    await waitFor(() => expect(result.current.playerState.totalDuration).toBe(60));
+    expect(audio.src).toBe("");
+    act(() => result.current.attachAudio(audio));
+    expect(audio.src).toBe(`${BASE}/${SHA}/2`);
+    expect(audio.load).toHaveBeenCalled();
+    expect(result.current.playerState.statusMessage).toBe("Loading passage 3 of 3…");
   });
 
   it("ignores saved progress that does not fit the document", async () => {

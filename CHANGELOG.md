@@ -24,6 +24,9 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 - Updated `plist`/`quick-xml`, `time`, and `tokio` in `Cargo.lock` to clear RustSec advisories.
 - The local audio server serves each connection on its own thread (at most 8 at once, then `503`), so a stalled client no longer blocks playback. It streams files instead of buffering up to 64 MiB, keeps running after transient accept errors, and compares the access token in constant time.
 - Piper voices whose IDs are in the pinned table (`models/piper/README.md`) are refused if their model or config does not match the published SHA-256. Voice names are validated in Python as well as Rust, so `--voice ../x` cannot reach a path outside the model directory.
+- Workers can no longer outlive Sonara. On Windows every Python worker (synthesis, preview, LLM) runs in a Job Object that kills its whole tree when Sonara stops or crashes; Unix already used process groups. Every worker also watches its parent (`parent_watch.py`) and stops its process group if Sonara disappears without cleaning up, for example after a crash under `panic = "abort"`.
+- The LLM worker now starts with a cleared environment, like the synthesis worker. Only proxy and CA-bundle variables are passed through, for remote providers.
+- Each release target publishes a CycloneDX 1.6 SBOM (`Sonara-<platform>-<arch>.cdx.json`). It lists the Rust crates for that target, the bundled frontend packages, the frozen Python distributions, the pinned Piper voices and the staged Poppler and Tesseract versions. Every release file (installers, SBOMs, checksums) gets a signed GitHub build provenance attestation; check one with `gh attestation verify <file> --repo <owner>/Sonara`. The release fails if a target's SBOM is missing.
 - Removed `diskcache` (CVE-2025-69872 / PYSEC-2026-2447: unsafe pickle loading, no fixed release) from every install path instead of ignoring the advisory. llama-cpp-python is installed with `--no-deps` and its other dependencies are pinned directly. `llama_runtime.py` supplies a disabled stand-in, so a llama.cpp disk cache can never be created. The release build fails if diskcache is present, and the packaged runtime's self-check fails if it is bundled.
 
 ### Fixed
@@ -33,6 +36,8 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 - Sentence splitting is linear time; an 80 KB paragraph took about 20 s and now takes 0.03 s.
 - An unresponsive LLM worker is stopped after 300 s, and closing the app no longer waits on an in-flight request.
 - Keyboard shortcuts ignore Ctrl/Cmd/Alt combinations and focused controls, and do not fire behind open dialogs. Dialogs trap focus, restore it on close, and Escape closes only the topmost one.
+- A restored passage loads even when the player's audio element mounts after progress is restored. Before, playback could stay empty after reopening the app; the desktop E2E test found it in about one run in six.
+- A saved Kokoro voice is no longer replaced by a Piper voice when the Piper voice list loads.
 
 ### Added
 
@@ -40,6 +45,13 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 - DOCX footnotes and endnotes are read after the body. Text inside content controls, tracked insertions, and nested tables is no longer dropped, and hidden (`w:vanish`) text is skipped.
 - Markdown files are read with Markdown structure: `#` and underlined headings, list and quote markers, emphasis, inline code, and link syntax are not spoken.
 - OCR pages with low recognition confidence (under 60%) are reported in the extraction notes.
+- Read-along: the reading view highlights the passage being spoken and turns pages with it (switch off with Follow along). Each paragraph has a button to start listening there. Sessions prepared before this update show the text without highlighting until they are prepared again.
+- Kokoro speaks British English, Spanish, French, Hindi, Italian, Brazilian Portuguese and (experimental) Mandarin as well as US English. The voice sets the language; Settings lists 49 voices grouped by language. Japanese voices are not offered, because Kokoro's Japanese needs a G2P that Sonara does not ship.
+- The assistant retrieves relevant passages for every provider, not only the HTTP llama.cpp server. Keyword ranking (BM25) runs on the device for all providers; with a local embedding server it is fused with vector ranking. Answers cite passages as `[Passage n]`. Embedded models get a context budget that fits their window.
+- Summaries, takeaways and explanations of long documents cover the whole document: sections are summarised and then combined (up to 8 sections within 4 minutes), instead of reading only the first 6,000 characters. When sections had to be skipped, the summary says how much it covers.
+- `retrieval_eval.py` measures retrieval quality (recall@k, MRR) on a bundled labelled set or your own document; results are in `docs/BENCHMARKS.md` §7.
+- `listening_eval.py` can add a Kokoro arm to the blind listening pack (`--kokoro-dir`), and `listening_eval.py analyze` reads completed rating sheets and reports per-condition scores with listener-level bootstrap intervals, paired differences against the default Piper voice, and preference shares.
+- A WebDriver end-to-end test (`e2e/desktop-smoke.mjs`, run in CI) drives the real desktop app. It reopens a document from the library, prepares speech with Piper, plays the first passage from the audio server, and checks the read-along highlight.
 
 ### Removed
 
@@ -53,6 +65,7 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 - Table rows made only of `|` separators no longer fail narration.
 - The audio cache computes each chunk's key once and prunes at the start, every tenth of the cache budget, and at the end of a run, instead of scanning the cache after every chunk.
 - `src-tauri/src/lib.rs` is split into `audio_server`, `library`, `llm_rpc`, `pickers`, `runtime`, `session`, and `voices` modules. The frontend player and settings moved out of `useSonara` into `useAudioPlayer` and `useSpeechSettings`.
+- Narration ruleset `rules-7`: Chinese and Japanese full stops (`。！？`) and the Devanagari danda (`।`) end sentences, and Han and kana characters count as words when bounding a passage. A Chinese paragraph is no longer one passage several minutes long. Audio prepared with `rules-6` is prepared again.
 - Narration reads more text correctly (ruleset `rules-6`):
   - Titles and reference abbreviations ("Dr.", "St.", "Fig. 3", "pp. 10-12", "Jan. 5") no longer make the voice pause mid-sentence.
   - Years and decades are read as years ("the 1990s" was "one thousand nine hundred ninety seconds"), and "ranked 3 in" is no longer "three inches".

@@ -338,10 +338,20 @@ Run at least repeated cold and warm trials on the current CPU-only laptop before
 
 ## I. Immediate next actions
 
+### Audit roadmap P3 status (2026-11-16)
+
+| Item | State | What is still open |
+|---|---|---|
+| 21. Windows tree-kill and orphaned workers | Done in code. Windows workers run in a kill-on-close Job Object. Every worker watches its parent (`parent_watch.py`), with a test that kills the app process | Run on Windows: the Job Object is compiled and linted for `x86_64-pc-windows-msvc` but has not executed |
+| 22. Listening study | Tooling done: Kokoro arm in the pack, `listening_eval.py analyze` with listener-level bootstrap statistics | **Needs human listeners.** Recruit at least 12, run the four-condition pack, then decide on defaults |
+| 23. Multilingual and synchronized highlighting | Done. Kokoro in 8 languages (Japanese excluded), CJK and Devanagari sentence ends, passage-level read-along with follow and listen-from-here, covered by the E2E test | Review by speakers of each language. Word-level highlighting would need engine word timings |
+| 24. RAG | Done. BM25 for every provider, BM25 + vector fusion with a local embedding server, a context budget for embedded models, map-reduce summaries, `retrieval_eval.py` | Measure with a real embedding model, and on a long real document, and compare summary quality with human summaries |
+| 25. SBOM, provenance, signed checksums, E2E | Done in the workflow. CycloneDX SBOM per target, required by the asset check, and build provenance attestations for every release file. The WebDriver E2E test runs in CI | The release workflow has not run since; the first tagged run will exercise the SBOM and attestation steps. No licence inventory yet |
+
 1. Launch Sonara from a graphical Linux session with `cargo run --manifest-path src-tauri/Cargo.toml --locked`; verify real Piper playback, narration preview/settings, cross-chunk seek, pause/resume, speed, cancellation, and progress restore. This is still the core desktop acceptance blocker.
-2. Collect blind naturalness and intelligibility ratings for `/tmp/sonara-listening-evaluation/participant-pack` before consulting its facilitator key. Compare profiles by passage and retain Piper voice defaults unless there is a clear, repeatable improvement.
+2. Collect blind naturalness and intelligibility ratings (now including Kokoro: `listening_eval.py --kokoro-dir models/kokoro`) before consulting the facilitator key, then run `listening_eval.py analyze`. Retain Piper voice defaults unless a paired-difference interval clearly excludes zero.
 3. Run the standalone player checklist in a supported browser and an extended multi-chunk listening session; record media behavior, interruptions, memory, and progress persistence.
-4. Prove llama.cpp connectivity through the existing custom endpoint using a small, locally installed GGUF model. Keep it bound to loopback; record latency, RAM, and response quality. Do not start embedding/index work until grounded assistant retrieval has a fixed evaluation corpus.
+4. Prove llama.cpp connectivity through the existing custom endpoint using a small, locally installed GGUF model. Keep it bound to loopback; record latency, RAM, and response quality. Retrieval now has a fixed evaluation set (`retrieval_eval.py`); add a real embedding model's numbers to `docs/BENCHMARKS.md` §7.
 5. Prototype Kokoro runtime options and then compare identical matched-level clips with Piper. Do not change the default engine based on model claims or latency alone.
 
 ## Primary technical references

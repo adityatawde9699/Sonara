@@ -67,6 +67,9 @@ class ReleasePackagingTests(unittest.TestCase):
             root = Path(temporary)
             (root / "Sonara-linux-x86_64.deb").write_bytes(b"deb")
             (root / "Sonara-linux-x86_64.AppImage").write_bytes(b"appimage")
+            with self.assertRaisesRegex(ValueError, "Missing SBOMs: Sonara-linux-x86_64.cdx.json"):
+                asset_verifier.verify_assets(root, "linux")
+            (root / "Sonara-linux-x86_64.cdx.json").write_text("{}")
             asset_verifier.verify_assets(root, "linux")
 
     def test_windows_setup_asset_must_be_unambiguous(self):
@@ -130,7 +133,7 @@ class ReleasePackagingTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         with tempfile.TemporaryDirectory() as tmp:
-            for name in asset_verifier.REQUIRED_UNIX:
+            for name in asset_verifier.REQUIRED_UNIX | asset_verifier.SBOM_BY_PLATFORM["linux"] | asset_verifier.SBOM_BY_PLATFORM["macos"]:
                 (Path(tmp) / name).write_bytes(b"x")
             asset_verifier.verify_assets(Path(tmp), "unix")
             with self.assertRaises(ValueError):

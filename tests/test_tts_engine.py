@@ -341,5 +341,20 @@ class VoiceIntegrityTests(unittest.TestCase):
                 validate_voice_name(bad)
 
 
+class KokoroLanguageTests(unittest.TestCase):
+    def test_voice_prefix_selects_phonemizer_and_narration_language(self):
+        self.assertEqual(tts_engine.kokoro_language("af_sarah"), ("en-us", "en_US"))
+        self.assertEqual(tts_engine.kokoro_language("bm_george"), ("en-gb", "en_GB"))
+        self.assertEqual(tts_engine.kokoro_language("ff_siwis"), ("fr-fr", "fr_FR"))
+        self.assertEqual(tts_engine.kokoro_language("zf_xiaobei"), ("cmn", "zh_CN"))
+
+    def test_japanese_and_malformed_voices_are_refused(self):
+        with self.assertRaisesRegex(tts_engine.TtsError, "misaki"):
+            tts_engine.kokoro_language("jf_alpha")
+        for voice in ("../af_sarah", "af-sarah", "xf_test", "AF_SARAH"):
+            with self.assertRaises(tts_engine.TtsError):
+                tts_engine.kokoro_language(voice)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -55,13 +55,15 @@ class LlmClientTests(unittest.TestCase):
         mock_urlopen.assert_not_called()
 
     @patch("llm_client.chat_completion", return_value="document answer")
-    @patch("llm_client.retrieve_relevant_context")
-    def test_embedded_chat_uses_bounded_direct_context_without_http_embeddings(self, mock_retrieve, mock_chat):
+    @patch("llm_client._NO_REDIRECT_OPENER.open")
+    def test_embedded_chat_retrieves_passages_locally_without_http(self, mock_urlopen, mock_chat):
         cfg = LlmConfig(provider="embedded_llama_cpp", model_path="/tmp/example.gguf")
         answer = ask_document(cfg, "What matters?", "A representative document passage.")
         self.assertEqual(answer, "document answer")
-        mock_retrieve.assert_not_called()
-        self.assertIn("A representative document passage.", mock_chat.call_args.args[1][-1]["content"])
+        mock_urlopen.assert_not_called()
+        prompt = mock_chat.call_args.args[1][-1]["content"]
+        self.assertIn("[Passage 1]\nA representative document passage.", prompt)
+        self.assertIn("[Passage 2]", mock_chat.call_args.args[1][0]["content"])  # citation instruction
 
     @patch("llm_client._NO_REDIRECT_OPENER.open", side_effect=OSError("connection refused"))
     def test_legacy_embedding_error_explains_server_and_embedded_options(self, _mock_urlopen):

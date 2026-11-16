@@ -108,7 +108,7 @@ Each voice was evaluated across four passage types designed to test sentence bou
 
 `listening_eval.py` generates blind, randomized, RMS-level-matched comparison packs for Piper voice-config defaults and the optional `less`/`more` variation profiles. Its eight-passage corpus covers report prose, technical terms, numbers and units, questions, citations/dates, and dialogue. Participant files contain randomized IDs; the key is kept separately under `facilitator-only/`. Use the generated ratings to assess naturalness and intelligibility before changing the default profile.
 
-No participant ratings have been collected as part of this implementation, so there is no supported claim that either variation profile sounds better. RMS matching with a peak ceiling is approximate loudness control, not LUFS normalization. Piper's `noise_scale` and `noise_w_scale` are left unset for the default profile so voice-specific config values apply; they are generator noise and phoneme-width variation, not pitch controls.
+The pack can include a Kokoro arm (`--kokoro-dir`), and `listening_eval.py analyze` turns completed sheets into per-condition scores with listener-level bootstrap intervals (`docs/TESTING.md`, "Listening evaluation"). No participant ratings have been collected, so there is no supported claim that any variation profile, or Kokoro, sounds better. RMS matching with a peak ceiling is approximate loudness control, not LUFS normalization. Piper's `noise_scale` and `noise_w_scale` are left unset for the default profile so voice-specific config values apply; they are generator noise and phoneme-width variation, not pitch controls.
 
 ## 6. Voice profiles and audio finishing (2026-11-16)
 
@@ -143,3 +143,18 @@ End-to-end result through `SynthesisStream` (two-sentence passage, real Piper):
 | john | −14.1 → −18.0 dBFS | 0.0 → −3.8 dBFS | 400 → 290 ms |
 
 Raw Piper chunks peak at full scale. The finished chunks leave headroom and no longer change level when the voice changes. The profiles still need a blind listening check with `listening_eval.py` before anyone claims they sound better.
+
+## 7. Assistant retrieval (2026-11-16)
+
+`python retrieval_eval.py` on the bundled set: a fictional ten-paragraph municipal report (one passage per paragraph) with 24 questions. Nine are lexical, ten ask for a figure, date or name, and five are paraphrases with few words in common with the answer. A hit means a passage containing the answer phrase is ranked in the top k.
+
+| Ranking | recall@1 | recall@3 | recall@5 | MRR | Paraphrase recall@3 |
+|---|---|---|---|---|---|
+| BM25 (every provider) | 0.79 | 0.88 | 0.92 | 0.84 | 0.40 |
+| Vector only | 0.50 | 0.92 | 1.00 | 0.69 | 1.00 |
+| Hybrid (reciprocal rank fusion) | 0.83 | 1.00 | 1.00 | 0.91 | 1.00 |
+
+The vector and hybrid rows used `llama-server --embedding --pooling mean` with Llama-3.2-1B-Instruct Q4_K_M, a chat model rather than an embedding model, because no embedding model was available on this host. They show that the code path works and that fusion helps even with weak vectors. They are not a quality measurement of a proper embedding model such as nomic-embed-text; run `retrieval_eval.py --embedding-endpoint … --embedding-model …` with the model you use.
+
+BM25 misses two paraphrases in the top 5 ("Were there any injuries at work?" against "no reportable safety incidents"; "Did the organisation make a surplus?" against the income figures). That is the expected weakness of keyword ranking. Ten passages and 24 questions are a regression check, not a benchmark; on a long document recall@k is harder to reach.
+

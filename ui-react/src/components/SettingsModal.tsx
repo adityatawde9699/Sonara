@@ -23,6 +23,7 @@ interface Props {
   playbackRate: number;
   onSpeedChange: (speed: number) => void;
   voices?: VoiceInfo[];
+  kokoroVoices?: VoiceInfo[];
   selectedVoice?: string;
   onVoiceChange?: (voiceId: string) => void;
   piperVariation?: PiperVariation;
@@ -51,6 +52,7 @@ export const SettingsModal: FC<Props> = ({
   playbackRate,
   onSpeedChange,
   voices = [],
+  kokoroVoices = [],
   selectedVoice,
   onVoiceChange,
   piperVariation = "voice_default",
@@ -229,7 +231,9 @@ export const SettingsModal: FC<Props> = ({
             )}
           </div>
           <p className="settings-section-desc">
-            {speechEngine === "kokoro" ? "Choose a Kokoro voice preset." : "Choose an installed Piper voice for your documents."}
+            {speechEngine === "kokoro"
+              ? "Choose a Kokoro voice. The voice sets the language: choose one that matches your document."
+              : "Choose an installed Piper voice for your documents."}
           </p>
           <div className="voice-select-field">
             <label htmlFor="voice-select" className="visually-hidden">
@@ -243,12 +247,13 @@ export const SettingsModal: FC<Props> = ({
               aria-label="Select narration voice"
             >
               {speechEngine === "kokoro" ? (
-                <>
-                  <option value="af_sarah">Sarah · US English</option>
-                  <option value="af_heart">Heart · US English</option>
-                  <option value="am_adam">Adam · US English</option>
-                  <option value="am_michael">Michael · US English</option>
-                </>
+                [...new Set(kokoroVoices.map((v) => v.language))].map((language) => (
+                  <optgroup key={language} label={language}>
+                    {kokoroVoices.filter((v) => v.language === language).map((v) => (
+                      <option key={v.id} value={v.id}>{v.name}</option>
+                    ))}
+                  </optgroup>
+                ))
               ) : voices.length > 0 ? (
                 voices.map((v) => (
                   <option key={v.id} value={v.id}>

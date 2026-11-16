@@ -192,6 +192,22 @@ jobs:
         run: bash packaging/cleanup_macos_signing.sh
       - name: Normalize installer names
         run: python packaging/prepare_release_assets.py --bundle-root src-tauri/target/release/bundle --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --output release-assets
+      - name: Write the installer SBOM
+        # Run with the Python that froze the runtime, so its installed
+        # distributions are what the SBOM lists. Crates are narrowed to this
+        # target; the timestamp is the commit time, for reproducible output.
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          (cd src-tauri && cargo metadata --format-version 1 --locked --filter-platform "$host") > "$RUNNER_TEMP/cargo-metadata.json"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" python packaging/generate_sbom.py \
+            --version "$RELEASE_TAG" \
+            --platform "${{ matrix.platform }}-${{ matrix.arch }}" \
+            --cargo-metadata "$RUNNER_TEMP/cargo-metadata.json" \
+            --tools packaging/staging/sonara/tools \
+            --output "release-assets/Sonara-${{ matrix.platform }}-${{ matrix.arch }}.cdx.json"
       - name: Upload installer files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -239,6 +255,9 @@ jobs:
     environment: release
     permissions:
       contents: write
+      # Keyless Sigstore signing of the build provenance attestations.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -280,6 +299,13 @@ jobs:
           (cd release-assets && sha256sum $(ls | grep -v '^SHA256SUMS') > "$sum_file")
         env:
           RELEASE_TARGET: ${{ inputs.target || 'unix' }}
+      - name: Attest build provenance for every release file
+        # Signs, with this workflow's identity, which commit and run produced
+        # each installer, SBOM and checksum file. Verify a download with
+        # `gh attestation verify <file> --repo <owner>/Sonara`.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-assets/*
       - name: Publish release and installers
         env:
           GH_TOKEN: ${{ github.token }}

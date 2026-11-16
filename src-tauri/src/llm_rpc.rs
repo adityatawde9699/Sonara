@@ -1,10 +1,11 @@
 //! The persistent Python LLM worker and its line-delimited JSON RPC.
 
+use crate::process_tree;
 use crate::runtime::{configure_runtime_command, resolve_runtime};
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -92,8 +93,7 @@ pub(crate) struct LlmWorker {
 impl LlmWorker {
     pub(crate) fn kill(&self) {
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+            process_tree::kill_and_reap(&mut child);
         }
     }
 }
@@ -154,7 +154,8 @@ pub(crate) fn invoke_llm_rpc(
         *worker_guard = None;
     }
     if worker_guard.is_none() {
-        let mut command = Command::new(&runtime.python);
+        // The worker may call an HTTP provider, so proxy and CA settings pass.
+        let mut command = process_tree::worker_command(&runtime.python, true);
         command
             .arg(&llm_script)
             .arg("worker")
@@ -166,6 +167,10 @@ pub(crate) fn invoke_llm_rpc(
         let mut child = command
             .spawn()
             .map_err(|error| format!("Failed to start Sonara's local LLM worker: {error}"))?;
+        if let Err(error) = process_tree::adopt(&child) {
+            process_tree::kill_and_reap(&mut child);
+            return Err(error);
+        }
         let stdin = child
             .stdin
             .take()
@@ -264,8 +269,7 @@ pub(crate) fn shutdown_llm_worker(state: &AppState) {
             if let Ok(mut handle) = state.llm_child.lock() {
                 if let Some(child) = handle.take() {
                     if let Ok(mut child) = child.lock() {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        process_tree::kill_and_reap(&mut child);
                     }
                 }
             }
@@ -289,6 +293,7 @@ pub(crate) fn shutdown_llm_worker(state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn llm_rpc_test_connection_offline_returns_error() {

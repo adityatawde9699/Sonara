@@ -115,6 +115,7 @@ def build(*, clean: bool = False) -> Path:
     # and therefore is not visible to PyInstaller's static import analysis.
     command.extend(("--hidden-import", "piper_worker"))
     command.extend(("--hidden-import", "llama_runtime"))
+    command.extend(("--hidden-import", "parent_watch"))
     # Belt and braces: never freeze diskcache even if it appears in the build env.
     for package in FORBIDDEN_PACKAGES:
         command.extend(("--exclude-module", package))

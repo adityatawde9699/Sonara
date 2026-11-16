@@ -17,6 +17,10 @@ libc = "=0.2.191"
 getrandom = "=0.4.2"
 tauri = { version = "=2.10.3" }
 
+[target.'cfg(windows)'.dependencies]
+# Job Objects keep each worker's process tree together (src/process_tree.rs).
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

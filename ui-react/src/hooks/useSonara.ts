@@ -289,11 +289,13 @@ export function useSonara() {
     playerState: player.playerState,
     tauriReady,
     audioRef: player.audioRef,
+    attachAudio: player.attachAudio,
     chunkStarts,
     recentDocs,
 
     // Voice and narration settings
     voices: settings.voices,
+    kokoroVoices: settings.kokoroVoices,
     speechEngine,
     setSpeechEngine: settings.setSpeechEngine,
     resourceProfile,

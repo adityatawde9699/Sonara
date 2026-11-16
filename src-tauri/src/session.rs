@@ -15,6 +15,37 @@ pub(crate) struct ReaderChunk {
     pub(crate) audio_file: String,
     pub(crate) duration_seconds: f64,
     pub(crate) pause_after_ms: u64,
+    /// Where the passage comes from, for read-along highlighting. Sessions
+    /// saved before this existed have none.
+    #[serde(default)]
+    pub(crate) source: Option<SourceSpan>,
+}
+
+/// Character offsets of a passage within one extracted document block.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceSpan {
+    pub(crate) block_id: String,
+    pub(crate) start: u64,
+    pub(crate) end: u64,
+}
+
+impl SourceSpan {
+    fn from_manifest(value: &serde_json::Value) -> Option<Self> {
+        let block_id = value.get("source_block_id")?.as_str()?;
+        let start = value.get("source_start")?.as_u64()?;
+        let end = value.get("source_end")?.as_u64()?;
+        let valid_id = !block_id.is_empty()
+            && block_id.len() <= 128
+            && block_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_:.".contains(&byte));
+        (valid_id && start < end).then(|| Self {
+            block_id: block_id.to_owned(),
+            start,
+            end,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -52,6 +83,7 @@ pub(crate) struct FrontendSession {
 pub(crate) struct FrontendChunk {
     pub(crate) duration_seconds: f64,
     pub(crate) pause_after_ms: u64,
+    pub(crate) source: Option<SourceSpan>,
 }
 
 impl FrontendSession {
@@ -72,6 +104,7 @@ impl FrontendSession {
                 .map(|chunk| FrontendChunk {
                     duration_seconds: chunk.duration_seconds,
                     pause_after_ms: chunk.pause_after_ms,
+                    source: chunk.source.clone(),
                 })
                 .collect(),
         }
@@ -179,6 +212,7 @@ pub(crate) fn load_reader_session(
             audio_file: canonical_file.to_string_lossy().into_owned(),
             duration_seconds,
             pause_after_ms,
+            source: SourceSpan::from_manifest(value),
         });
     }
     let session = ReaderSession {
@@ -320,9 +354,126 @@ pub(crate) fn validate_progress_shape(progress: &Progress) -> Result<(), String>
     }
 }
 
+/// The extracted document as blocks, for the read-along view.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReaderDocument {
+    pub(crate) source_sha256: String,
+    pub(crate) blocks: Vec<ReaderBlock>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReaderBlock {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) text: String,
+}
+
+/// Same cap as the text the assistant may read (llm_client.py).
+const MAX_EXTRACTED_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read `extracted_document.json` from the reader output, only when it is
+/// the extraction of `expected_sha256` (the document of the open session).
+pub(crate) fn load_reader_document(
+    output_dir: &Path,
+    expected_sha256: &str,
+) -> Result<ReaderDocument, String> {
+    let path = output_dir.join("extracted_document.json");
+    let size = fs::metadata(&path)
+        .map_err(|_| "The extracted text for this document is not available.".to_owned())?
+        .len();
+    if size > MAX_EXTRACTED_DOCUMENT_BYTES {
+        return Err("The extracted document is too large to show.".to_owned());
+    }
+    let bytes =
+        fs::read(&path).map_err(|error| format!("Could not read the extracted text: {error}"))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "The extracted document is not valid JSON.".to_owned())?;
+    let source_sha256 = value
+        .get("source_sha256")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if source_sha256 != expected_sha256 {
+        return Err("The extracted text belongs to a different document.".to_owned());
+    }
+    let blocks = value
+        .get("blocks")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "The extracted document has no text blocks.".to_owned())?
+        .iter()
+        .filter_map(|block| {
+            Some(ReaderBlock {
+                id: block.get("id")?.as_str()?.to_owned(),
+                kind: block
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("paragraph")
+                    .to_owned(),
+                text: block.get("text")?.as_str()?.to_owned(),
+            })
+        })
+        .collect();
+    Ok(ReaderDocument {
+        source_sha256: source_sha256.to_owned(),
+        blocks,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reader_document_matches_the_session_hash() {
+        let root = std::env::temp_dir().join(format!("sonara-reader-doc-{}", make_job_id()));
+        fs::create_dir_all(&root).unwrap();
+        let sha = "c".repeat(64);
+        fs::write(
+            root.join("extracted_document.json"),
+            serde_json::json!({
+                "source_sha256": sha,
+                "blocks": [
+                    {"id": "b-0", "kind": "heading", "text": "Title"},
+                    {"id": "b-1", "kind": "paragraph", "text": "Body."},
+                    {"kind": "paragraph", "text": "no id: skipped"},
+                ],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let document = load_reader_document(&root, &sha).unwrap();
+        assert_eq!(document.blocks.len(), 2);
+        assert_eq!(document.blocks[0].kind, "heading");
+        assert!(load_reader_document(&root, &"d".repeat(64)).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn manifest_source_spans_are_validated() {
+        let span = |value: serde_json::Value| SourceSpan::from_manifest(&value);
+        assert_eq!(
+            span(
+                serde_json::json!({"source_block_id": "p1-b2", "source_start": 0, "source_end": 9})
+            ),
+            Some(SourceSpan {
+                block_id: "p1-b2".to_owned(),
+                start: 0,
+                end: 9
+            })
+        );
+        assert_eq!(
+            span(serde_json::json!({"source_block_id": "x", "source_start": 4, "source_end": 4})),
+            None
+        );
+        assert_eq!(
+            span(
+                serde_json::json!({"source_block_id": "../x y", "source_start": 0, "source_end": 1})
+            ),
+            None
+        );
+        assert_eq!(span(serde_json::json!({"duration_seconds": 1.0})), None);
+    }
 
     #[test]
     fn progress_requires_supported_rate_and_document_hash() {

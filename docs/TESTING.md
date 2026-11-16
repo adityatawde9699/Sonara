@@ -6,16 +6,37 @@ This is the latest verified run. The dated sections below are historical records
 
 | Check | Command | Result |
 |---|---|---|
-| Python unit tests | `python -m unittest discover -s tests` | 170 run, 7 skipped, all pass on Python 3.14 and 3.12 |
-| Python with integrations (Poppler + Piper) | `SONARA_RUN_INTEGRATION=1 .venv/bin/python -W error::ResourceWarning -m unittest discover -s tests` | 170 run, 1 skipped (Tesseract), all pass. At exit Python reports two unclosed `/dev/null` handles that llama-cpp-python opens when it is imported (`llama_cpp/_utils.py`); they are not Sonara's |
-| Frontend | `cd ui-react && npm test` | 72 pass across 14 files |
+| Python unit tests | `python -m unittest discover -s tests` | 209 run, 7 skipped, all pass on Python 3.14 and 3.12 |
+| Python with integrations (Poppler + Piper) | `SONARA_RUN_INTEGRATION=1 .venv/bin/python -W error::ResourceWarning -m unittest discover -s tests` | 209 run, 1 skipped (Tesseract), all pass. At exit Python reports two unclosed `/dev/null` handles that llama-cpp-python opens when it is imported (`llama_cpp/_utils.py`); they are not Sonara's |
+| Frontend | `cd ui-react && npm test` | 80 pass across 14 files |
 | Frontend types and lint | `npx tsc -b --noEmit`, `npm run lint` | clean |
-| Rust | `cargo test --manifest-path src-tauri/Cargo.toml --locked` | 25 pass, including loopback tests of the real audio server (ranges, a 3 MiB streamed passage, a stalled client, the connection limit) and the library file |
-| Rust lint | `cargo clippy --locked --all-targets -- -D warnings` | clean (now enforced in CI) |
+| Rust | `cargo test --manifest-path src-tauri/Cargo.toml --locked` | 30 pass, including loopback tests of the real audio server (ranges, a 3 MiB streamed passage, a stalled client, the connection limit), the library file, the worker environment allowlist and the read-along source spans |
+| Rust lint | `cargo clippy --locked --all-targets -- -D warnings` | clean (enforced in CI). The Windows Job Object code was also checked with clippy for `x86_64-pc-windows-msvc`; it has not run on Windows |
+| Desktop end to end (WebDriver) | `xvfb-run -a node e2e/desktop-smoke.mjs` after `npm run build` and `cargo build` | passes; 12 consecutive runs passed after the player fix (see below) |
 | Site | `node --test site/scripts/downloads.test.mjs` | 4 pass |
 | Dependency audits | `npm audit`, `pip-audit`, `cargo audit` | no vulnerabilities and no ignored advisories. llama-cpp-python is installed with `--no-deps`, so `diskcache` (CVE-2025-69872) is not installed, and the release build refuses to run if it is present |
 
-Not verified: listener judgement of the voice profiles and normalization rules (only objective measurements, `docs/BENCHMARKS.md` §6), OCR end to end with a real Tesseract (not installed on this host; covered by mocked tests), the GUI by automation, and any installer or clean-machine install.
+Not verified: listener judgement of the voice profiles, normalization rules, or Piper against Kokoro (the tooling exists, but no listening study has been run; see below), Kokoro speech quality in languages other than English (each language was synthesized once and its phonemes checked, but nobody who speaks it has listened), OCR end to end with a real Tesseract (not installed on this host; covered by mocked tests), the Windows Job Object on Windows, and any installer or clean-machine install. Build provenance attestations and the SBOM step run only in the release workflow and have not run yet.
+
+### Desktop end-to-end test
+
+`e2e/desktop-smoke.mjs` drives the real app through `tauri-driver` and WebKitWebDriver (Linux; `webkit2gtk-driver` on Debian/Ubuntu, `cargo install tauri-driver --locked`). It has no npm dependencies and speaks the W3C WebDriver protocol over `fetch`. The native file picker cannot be automated, so the test seeds `library.json` in a temporary `XDG_DATA_HOME`. It then:
+
+1. reopens the document from the library by hash;
+2. prepares speech with the Python worker and the Ryan Piper voice;
+3. waits for the first passage's metadata from the loopback audio server, and checks the URL shape;
+4. opens the reading view, checks that the first passage is highlighted, and uses "Listen from here" on paragraph 2;
+5. checks that the library shows the finished document.
+
+The CI job `e2e` runs it under Xvfb after downloading the Ryan voice and checking its pinned hashes. The test found a real race: when progress was restored before the player's `<audio>` element mounted, the passage never loaded (about one run in six). Fixed with a ref callback that loads the pending passage on mount (`useAudioPlayer.attachAudio`), with a unit test that fails without the fix.
+
+### Retrieval and long-document summaries
+
+`retrieval_eval.py` reports recall@1/3/5 and MRR per ranking (BM25; vector and hybrid when given `--embedding-endpoint`) on a bundled labelled set, or on your own document with `--document` and `--cases`. `tests/test_retrieval.py` holds BM25 to perfect recall@3 on the set's lexical and numeric questions; paraphrases are reported, not asserted. Measured numbers are in `docs/BENCHMARKS.md` §7. Map-reduce summarization is tested with a fake model for section coverage, the 8-section cap, the coverage note and the time budget. It has not been judged against a human-written summary.
+
+### Process trees and orphaned workers
+
+`tests/test_parent_watch.py` starts a real "app" process that starts a worker with a sleeping child, then kills the app with `os._exit`. Both worker processes must exit within 10 s. With the watch disabled, the same test fails. The Windows Job Object path (`src-tauri/src/process_tree.rs`) is compiled and linted for Windows but has not run there.
 
 ## Implementation checks (2026-10-27)
 
@@ -38,7 +59,7 @@ These checks validate planner behavior, command wiring, builds, and pack generat
 - As a backend fallback, generated the standard-library PDF fixture in `/tmp/sonara-desktop-acceptance/sample.pdf` and ran `sonara.py read` with the installed `en_US-john-medium` voice. The complete local PDF extraction and Piper synthesis path exited successfully and wrote `document_text.txt`, `extracted_document.json`, `audio_chunks.json`, three passage WAV chunks, `speech.wav`, and `index.html`.
 - The combined WAV was mono, 16-bit PCM, 22,050 Hz, and 349,812 frames (about 15.9 seconds). This confirms the CLI backend path; desktop UI behavior is supported by the user's manual report above.
 
-## Narration variation listening evaluation
+## Listening evaluation
 
 The repeatable comparison generator synthesizes the expanded corpus using Piper voice defaults, `less`, and `more` variation settings. Randomized clip IDs and row order are placed in a participant pack; the mapping and synthesis metadata are kept under a separate `facilitator-only/` directory. Do not share the facilitator key with listeners during rating. Whole-clip RMS is matched to a target with a peak ceiling; this is a practical level match, not perceptual LUFS normalization.
 
@@ -49,7 +70,19 @@ Generate a pack with the installed local voice:
   --output-dir /tmp/sonara-listening-evaluation --seed 20261027
 ```
 
-The pack includes randomized participant clips and a CSV with naturalness/intelligibility ratings. Collect ratings before unblinding, then compare variation profiles by passage and rating dimension. Generation itself does not establish that any profile sounds more human. For raw synthesis latency/runtime benchmarks, continue to use `benchmark.py`; previously recorded measurements use the historical four-passage corpus. Kokoro numbers are estimates until a corresponding Sonara run and listening evaluation are recorded.
+Add Kokoro as a fourth condition with `--kokoro-dir models/kokoro --kokoro-voice af_sarah` (needs `kokoro-onnx`, Python 3.10–3.13). Kokoro clips are 24 kHz and Piper clips 22.05 kHz; both are level matched the same way.
+
+The pack includes randomized participant clips and a CSV with naturalness/intelligibility ratings. Each listener fills in their own copy and returns it under a pseudonymous file name (the file stem is the rater ID). Then, with the key:
+
+```sh
+.venv/bin/python listening_eval.py analyze \
+  --key /tmp/sonara-listening-evaluation/facilitator-only/facilitator-key.csv \
+  --json report.json ratings/*.csv
+```
+
+`analyze` refuses sheets with scores outside 1–5, clips not in the key, or a clip placed in the wrong comparison group. It warns about unrated clips and about groups with no single preferred clip (those preferences are ignored). For each condition it reports mean naturalness and intelligibility, the paired difference from `piper:voice_default` within the same listener and passage, and the share of groups in which the condition was preferred. Intervals are 95% percentile bootstrap intervals that resample listeners rather than individual ratings, because one person's ratings are correlated. There are no intervals with one listener, and below about 12 listeners the report says they are unstable.
+
+**The study itself needs human listeners and has not been run.** On 2026-11-16 a four-condition pack (Piper default, `less`, `more`, Kokoro `af_sarah`; 32 clips) was generated with the real engines, and `analyze` was checked on synthetic rating sheets only. Those numbers are not results. Generation does not establish that any condition sounds better. For raw synthesis latency/runtime benchmarks, continue to use `benchmark.py`.
 
 Fast tests cover corpus coverage, level matching, spoken-text/source-offset preservation, opt-in date/citation rules, pause policy, and variation request handling. They do not judge subjective voice quality.
 

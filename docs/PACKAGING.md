@@ -22,7 +22,7 @@ The current checkout is run from source; it relies on local Python, Rust, Node f
 - Windows Poppler and Tesseract downloads are pinned with SHA-256 values. The current Windows Tesseract installer is 5.5.3; upstream 5.5.4 was released with security fixes after this pin was selected. Treat Windows packages as blocked for publication until the staging source is updated and reviewed.
 - `packaging/build_runtime.py` currently pins a CPU-oriented Python runtime build. GPU acceleration, model catalogs/downloads, default voice redistribution, and voice/model verification are not implemented.
 - Windows signing and Apple Developer ID signing/notarization are configured through repository secrets. No signed/notarized release has been built yet. Publication requires all credentials and all clean-runner smoke checks to pass.
-- License inventories and an SBOM remain release blockers. The current checks validate hosted CI runners, not every supported end-user system; validate on fresh VMs before declaring platform support.
+- Each target's CycloneDX SBOM is written by `packaging/generate_sbom.py` and published next to its installers; `verify_release_assets.py` fails the release without it. Every release file gets a build provenance attestation (see `docs/RELEASE_PROCESS.md`). A license inventory remains a release blocker: the SBOM records npm package licences and Python licence expressions where the metadata declares them, but not crate licences or the voices' licence texts. The current checks validate hosted CI runners, not every supported end-user system; validate on fresh VMs before declaring platform support.
 - Build and manually test each target; a successful frontend or Rust test run is not evidence of a working installer.
 
 ## Release artifacts

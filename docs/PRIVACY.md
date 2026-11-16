@@ -12,7 +12,7 @@ Sonara's document reader and default Piper synthesis path are designed to proces
 
 ## Optional external services
 
-The assistant can be configured for an OpenAI-compatible remote endpoint, including providers that operate outside the device. When used, request prompts and document context supplied to that feature may be sent to the configured endpoint under that provider's terms. Local model choices are also optional and depend on the installed runtime/model. Basic document extraction and ordinary local Piper synthesis do not require the assistant.
+The assistant can be configured for an OpenAI-compatible remote endpoint, including providers that operate outside the device. When used, request prompts and document context supplied to that feature may be sent to the configured endpoint under that provider's terms. Passage selection (keyword ranking) runs on the device, so for long documents a remote provider receives the selected passages (up to about 6,000 characters per request) rather than the whole text. A long-document summary sends up to eight such sections, one per request. Local model choices are also optional and depend on the installed runtime/model. Basic document extraction and ordinary local Piper synthesis do not require the assistant.
 
 ## Logs and user control
 

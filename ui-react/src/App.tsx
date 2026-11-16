@@ -226,7 +226,13 @@ export default function App() {
               </aside>
             </section>
           ) : page === "reader" && sonara.session && sonara.phase === "ready" ? (
-            <section className="reader-page"><button className="back-link" type="button" onClick={() => setPage("home")}>← Back to Home</button><ReaderPanel sourceName={sonara.session.sourceName} sourceSha256={sonara.session.sourceSha256} /></section>
+            <section className="reader-page"><button className="back-link" type="button" onClick={() => setPage("home")}>← Back to Home</button><ReaderPanel
+              sourceName={sonara.session.sourceName}
+              sourceSha256={sonara.session.sourceSha256}
+              chunks={sonara.session.chunks}
+              activeChunk={sonara.playerState.segment}
+              onPlayFromChunk={(index) => sonara.seekToChunk(index, true)}
+            /></section>
           ) : <>
           {!sonara.tauriReady && (
             <aside className="banner-preview" role="note" aria-label="Runtime notice">
@@ -359,8 +365,8 @@ export default function App() {
         {sonara.session && sonara.phase === "ready" && (
           <PlayerCard
             session={sonara.session} state={sonara.playerState}
-            voiceLabel={sonara.voices.find((voice) => voice.id === sonara.session?.voice)?.name}
-            audioRef={sonara.audioRef} chunkStarts={sonara.chunkStarts}
+            voiceLabel={[...sonara.voices, ...sonara.kokoroVoices].find((voice) => voice.id === sonara.session?.voice)?.name}
+            audioRef={sonara.attachAudio} chunkStarts={sonara.chunkStarts}
             onPlay={sonara.startPlayback} onPause={sonara.pausePlayback} onSeek={sonara.seekTo}
             onSeekChunk={sonara.seekToChunk} onSpeedChange={(rate) => sonara.setSpeed(rate)}
             onRetry={sonara.retryPassage} onSkip={sonara.skipPassage}
@@ -383,6 +389,7 @@ export default function App() {
         playbackRate={sonara.playerState.playbackRate}
         onSpeedChange={(speed) => sonara.setSpeed(speed)}
         voices={sonara.voices}
+        kokoroVoices={sonara.kokoroVoices}
         selectedVoice={sonara.selectedVoice}
         onVoiceChange={(voiceId) => sonara.setSelectedVoice(voiceId)}
         speechEngine={sonara.speechEngine}

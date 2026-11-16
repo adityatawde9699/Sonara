@@ -77,6 +77,10 @@ export function useAudioPlayer() {
 
   const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A passage requested before the <audio> element mounted. The player mounts
+  // in the same render that shows a new session, and restoring progress can
+  // finish first; the load then runs as soon as the element attaches.
+  const pendingLoadRef = useRef<{ index: number; offset: number; autoplay: boolean } | null>(null);
 
   // ── Helpers ──────────────────────────────────────────────────────
 
@@ -188,7 +192,11 @@ export function useAudioPlayer() {
     isPlayingRef.current = false;
 
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio) {
+      pendingLoadRef.current = { index, offset: pendingOffsetRef.current, autoplay };
+      return;
+    }
+    pendingLoadRef.current = null;
     audio.pause();
     expectedSourceRef.current = `${s.audioBaseUrl}/${s.sourceSha256}/${index}`;
     audio.src = expectedSourceRef.current;
@@ -211,6 +219,16 @@ export function useAudioPlayer() {
       }
     }, AUDIO_LOAD_TIMEOUT_MS);
   }, [clearLoadTimer, clearNarrationPause, isExpectedAudioSource, mediaDiagnostics, renderPosition, showAudioError, updatePlayerState]);
+
+  /** Ref callback for the player's <audio> element. */
+  const attachAudio = useCallback((element: HTMLAudioElement | null) => {
+    audioRef.current = element;
+    const pending = pendingLoadRef.current;
+    if (element && pending) {
+      pendingLoadRef.current = null;
+      loadChunk(pending.index, pending.offset, pending.autoplay);
+    }
+  }, [loadChunk]);
 
   /** Wait `delay` ms (the planned pause), then play the next passage. */
   const scheduleNextPassage = useCallback((delay: number) => {
@@ -329,10 +347,11 @@ export function useAudioPlayer() {
     void persistProgress(nextIndex, offset);
   }, [loadChunk, persistProgress]);
 
-  const seekToChunk = useCallback((chunkIndex: number) => {
+  /** Jump to the start of a passage; keeps playing if it was, or starts when `autoplay`. */
+  const seekToChunk = useCallback((chunkIndex: number, autoplay?: boolean) => {
     const s = sessionRef.current;
     if (!s || chunkIndex < 0 || chunkIndex >= s.chunks.length) return;
-    loadChunk(chunkIndex, 0, isPlayingRef.current);
+    loadChunk(chunkIndex, 0, autoplay ?? isPlayingRef.current);
     void persistProgress(chunkIndex, 0);
   }, [loadChunk, persistProgress]);
 
@@ -470,6 +489,7 @@ export function useAudioPlayer() {
   return {
     playerState,
     audioRef,
+    attachAudio,
     openSession,
     suspend,
     startPlayback,

@@ -5,6 +5,101 @@ use std::fs::{self};
 use std::path::Path;
 
 pub(crate) const DEFAULT_FALLBACK_VOICE: &str = "en_US-ryan-medium";
+pub(crate) const DEFAULT_KOKORO_VOICE: &str = "af_sarah";
+
+/// Kokoro v1.0 voices Sonara offers. The first letter is the language and
+/// must match `KOKORO_LANGUAGES` in tts_engine.py; the second is f/m.
+/// Japanese voices are left out: they need a G2P that Sonara does not ship.
+const KOKORO_VOICES: &[&str] = &[
+    "af_alloy",
+    "af_aoede",
+    "af_bella",
+    "af_heart",
+    "af_jessica",
+    "af_kore",
+    "af_nicole",
+    "af_nova",
+    "af_river",
+    "af_sarah",
+    "af_sky",
+    "am_adam",
+    "am_echo",
+    "am_eric",
+    "am_fenrir",
+    "am_liam",
+    "am_michael",
+    "am_onyx",
+    "am_puck",
+    "am_santa",
+    "bf_alice",
+    "bf_emma",
+    "bf_isabella",
+    "bf_lily",
+    "bm_daniel",
+    "bm_fable",
+    "bm_george",
+    "bm_lewis",
+    "ef_dora",
+    "em_alex",
+    "em_santa",
+    "ff_siwis",
+    "hf_alpha",
+    "hf_beta",
+    "hm_omega",
+    "hm_psi",
+    "if_sara",
+    "im_nicola",
+    "pf_dora",
+    "pm_alex",
+    "pm_santa",
+    "zf_xiaobei",
+    "zf_xiaoni",
+    "zf_xiaoxiao",
+    "zf_xiaoyi",
+    "zm_yunjian",
+    "zm_yunxi",
+    "zm_yunxia",
+    "zm_yunyang",
+];
+
+fn kokoro_language_label(prefix: u8) -> Option<&'static str> {
+    Some(match prefix {
+        b'a' => "US English",
+        b'b' => "British English",
+        b'e' => "Spanish",
+        b'f' => "French",
+        b'h' => "Hindi",
+        b'i' => "Italian",
+        b'p' => "Brazilian Portuguese",
+        b'z' => "Mandarin Chinese (experimental)",
+        _ => return None,
+    })
+}
+
+pub(crate) fn is_kokoro_voice(voice: &str) -> bool {
+    KOKORO_VOICES.contains(&voice)
+}
+
+/// The Kokoro voice list for Settings, grouped by language.
+pub(crate) fn kokoro_voices() -> Vec<VoiceInfo> {
+    KOKORO_VOICES
+        .iter()
+        .filter_map(|id| {
+            let bytes = id.as_bytes();
+            let language = kokoro_language_label(bytes[0])?;
+            let gender = if bytes[1] == b'f' { "female" } else { "male" };
+            let raw = &id[3..];
+            let name = raw[..1].to_uppercase() + &raw[1..];
+            Some(VoiceInfo {
+                id: (*id).to_owned(),
+                name: format!("{name} · {language} · {gender}"),
+                quality: "Kokoro".to_owned(),
+                language: language.to_owned(),
+                is_default: *id == DEFAULT_KOKORO_VOICE,
+            })
+        })
+        .collect()
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +193,18 @@ pub(crate) fn parse_voice_metadata(json_path: &Path, id: &str) -> (String, Strin
 mod tests {
     use super::*;
     use crate::make_job_id;
+
+    #[test]
+    fn kokoro_voices_have_languages_and_one_default() {
+        let voices = kokoro_voices();
+        assert_eq!(voices.len(), KOKORO_VOICES.len());
+        assert_eq!(voices.iter().filter(|voice| voice.is_default).count(), 1);
+        let george = voices.iter().find(|voice| voice.id == "bm_george").unwrap();
+        assert_eq!(george.name, "George · British English · male");
+        assert!(is_kokoro_voice("ff_siwis"));
+        assert!(!is_kokoro_voice("jf_alpha"));
+        assert!(!is_kokoro_voice("en_US-ryan-medium"));
+    }
 
     #[test]
     fn voice_discovery_identifies_installed_models() {

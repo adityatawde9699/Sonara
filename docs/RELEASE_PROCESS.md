@@ -14,7 +14,8 @@ The marketing site reads the latest published GitHub Release and matches its ass
 2. Update `CHANGELOG.md` and review the runtime, dependency, and licensing notes.
 3. Run Python, frontend, and Rust checks locally. Check the Pages download selector with `node --test site/scripts/downloads.test.mjs`.
 4. Commit and push the changes, then create and push the matching annotated tag, for example `v0.2.0`.
-5. Wait for the complete **Build and publish desktop releases** workflow. Review all installer files and checksums on the created release and confirm the site reflects the release.
+5. Wait for the complete **Build and publish desktop releases** workflow. Review all installer files, SBOMs and checksums on the created release and confirm the site reflects the release.
+6. Spot-check provenance: download one installer and run `gh attestation verify <file> --repo <owner>/Sonara`. It must report the `package.yml` workflow and the tag's commit. Every file in the release (installers, `*.cdx.json` SBOMs, `SHA256SUMS-*.txt`) is attested, so the checksum files are signed through their attestation as well.
 
 Do not delete or replace an existing release tag to retry a failed build. Correct the underlying failure and use a new version tag after review.
 
@@ -33,7 +34,7 @@ The Windows job signs the frozen Python runtime and staged native tools, and Tau
 
 Windows packaging is currently blocked, so tag pushes and manual runs default to the `unix` target (Linux plus both macOS architectures). `workflow_dispatch` requires an existing tag and builds that tag's commit; use `target=all` only after the Windows blocker below is resolved. Reruns overwrite assets (`--clobber`) and write a per-target `SHA256SUMS-<target>.txt`.
 
-Windows Poppler and Tesseract downloads are pinned and hash-checked. The pinned Tesseract installer is 5.5.3, while upstream 5.5.4 (released 2026-10-28) fixes security advisories. Update and validate this dependency before publishing Windows installers. License inventory and SBOM generation also remain outstanding.
+Windows Poppler and Tesseract downloads are pinned and hash-checked. The pinned Tesseract installer is 5.5.3, while upstream 5.5.4 (released 2026-10-28) fixes security advisories. Update and validate this dependency before publishing Windows installers. A license inventory also remains outstanding; SBOMs are generated (`packaging/generate_sbom.py`).
 
 ## Supported artifact matrix and limitations
 

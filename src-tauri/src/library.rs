@@ -214,6 +214,7 @@ mod tests {
                     audio_file: "/unused.wav".to_owned(),
                     duration_seconds,
                     pause_after_ms: 0,
+                    source: None,
                 })
                 .collect(),
         }

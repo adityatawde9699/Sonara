@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use tauri::{AppHandle, Manager};
 
+use crate::process_tree;
+
 pub(crate) const MAX_ERROR_LOG_BYTES: u64 = 16 * 1024;
 
 #[derive(Clone, Debug)]
@@ -54,16 +56,8 @@ pub(crate) fn spawn_sonara_worker(
     } else {
         &runtime.python
     };
-    let mut command = Command::new(python);
+    let mut command = process_tree::worker_command(python, false);
     command
-        .env_clear()
-        .env("HOME", std::env::var_os("HOME").unwrap_or_default())
-        .env("LANG", std::env::var_os("LANG").unwrap_or_default())
-        .env("LC_ALL", std::env::var_os("LC_ALL").unwrap_or_default())
-        .env(
-            "LD_LIBRARY_PATH",
-            std::env::var_os("LD_LIBRARY_PATH").unwrap_or_default(),
-        )
         .current_dir(&runtime.project_root)
         .arg(&runtime.script)
         .arg("read")
@@ -96,7 +90,13 @@ pub(crate) fn spawn_sonara_worker(
     }
     #[cfg(unix)]
     command.process_group(0);
-    command.spawn()
+    let mut child = command.spawn()?;
+    if let Err(error) = process_tree::adopt(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other(error));
+    }
+    Ok(child)
 }
 
 pub(crate) fn resolve_runtime(app: Option<&AppHandle>) -> Result<RuntimePaths, String> {
@@ -397,12 +397,21 @@ pub(crate) fn stop_worker_tree(child: &mut Child) -> Result<(), String> {
     }
     #[cfg(not(unix))]
     {
-        child
-            .kill()
-            .map_err(|error| format!("Could not stop the speech worker: {error}"))?;
+        // Terminating the job stops the worker and every child it started.
+        process_tree::terminate(child.id());
+        if child
+            .try_wait()
+            .map_err(|error| format!("Could not inspect the speech worker: {error}"))?
+            .is_none()
+        {
+            // Already exiting through the job is fine; only a live process
+            // that refuses to die is an error, which `wait` would expose.
+            let _ = child.kill();
+        }
         child
             .wait()
             .map_err(|error| format!("Could not reap the speech worker: {error}"))?;
+        process_tree::release(child.id());
         Ok(())
     }
 }

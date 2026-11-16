@@ -23,9 +23,29 @@ export interface LibraryDocument {
   available: boolean;
 }
 
+/** Character offsets of a passage within one extracted document block. */
+export interface SourceSpan {
+  blockId: string;
+  start: number;
+  end: number;
+}
+
 export interface FrontendChunk {
   durationSeconds: number;
   pauseAfterMs: number;
+  /** Absent for sessions prepared before read-along highlighting existed. */
+  source?: SourceSpan | null;
+}
+
+export interface ReaderBlock {
+  id: string;
+  kind: string;
+  text: string;
+}
+
+export interface ReaderDocument {
+  sourceSha256: string;
+  blocks: ReaderBlock[];
 }
 
 export interface FrontendSession {
@@ -151,6 +171,24 @@ export async function clearLibrary(): Promise<void> {
 
 export async function currentSession(): Promise<FrontendSession | null> {
   return invoke<FrontendSession | null>("current_session");
+}
+
+export const FALLBACK_KOKORO_VOICES: VoiceInfo[] = [
+  { id: "af_sarah", name: "Sarah · US English · female", quality: "Kokoro", language: "US English", isDefault: true },
+  { id: "bm_george", name: "George · British English · male", quality: "Kokoro", language: "British English", isDefault: false },
+];
+
+/** Kokoro voices with their languages; the backend owns the list. */
+export async function listKokoroVoices(): Promise<VoiceInfo[]> {
+  if (!isTauriAvailable()) {
+    return FALLBACK_KOKORO_VOICES;
+  }
+  return invoke<VoiceInfo[]>("list_kokoro_voices");
+}
+
+/** The open document as blocks, matching the passages' source spans. */
+export async function getReaderDocument(): Promise<ReaderDocument> {
+  return invoke<ReaderDocument>("get_reader_document");
 }
 
 export async function listVoices(): Promise<VoiceInfo[]> {

@@ -422,3 +422,26 @@ class VoiceProfileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultilingualSegmentationTests(unittest.TestCase):
+    def test_chinese_sentences_split_without_spaces_and_passages_stay_short(self):
+        text = "火车早上九点出发，乘客在车站等候。" * 60
+        plan = build_narration_plan(make_document(("paragraph", "test", text)), language="zh_CN")
+        self.assertGreater(len(plan.units), 4)
+        # Each passage ends at a full stop and stays near the 180-word bound.
+        self.assertTrue(all(unit.source_text.endswith("。") for unit in plan.units))
+        self.assertTrue(all(len(unit.source_text) <= 200 for unit in plan.units))
+        self.assertEqual("".join(unit.source_text for unit in plan.units), text)
+
+    def test_hindi_danda_ends_a_sentence(self):
+        sentence = "ट्रेन सुबह नौ बजे निकलती है और यात्री इंतजार करते हैं। "
+        plan = build_narration_plan(make_document(("paragraph", "test", (sentence * 60).strip())), language="hi_IN")
+        self.assertTrue(all(unit.source_text.rstrip().endswith("।") for unit in plan.units))
+
+    def test_english_rules_do_not_rewrite_other_languages(self):
+        text = "Le 3 mai, il faisait 20 °C. Voir [3]."
+        plan = build_narration_plan(
+            make_document(("paragraph", "test", text)), language="fr_FR", expand_dates=True, expand_citations=True,
+        )
+        self.assertEqual(plan.units[0].spoken_text, text)

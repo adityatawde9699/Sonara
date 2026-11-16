@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -12,6 +12,7 @@ mod audio_server;
 mod library;
 mod llm_rpc;
 mod pickers;
+mod process_tree;
 mod runtime;
 mod session;
 mod voices;
@@ -196,7 +197,7 @@ async fn preview_narration(
                     .map(|item| item.id.clone())
             })
             .ok_or_else(|| "No installed Piper voice is available for preview.".to_owned())?;
-        let mut command = Command::new(&runtime.python);
+        let mut command = process_tree::worker_command(&runtime.python, false);
         let mut args = vec!["read", "--preview"];
         if expand_dates {
             args.push("--expand-dates");
@@ -205,10 +206,6 @@ async fn preview_narration(
             args.push("--expand-citations");
         }
         command
-            .env_clear()
-            .env("HOME", std::env::var_os("HOME").unwrap_or_default())
-            .env("LANG", std::env::var_os("LANG").unwrap_or_default())
-            .env("LC_ALL", std::env::var_os("LC_ALL").unwrap_or_default())
             .current_dir(&runtime.project_root)
             .arg(&runtime.script)
             .args(args)
@@ -260,6 +257,34 @@ fn current_session(
         .map_err(|_| "Reader session state is unavailable.".to_owned())?
         .as_ref()
         .map(|session| FrontendSession::from_session(session, &audio_server.base_url)))
+}
+
+#[tauri::command]
+fn list_kokoro_voices() -> Vec<VoiceInfo> {
+    voices::kokoro_voices()
+}
+
+/// The open session's document as blocks, for read-along highlighting.
+#[tauri::command]
+async fn get_reader_document(app: AppHandle) -> Result<session::ReaderDocument, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let sha256 = state
+            .session
+            .lock()
+            .map_err(|_| "Reader session state is unavailable.".to_owned())?
+            .as_ref()
+            .map(|session| session.source_sha256.clone())
+            .ok_or_else(|| "No document is open.".to_owned())?;
+        let output_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| format!("Could not get app data dir: {error}"))?
+            .join("reader-output");
+        session::load_reader_document(&output_dir, &sha256)
+    })
+    .await
+    .map_err(|error| format!("Reader document task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -337,16 +362,14 @@ fn start_reading(
                     runtime.model_dir.display()
                 ));
             }
-            if selected_engine == "kokoro"
-                && !["af_sarah", "af_heart", "am_adam", "am_michael"].contains(&candidate)
-            {
-                return Err("Choose an available Kokoro voice (af_sarah, af_heart, am_adam, or am_michael).".to_owned());
+            if selected_engine == "kokoro" && !voices::is_kokoro_voice(candidate) {
+                return Err("Choose one of the Kokoro voices listed in Settings.".to_owned());
             }
             candidate.to_string()
         }
         _ => {
             if selected_engine == "kokoro" {
-                "af_sarah".to_owned()
+                voices::DEFAULT_KOKORO_VOICE.to_owned()
             } else {
                 let voices = discover_voices(&runtime.model_dir)?;
                 voices
@@ -675,6 +698,11 @@ fn monitor_worker(
         }
     };
 
+    // The worker has exited; close its job so nothing it started survives.
+    if let Ok(child) = child.lock() {
+        process_tree::release(child.id());
+    }
+
     let session_result = match exit_status {
         Err(error) => Err(error),
         Ok(_) if cancelled.load(Ordering::SeqCst) => {
@@ -761,6 +789,8 @@ pub fn run() {
             load_progress,
             save_progress,
             list_voices,
+            list_kokoro_voices,
+            get_reader_document,
             llm_test_connection,
             llm_chat,
             llm_summarize,

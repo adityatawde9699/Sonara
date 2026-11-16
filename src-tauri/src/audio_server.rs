@@ -515,6 +515,7 @@ mod tests {
                         audio_file: path.to_string_lossy().into_owned(),
                         duration_seconds: 1.0,
                         pause_after_ms: 0,
+                        source: None,
                     })
                     .collect(),
             });

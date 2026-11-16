@@ -76,7 +76,9 @@ The desktop app accepts **PDF, TXT/TEXT, Markdown (`.md`), Word (`.docx`), and E
 
 Piper is the default, locally exercised engine. An optional Kokoro ONNX adapter is also implemented and exposed in the CLI and desktop UI, but it requires a separate compatible Python environment and model assets; Sonara does not download those assets automatically. The current development host has a Kokoro setup, but desktop playback and cross-platform packaging have not been verified. See [Kokoro setup](docs/KOKORO_SETUP.md) and the [roadmap evaluation status](docs/ROADMAP.md).
 
-When a prepared desktop session is active, the listening workspace also shows its locally extracted text. The reading view supports paragraph-based paging, in-document search, and adjustable text size. It is limited to the active session: original document page layout, heading navigation, durable library reopening, and synchronized text/audio highlighting are not currently provided by the backend.
+Kokoro voices cover US and British English, Spanish, French, Hindi, Italian, Brazilian Portuguese and (experimental) Mandarin; the chosen voice sets the language. Japanese Kokoro voices are not offered. English normalization rules (dates, units, abbreviations) apply only to English voices; other languages are spoken as written.
+
+When a prepared desktop session is active, the reading view shows its locally extracted text and highlights the passage being spoken. It follows playback across pages until you turn a page yourself. Each paragraph has a button that starts listening there. Highlighting is per passage (a sentence or a few sentences), not per word, because neither engine reports word timings to Sonara. The view also has in-document search and adjustable text size. It does not reproduce the original page layout or offer heading navigation.
 
 ### Run the desktop app
 

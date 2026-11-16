@@ -30,7 +30,8 @@ from document import (
     parse_bbox_layout,
 )
 from narration import NarrationError, build_narration_plan
-from tts_engine import KokoroEngine, PiperEngine, SynthesisStream, TtsError, validate_voice_name
+from parent_watch import start_parent_watch
+from tts_engine import KokoroEngine, PiperEngine, SynthesisStream, TtsError, kokoro_language, validate_voice_name
 from resource_policy import get_resource_profile
 
 
@@ -380,7 +381,7 @@ def read_document(args: argparse.Namespace) -> Path:
     try:
         plan = build_narration_plan(
             document,
-            language="en_US" if getattr(args, "engine", "piper") == "kokoro" else _voice_language(args.voice),
+            language=_narration_language(args),
             expand_dates=getattr(args, "expand_dates", False),
             expand_citations=getattr(args, "expand_citations", False),
             voice=args.voice,
@@ -418,6 +419,16 @@ def _piper_python_api_available(piper: str) -> bool:
         return importlib.util.find_spec("piper") is not None
     except ModuleNotFoundError:
         return False
+
+
+def _narration_language(args: argparse.Namespace) -> str:
+    """Language for narration rules: from the Kokoro voice prefix or the Piper voice ID."""
+    if getattr(args, "engine", "piper") == "kokoro":
+        try:
+            return kokoro_language(args.voice)[1]
+        except TtsError as exc:
+            raise SonaraError(str(exc)) from exc
+    return _voice_language(args.voice)
 
 
 def _voice_language(voice: str) -> str:
@@ -749,6 +760,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    start_parent_watch()
     try:
         if args.preview:
             if not args.document.is_file():

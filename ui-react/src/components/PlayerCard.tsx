@@ -6,7 +6,7 @@ interface Props {
   session: FrontendSession;
   state: PlayerState;
   voiceLabel?: string;
-  audioRef: React.RefObject<HTMLAudioElement | null>;
+  audioRef: React.Ref<HTMLAudioElement>;
   chunkStarts: number[];
   onPlay: () => void;
   onPause: () => void;

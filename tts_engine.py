@@ -616,10 +616,43 @@ class PiperEngine:
         return worker
 
 
+# Kokoro voice IDs start with a language letter: af_sarah is American English.
+# Value: (espeak-ng language for kokoro-onnx's phonemizer, Sonara narration
+# language). Japanese ("j") is left out: kokoro-onnx phonemizes it with
+# espeak-ng, which reads kanji as "Chinese letter"; Kokoro's Japanese needs
+# the misaki G2P, which Sonara does not ship. Mandarin works but is marked
+# experimental in the desktop voice list.
+KOKORO_LANGUAGES: dict[str, tuple[str, str]] = {
+    "a": ("en-us", "en_US"),
+    "b": ("en-gb", "en_GB"),
+    "e": ("es", "es_ES"),
+    "f": ("fr-fr", "fr_FR"),
+    "h": ("hi", "hi_IN"),
+    "i": ("it", "it_IT"),
+    "p": ("pt-br", "pt_BR"),
+    "z": ("cmn", "zh_CN"),
+}
+_KOKORO_VOICE = re.compile(r"([a-z])[fm]_[a-z]+")
+
+
+def kokoro_language(voice: str) -> tuple[str, str]:
+    """(phonemizer language, narration language) for a Kokoro voice ID."""
+    match = _KOKORO_VOICE.fullmatch(voice)
+    if not match:
+        raise TtsError(f"Invalid Kokoro voice {voice!r}.")
+    if match.group(1) == "j":
+        raise TtsError("Japanese Kokoro voices need the misaki G2P, which Sonara does not include.")
+    try:
+        return KOKORO_LANGUAGES[match.group(1)]
+    except KeyError:
+        raise TtsError(f"Kokoro voice {voice!r} has no supported language.") from None
+
+
 class KokoroEngine:
     """Optional local Kokoro ONNX adapter. Requires kokoro-onnx and local model files."""
 
     def __init__(self, model_dir: Path, voice: str = "af_sarah") -> None:
+        self.lang, self.narration_language = kokoro_language(voice)
         self.model_dir = model_dir.expanduser().resolve()
         self.model_path = self.model_dir / "kokoro-v1.0.onnx"
         self.voices_path = self.model_dir / "voices-v1.0.bin"
@@ -640,7 +673,7 @@ class KokoroEngine:
         self.voice = voice
         self.capabilities = EngineCapabilities(
             engine="Kokoro", engine_version=self._runtime_version, voice=voice,
-            language="en-us", model_available=True, audio_format=AudioFormat(24000, 1, 2),
+            language=self.lang, model_available=True, audio_format=AudioFormat(24000, 1, 2),
             minimum_speed=0.5, maximum_speed=2.0,
             supported_controls=("speed", "voice"),
             unsupported_controls=("Piper variation", "speaker diarization", "GPU selection"),
@@ -673,7 +706,7 @@ class KokoroEngine:
             raise TtsError("Kokoro speed must be between 0.5 and 2.0.")
         try:
             import numpy as np
-            samples, sample_rate = self._kokoro.create(text, voice=self.voice, speed=speed, lang="en-us")
+            samples, sample_rate = self._kokoro.create(text, voice=self.voice, speed=speed, lang=self.lang)
             audio = np.asarray(samples, dtype=np.float32)
             if audio.ndim > 1:
                 audio = audio.reshape(-1)

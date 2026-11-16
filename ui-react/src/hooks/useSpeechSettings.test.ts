@@ -2,11 +2,11 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { VoiceInfo } from "../lib/tauri";
 
-const voices = vi.hoisted(() => ({ list: [] as VoiceInfo[] }));
+const voices = vi.hoisted(() => ({ list: [] as VoiceInfo[], kokoro: [] as VoiceInfo[] }));
 
 vi.mock("../lib/tauri", async () => {
   const actual = await vi.importActual<typeof import("../lib/tauri")>("../lib/tauri");
-  return { ...actual, listVoices: vi.fn(async () => voices.list) };
+  return { ...actual, listVoices: vi.fn(async () => voices.list), listKokoroVoices: vi.fn(async () => voices.kokoro) };
 });
 
 const { useSpeechSettings } = await import("./useSpeechSettings");
@@ -19,6 +19,27 @@ describe("useSpeechSettings", () => {
   beforeEach(() => {
     localStorage.clear();
     voices.list = [];
+    voices.kokoro = [];
+  });
+
+  it("keeps a saved Kokoro voice in another language when the Piper list loads", async () => {
+    localStorage.setItem("sonara_speech_engine", "kokoro");
+    localStorage.setItem("sonara_selected_voice", "ff_siwis");
+    voices.list = [voice("en_US-ryan-medium", true)];
+    voices.kokoro = [{ id: "ff_siwis", name: "Siwis · French · female", quality: "Kokoro", language: "French", isDefault: false }];
+    const { result } = renderHook(() => useSpeechSettings(true));
+    await waitFor(() => expect(result.current.kokoroVoices).toHaveLength(1));
+    expect(result.current.selectedVoice).toBe("ff_siwis");
+    expect(result.current.selectedVoiceName).toBe("Siwis · French · female");
+  });
+
+  it("replaces a saved Kokoro voice the backend no longer offers", async () => {
+    localStorage.setItem("sonara_speech_engine", "kokoro");
+    localStorage.setItem("sonara_selected_voice", "jf_alpha");
+    voices.kokoro = [{ id: "af_sarah", name: "Sarah", quality: "Kokoro", language: "US English", isDefault: true }];
+    const { result } = renderHook(() => useSpeechSettings(true));
+    await waitFor(() => expect(result.current.kokoroVoices).toHaveLength(1));
+    expect(result.current.selectedVoice).toBe("af_sarah");
   });
 
   it("restores stored settings and ignores a voice from the other engine", () => {

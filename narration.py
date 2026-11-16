@@ -13,7 +13,7 @@ from document import MARKDOWN_EXTRACTOR, Document, DocumentBlock, ExtractionNote
 
 
 NARRATION_SCHEMA_VERSION = 1
-NARRATION_RULESET_VERSION = "rules-6"
+NARRATION_RULESET_VERSION = "rules-7"
 
 # Keep a natural paragraph together for narration, but bound synthesis latency
 # and memory for unusually large blocks (common in PDF extraction).
@@ -305,6 +305,11 @@ def build_narration_plan(
     )
 
 
+# Latin, CJK full-width and Devanagari (danda, double danda) sentence ends.
+_FULL_WIDTH_ENDS = frozenset("。！？")
+_SENTENCE_ENDS = frozenset(".?!…") | _FULL_WIDTH_ENDS | frozenset("।॥")
+
+
 def _source_spans(block: DocumentBlock) -> list[tuple[int, int]]:
     text = block.text
     if block.kind == "heading":
@@ -321,7 +326,7 @@ def _source_spans(block: DocumentBlock) -> list[tuple[int, int]]:
     boundaries: list[int] = []
     index = 0
     while index < len(text):
-        if text[index] not in ".?!…":
+        if text[index] not in _SENTENCE_ENDS:
             index += 1
             continue
         if text[index] == ".":
@@ -336,11 +341,13 @@ def _source_spans(block: DocumentBlock) -> list[tuple[int, int]]:
                 continue
 
         end = index + 1
-        while end < len(text) and text[end] in ".?!…":
+        while end < len(text) and text[end] in _SENTENCE_ENDS:
             end += 1
         while end < len(text) and text[end] in _CLOSERS:
             end += 1
-        if end == len(text) or text[end].isspace():
+        # Chinese and Japanese put no space after a full stop, so a full-width
+        # terminator ends a sentence on its own.
+        if end == len(text) or text[end].isspace() or text[end - 1] in _FULL_WIDTH_ENDS or text[index] in _FULL_WIDTH_ENDS:
             next_text = end
             while next_text < len(text) and text[next_text].isspace():
                 next_text += 1
@@ -376,7 +383,7 @@ def _coalesce_passage_spans(text: str, sentence_spans: list[tuple[int, int]]) ->
     bounded: list[tuple[int, int]] = []
     for start, end in sentence_spans:
         cursor = start
-        while end - cursor > _MAX_PASSAGE_CHARS or len(text[cursor:end].split()) > _MAX_PASSAGE_WORDS:
+        while end - cursor > _MAX_PASSAGE_CHARS or _spoken_word_count(text[cursor:end]) > _MAX_PASSAGE_WORDS:
             # Prefer a sentence boundary; for one exceptionally long sentence,
             # cut near the limit at whitespace without dropping any source text.
             limit = min(cursor + _MAX_PASSAGE_CHARS, end)
@@ -397,7 +404,7 @@ def _coalesce_passage_spans(text: str, sentence_spans: list[tuple[int, int]]) ->
     for start, end in bounded[1:]:
         combined = text[current_start:end]
         if (len(combined) <= _MAX_PASSAGE_CHARS
-                and len(combined.split()) <= _MAX_PASSAGE_WORDS):
+                and _spoken_word_count(combined) <= _MAX_PASSAGE_WORDS):
             current_end = end
         else:
             passages.append((current_start, current_end))
@@ -407,6 +414,14 @@ def _coalesce_passage_spans(text: str, sentence_spans: list[tuple[int, int]]) ->
 
 
 _WORD = re.compile(r"\S+")
+# Han ideographs and kana: each is about one spoken syllable, so each counts
+# as a word when bounding a passage. Without this a Chinese paragraph of
+# 1,000 characters (several minutes of speech) would be a single passage.
+_CJK_CHARACTER = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def _spoken_word_count(text: str) -> int:
+    return len(_CJK_CHARACTER.sub(" ", text).split()) + len(_CJK_CHARACTER.findall(text))
 
 
 def _word_limit_end(text: str, start: int, end: int, max_words: int) -> int:

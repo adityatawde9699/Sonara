@@ -4,6 +4,7 @@ import {
   type ResourceProfile,
   type SpeechEngine,
   type VoiceInfo,
+  listKokoroVoices,
   listVoices,
 } from "../lib/tauri";
 
@@ -37,8 +38,9 @@ function writeSetting(key: string, value: string) {
   }
 }
 
-function isKokoroVoice(voice: string | null | undefined): boolean {
-  return Boolean(voice?.startsWith("af_") || voice?.startsWith("am_"));
+/** Kokoro IDs are a language letter, f/m, then a name: af_sarah, ff_siwis. */
+export function isKokoroVoice(voice: string | null | undefined): boolean {
+  return /^[a-z][fm]_[a-z]+$/.test(voice ?? "");
 }
 
 function initialVoice(): string {
@@ -52,6 +54,7 @@ function initialVoice(): string {
 /** Voice, engine and narration options, persisted per device. */
 export function useSpeechSettings(tauriAvailable: boolean) {
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
+  const [kokoroVoices, setKokoroVoices] = useState<VoiceInfo[]>([]);
   const [speechEngine, setSpeechEngineState] = useState<SpeechEngine>(() =>
     readSetting(KEYS.engine) === "kokoro" ? "kokoro" : "piper",
   );
@@ -108,6 +111,8 @@ export function useSpeechSettings(tauriAvailable: boolean) {
         if (cancelled) return;
         setVoices(available);
         const saved = readSetting(KEYS.voice);
+        // A saved Kokoro voice is checked against the Kokoro list instead.
+        if (isKokoroVoice(saved) && readSetting(KEYS.engine) === "kokoro") return;
         if (!saved || !available.some((voice) => voice.id === saved)) {
           // Fall back without persisting, so a voice installed later is still
           // picked up from the stored choice.
@@ -119,6 +124,18 @@ export function useSpeechSettings(tauriAvailable: boolean) {
       .catch(() => {
         /* voices unavailable */
       });
+    void listKokoroVoices()
+      .then((available) => {
+        if (cancelled || !Array.isArray(available)) return;
+        setKokoroVoices(available);
+        const saved = readSetting(KEYS.voice);
+        if (readSetting(KEYS.engine) === "kokoro" && !available.some((voice) => voice.id === saved)) {
+          setSelectedVoiceState(DEFAULT_KOKORO_VOICE);
+        }
+      })
+      .catch(() => {
+        /* Kokoro list unavailable */
+      });
     return () => {
       cancelled = true;
     };
@@ -126,6 +143,7 @@ export function useSpeechSettings(tauriAvailable: boolean) {
 
   return {
     voices,
+    kokoroVoices,
     speechEngine,
     setSpeechEngine,
     resourceProfile,
@@ -138,6 +156,6 @@ export function useSpeechSettings(tauriAvailable: boolean) {
     setExpandDates,
     expandCitations,
     setExpandCitations,
-    selectedVoiceName: voices.find((voice) => voice.id === selectedVoice)?.name ?? selectedVoice,
+    selectedVoiceName: [...voices, ...kokoroVoices].find((voice) => voice.id === selectedVoice)?.name ?? selectedVoice,
   };
 }

@@ -7,17 +7,18 @@ runtime is imported lazily only when an embedded GGUF request needs it.
 from __future__ import annotations
 
 import json
-import hashlib
 import ipaddress
-import math
 import os
+import sys
 import time
 import urllib.parse
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
+
+from retrieval import Bm25Index, VectorIndex, chunk_document, format_passages, fuse_rankings, select_passages
 
 
 DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434/v1"
@@ -451,10 +452,10 @@ def ask_document(
         "Instructions:\n"
         "- Answer directly and concisely in 2 to 4 bullet points or short paragraphs.\n"
         "- Do NOT output internal thinking monologue, chain-of-thought, or <think> tags.\n"
-        "- Ground your answer strictly in the provided document context."
+        "- Ground your answer strictly in the provided document context.\n"
+        "- Cite the excerpts you rely on by their labels, such as [Passage 2]. Do not invent citations.\n"
+        "- If the excerpts do not contain the answer, say so instead of guessing."
     )
-    if config.provider == "llama_cpp":
-        system_prompt += " Cite supporting retrieved excerpts with their labels, such as [Passage 2]. Do not invent citations."
 
     messages = [{"role": "system", "content": system_prompt}]
     for msg in history:
@@ -465,10 +466,9 @@ def ask_document(
 
     user_content = question
     if context_text.strip():
-        if config.provider == "llama_cpp":
-            context_text = retrieve_relevant_context(config, question, context_text)
-        # Truncate context to ~6,000 characters to prevent high prefill latency
-        safe_context = context_text.strip()[:6000]
+        # Retrieval picks the passages that fit the context budget, for every
+        # provider; a short document fits whole.
+        safe_context = retrieve_relevant_context(config, question, context_text)
         user_content = (
             f"--- DOCUMENT CONTEXT ---\n"
             f"{safe_context}\n"
@@ -546,146 +546,211 @@ def _embedding(config: LlmConfig, text: str) -> list[float]:
         ) from exc
 
 
-def retrieve_relevant_context(config: LlmConfig, question: str, document_text: str, *, top_k: int = 6) -> str:
-    """Retrieve paragraph-aligned passages using a local llama.cpp embedding endpoint."""
-    if not _is_loopback_endpoint(config.endpoint):
-        raise RuntimeError("llama.cpp provider is restricted to a local endpoint.")
-    chunks: list[str] = []
-    current = ""
-    for paragraph in (part.strip() for part in document_text.split("\n\n")):
-        if not paragraph:
-            continue
-        words = paragraph.split()
-        pieces: list[str] = []
-        piece = ""
-        for word in words:
-            if piece and len(piece) + len(word) + 1 > 1200:
-                pieces.append(piece)
-                piece = ""
-            piece = f"{piece} {word}".strip()
-        if piece:
-            pieces.append(piece)
-        for part in pieces:
-            if current and len(current) + len(part) + 2 > 1200:
-                chunks.append(current)
-                current = ""
-            current = f"{current}\n\n{part}".strip()
-    if current:
-        chunks.append(current)
-    if not chunks:
-        return document_text[:12000]
-    embedding_model = config.embedding_model or config.model
-    embedding_endpoint = config.embedding_endpoint or config.endpoint
-    use_nomic_prefixes = "nomic-embed-text" in embedding_model.lower()
-    input_schema = "nomic-task-prefixes-v1" if use_nomic_prefixes else "plain-text-v1"
-    digest = hashlib.sha256((embedding_endpoint + "\0" + embedding_model + "\0" + input_schema + "\0" + document_text).encode("utf-8")).hexdigest()
-    root = Path(os.environ.get("SONARA_CACHE_DIR", Path.home() / ".cache" / "sonara")) / "embeddings"
-    cache = root / f"{digest}.json"
-    vectors: list[list[float]] = []
+# Characters of document context per request. Larger prompts raise prefill
+# latency sharply on CPU; small embedded contexts get less (see below).
+CONTEXT_BUDGET_CHARS = 6000
+
+
+def context_budget_chars(config: LlmConfig) -> int:
+    """Context characters that fit the request, about 3 characters per token.
+
+    An embedded model's window holds the prompt and the answer, so its budget
+    shrinks with ``context_size``. Remote providers have large windows; the
+    fixed budget there limits latency and how much text is sent.
+    """
+    if config.provider != "embedded_llama_cpp":
+        return CONTEXT_BUDGET_CHARS
+    answer_tokens = min(max(config.max_tokens, 256), config.context_size // 2)
+    available = config.context_size - answer_tokens - 400  # instructions and history
+    return max(1000, min(CONTEXT_BUDGET_CHARS, available * 3))
+
+
+def _embedding_cache_dir() -> Path:
+    return Path(os.environ.get("SONARA_CACHE_DIR", Path.home() / ".cache" / "sonara")) / "embeddings"
+
+
+def _embedding_cache_budget() -> int:
     try:
-        saved = json.loads(cache.read_text(encoding="utf-8"))
-        if saved.get("chunks") == chunks:
-            vectors = saved.get("vectors", [])
-    except (OSError, ValueError, AttributeError):
-        pass
-    if len(vectors) != len(chunks):
-        # Keep requests bounded and predictable: one passage per embedding call.
-        vectors = [
-            _embedding(config, f"search_document: {chunk}" if use_nomic_prefixes else chunk)
-            for chunk in chunks
-        ]
-        root.mkdir(parents=True, exist_ok=True)
-        temp = cache.with_name(f".{cache.name}.{os.getpid()}.tmp")
-        try:
-            temp.write_text(json.dumps({"chunks": chunks, "vectors": vectors}), encoding="utf-8")
-            os.replace(temp, cache)
-        finally:
-            temp.unlink(missing_ok=True)
-        try:
-            budget = int(os.environ.get("SONARA_EMBEDDING_CACHE_MAX_BYTES", 256 * 1024 * 1024))
-        except ValueError:
-            budget = 256 * 1024 * 1024
-        _prune_embedding_cache(root, max(1, budget), protected=cache)
-    query_text = f"search_query: {question}" if "nomic-embed-text" in embedding_model.lower() else question
-    query = _embedding(config, query_text)
-    def similarity(vector: list[float]) -> float:
-        dot = sum(a * b for a, b in zip(query, vector))
-        norm = math.sqrt(sum(a * a for a in query) * sum(b * b for b in vector))
-        return dot / norm if norm else 0.0
-    ranked = sorted(enumerate(vectors), key=lambda item: similarity(item[1]), reverse=True)[:top_k]
-    return "\n\n".join(f"[Passage {index + 1}]\n{chunks[index]}" for index, _ in ranked)
+        return max(1, int(os.environ.get("SONARA_EMBEDDING_CACHE_MAX_BYTES", 256 * 1024 * 1024)))
+    except ValueError:
+        return 256 * 1024 * 1024
 
 
-def _prune_embedding_cache(root: Path, max_bytes: int, *, protected: Path | None = None) -> int:
-    """Prune only content-addressed cache entries, preserving the current write."""
-    if not root.is_dir():
-        return 0
-    entries: list[tuple[float, Path, int]] = []
-    for path in root.glob("*.json"):
-        if len(path.stem) != 64 or any(char not in "0123456789abcdef" for char in path.stem):
-            continue
+def rank_passages(
+    config: LlmConfig,
+    question: str,
+    passages: list[str],
+    *,
+    embed: Callable[[str], list[float]] | None = None,
+) -> list[int]:
+    """All passage indexes, best first.
+
+    BM25 runs for every provider. With a local embedding server (the HTTP
+    llama.cpp provider), the vector ranking is fused with it; if embeddings
+    fail, BM25 alone is used and the reason goes to stderr. Passages that
+    match nothing follow in document order, so a vague question ("what is
+    this about?") still gets the opening passages.
+    """
+    rankings = [Bm25Index(passages).rank(question)]
+    if config.provider == "llama_cpp":
+        embed = embed or (lambda text: _embedding(config, text))
+        model = config.embedding_model or config.model
+        nomic = "nomic-embed-text" in model.lower()
         try:
-            stat = path.stat()
-        except OSError:
-            continue
-        entries.append((stat.st_mtime, path, stat.st_size))
-    total = sum(size for _, _, size in entries)
-    removed = 0
-    for _, path, size in sorted(entries):
-        if total <= max_bytes:
-            break
-        if protected is not None and path == protected:
-            continue
-        try:
-            path.unlink()
-            total -= size
-            removed += 1
-        except OSError:
-            continue
-    return removed
+            index = VectorIndex.build(
+                passages, embed,
+                cache_dir=_embedding_cache_dir(),
+                cache_key="\0".join((config.embedding_endpoint or config.endpoint, model, "nomic-task-prefixes-v1" if nomic else "plain-text-v1")),
+                document_prefix="search_document: " if nomic else "",
+                max_cache_bytes=_embedding_cache_budget(),
+            )
+            rankings.append(index.rank(embed(f"search_query: {question}" if nomic else question)))
+        except RuntimeError as exc:
+            print(f"Sonara retrieval: using keyword ranking only. {exc}", file=sys.stderr)
+    ranked = fuse_rankings(rankings) if len(rankings) > 1 else rankings[0]
+    seen = set(ranked)
+    return ranked + [index for index in range(len(passages)) if index not in seen]
+
+
+def retrieve_relevant_context(
+    config: LlmConfig,
+    question: str,
+    document_text: str,
+    *,
+    top_k: int = 6,
+    budget_chars: int | None = None,
+    embed: Callable[[str], list[float]] | None = None,
+) -> str:
+    """Labelled passages for the prompt: the whole document if it fits, else the best matches."""
+    budget = budget_chars or context_budget_chars(config)
+    passages = chunk_document(document_text)
+    if not passages:
+        return ""
+    if sum(len(passage) + 20 for passage in passages) <= budget:
+        return format_passages(passages, range(len(passages)))
+    ranking = rank_passages(config, question, passages, embed=embed)
+    return format_passages(passages, select_passages(passages, ranking, budget, top_k=top_k))
+
+
+# Long documents are summarised map-reduce: each window of the document is
+# summarised, then the partial summaries are combined. Both limits keep a
+# summary inside the 300-second desktop RPC timeout on a local CPU model.
+SUMMARY_MAX_SECTIONS = 8
+SUMMARY_TIME_BUDGET_SECONDS = 240.0
+SECTION_SUMMARY_TOKENS = 300
+
+_SUMMARY_SYSTEM = (
+    "You are Sonara's executive document summarizer. "
+    "Be direct, accurate, and concise. Never output internal chain-of-thought or <think> tags."
+)
+
+
+def _final_summary_prompt(mode: str, text: str, *, from_sections: bool) -> str:
+    source = "the following section summaries of one document, in order" if from_sections else "the following document"
+    if mode == "takeaways":
+        task = (
+            f"Extract exactly 3 to 5 key takeaways from {source}. "
+            "Format as concise Markdown bullets with bold titles. "
+            "Do NOT output <think> tags or preface — start directly with the bullet points:"
+        )
+    elif mode == "explain_passage":
+        task = (
+            f"Explain the central concepts of {source} in 2 concise paragraphs. "
+            "Do NOT output <think> tags or preface — provide only the clear explanation:"
+        )
+    else:
+        task = (
+            f"Provide a concise executive summary of {source} in under 150 words. "
+            "Include: 1) Brief Overview (2 sentences), 2) Top 3 Takeaways (bullet points). "
+            "Do NOT output <think> tags or preface — start directly with the summary:"
+        )
+    return f"{task}\n\n{text}"
+
+
+def _section_windows(text: str, budget: int) -> list[str]:
+    """Consecutive, paragraph-aligned windows of at most ``budget`` characters."""
+    windows: list[str] = []
+    current = ""
+    for passage in chunk_document(text):
+        if current and len(current) + len(passage) + 2 > budget:
+            windows.append(current)
+            current = ""
+        current = f"{current}\n\n{passage}".strip()
+    if current:
+        windows.append(current)
+    return windows
+
+
+def _spread(items: list[str], count: int) -> list[int]:
+    """``count`` indexes spread evenly over ``items``, first and last included."""
+    if len(items) <= count:
+        return list(range(len(items)))
+    if count == 1:
+        return [0]
+    return sorted({round(i * (len(items) - 1) / (count - 1)) for i in range(count)})
 
 
 def summarize_document(
     config: LlmConfig,
     doc_text: str,
     mode: str = "summary",
+    *,
+    clock: Callable[[], float] = time.monotonic,
 ) -> str:
-    """Generate an executive summary, key takeaways, or passage explanation."""
-    safe_text = doc_text.strip()[:6000]
+    """Executive summary, key takeaways, or an explanation of the document.
+
+    A document that fits the context budget is summarised in one request.
+    A longer one is split into windows; up to ``SUMMARY_MAX_SECTIONS``
+    windows, spread across the document, are summarised and then combined.
+    When windows had to be skipped, or the time budget ran out, the result
+    says how much of the document it covers.
+    """
+    text = doc_text.strip()
+    budget = context_budget_chars(config)
     token_budget = max(config.max_tokens, 1024)
-    if mode == "takeaways":
-        prompt = (
-            "Extract exactly 3 to 5 key takeaways from the following document. "
-            "Format as concise Markdown bullets with bold titles. "
-            "Do NOT output <think> tags or preface — start directly with the bullet points:\n\n"
-            f"{safe_text}"
-        )
-    elif mode == "explain_passage":
-        prompt = (
-            "Explain the central concepts of this document in 2 concise paragraphs. "
-            "Do NOT output <think> tags or preface — provide only the clear explanation:\n\n"
-            f"{safe_text}"
-        )
-    else:
-        prompt = (
-            "Provide a concise executive summary of this document in under 150 words. "
-            "Include: 1) Brief Overview (2 sentences), 2) Top 3 Takeaways (bullet points). "
-            "Do NOT output <think> tags or preface — start directly with the summary:\n\n"
-            f"{safe_text}"
-        )
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are Sonara's executive document summarizer. "
-                "Be direct, accurate, and concise. Never output internal chain-of-thought or <think> tags."
-            ),
-        },
-        {"role": "user", "content": prompt},
-    ]
-    return chat_completion(config, messages, max_tokens=token_budget)
+    def complete(prompt: str, max_tokens: int, timeout: float) -> str:
+        messages = [{"role": "system", "content": _SUMMARY_SYSTEM}, {"role": "user", "content": prompt}]
+        return chat_completion(config, messages, max_tokens=max_tokens, timeout=timeout)
 
+    if len(text) <= budget:
+        return complete(_final_summary_prompt(mode, text, from_sections=False), token_budget, 60.0)
+
+    windows = _section_windows(text, budget)
+    chosen = _spread(windows, SUMMARY_MAX_SECTIONS)
+    deadline = clock() + SUMMARY_TIME_BUDGET_SECONDS
+    # Keep time for the combining request.
+    reserve = SUMMARY_TIME_BUDGET_SECONDS / (len(chosen) + 1)
+    partials: list[str] = []
+    covered = 0
+    for position, index in enumerate(chosen, start=1):
+        remaining = deadline - clock() - reserve
+        if partials and remaining < 5:
+            break
+        prompt = (
+            f"This is section {position} of {len(chosen)} of a longer document. "
+            "Summarise its main points in at most 120 words as plain sentences. "
+            "Keep names, numbers and conclusions. No preface:\n\n"
+            f"{windows[index]}"
+        )
+        partials.append(f"Section {position}: " + complete(prompt, SECTION_SUMMARY_TOKENS, max(5.0, min(60.0, remaining))))
+        covered += len(windows[index])
+
+    combined = "\n\n".join(partials)
+    while len(combined) > budget and len(partials) > 1:
+        # Rare: very verbose partials. Merge neighbours until they fit.
+        partials = ["\n\n".join(partials[i:i + 2]) for i in range(0, len(partials), 2)]
+        partials = [p[: budget // len(partials)] for p in partials]
+        combined = "\n\n".join(partials)
+    remaining = max(5.0, min(60.0, deadline - clock()))
+    summary = complete(_final_summary_prompt(mode, combined[:budget], from_sections=True), token_budget, remaining)
+    share = covered / max(1, sum(len(window) for window in windows))
+    if share < 0.995:
+        summary += (
+            f"\n\n_Summary based on {len(partials)} of {len(windows)} sections "
+            f"(about {share:.0%} of the text), spread across the document._"
+        )
+    return summary
 
 
 # Rust caps RPC responses at 16 MiB; refuse larger text files before reading them.
@@ -790,6 +855,10 @@ def main() -> int:
 
     if len(sys.argv) > 1 and sys.argv[1] == "worker":
         # One owned child per Tauri application. Requests and responses are bounded JSON lines.
+        # Stdin EOF also ends the loop, but only once an in-flight request returns.
+        from parent_watch import start_parent_watch
+
+        start_parent_watch()
         try:
             for line in sys.stdin:
                 payload: Any = None
