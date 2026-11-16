@@ -4,6 +4,12 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 ## Unreleased
 
+Nothing yet.
+
+## v1.0.9 - 2026-11-16
+
+This release ships the v1.0.8 AppImage fixes (no libwayland crash on newer GPU drivers, bundled GStreamer plugins for audio).
+
 ### Fixed
 
 - The Linux build installs `desktop-file-utils`, which `appimagetool` needs to repack the AppImage.
