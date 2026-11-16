@@ -4,9 +4,13 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 ## Unreleased
 
-Nothing yet.
+### Fixed
+
+- The Linux build installs `desktop-file-utils`, which `appimagetool` needs to repack the AppImage.
 
 ## v1.0.8 - 2026-11-16
+
+The v1.0.8 release has no installers; repacking the AppImage failed on the build runner, which lacked `desktop-file-validate`. Fixed in v1.0.9.
 
 ### Fixed
 

@@ -7,6 +7,7 @@
 # window opens. Every desktop that can show the window already has libwayland,
 # so the AppImage uses the host's copy instead.
 #
+# Needs desktop-file-validate (desktop-file-utils), which appimagetool runs.
 # Usage: strip_appimage_wayland.sh <path/to/App.AppImage>
 set -euo pipefail
 
