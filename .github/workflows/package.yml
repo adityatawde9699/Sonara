@@ -129,7 +129,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes build-essential curl file libayatana-appindicator3-dev librsvg2-dev libgtk-3-dev libwebkit2gtk-4.1-dev libssl-dev libxdo-dev patchelf libfuse2 poppler-utils poppler-data tesseract-ocr tesseract-ocr-eng
+          sudo apt-get install --yes build-essential curl file libayatana-appindicator3-dev librsvg2-dev libgtk-3-dev libwebkit2gtk-4.1-dev libssl-dev libxdo-dev patchelf libfuse2 gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pulseaudio poppler-utils poppler-data tesseract-ocr tesseract-ocr-eng
       - name: Install macOS document tools
         if: runner.os == 'macOS'
         run: brew install poppler tesseract dylibbundler

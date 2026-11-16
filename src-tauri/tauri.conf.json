@@ -37,6 +37,11 @@
       "icons/icon.ico"
     ],
     "category": "Productivity",
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    },
     "shortDescription": "Local, private document-to-speech reader",
     "longDescription": "Sonara turns PDF, DOCX, EPUB, and TXT documents into listenable, navigable audio sessions with high-speed local ONNX inference, offline-first privacy, and persistent progress restoration.",
     "copyright": "Copyright 2026 Sonara Contributors"

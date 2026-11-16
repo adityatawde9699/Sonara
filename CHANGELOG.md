@@ -7,6 +7,7 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 ### Fixed
 
 - The Linux AppImage crashed at startup on newer systems (seen on Ubuntu 26.04 with an NVIDIA driver under Wayland). It bundled the build machine's `libwayland-client`, which the system GPU driver's EGL library called into. The release build now removes the bundled Wayland libraries so the system's are used, and the install check fails if they come back. The `.deb` was not affected.
+- Audio did not play in the Linux AppImage on newer systems ("GStreamer element appsink not found"). The AppImage bundled GStreamer's core libraries but none of its plugins, and the older core cannot load the host's newer plugins. It now bundles the plugins it needs, and the install check verifies they are there.
 
 ## v1.0.7 - 2026-11-16
 

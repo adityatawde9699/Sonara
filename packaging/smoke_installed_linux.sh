@@ -38,6 +38,15 @@ appimage_app="$(find squashfs-root -type f -name sonara-desktop -print -quit)"
 appimage_tools="$(find squashfs-root -type d -path '*/sonara/tools' -print -quit)"
 require "the AppImage executable" "$appimage_app"
 require "the AppImage document tools" "$appimage_tools"
+# WebKit plays passage audio through GStreamer. The AppImage bundles its own
+# GStreamer core, which cannot load a newer host's plugins, so it must bundle
+# the plugins too (bundleMediaFramework in tauri.conf.json).
+for plugin in libgstapp.so libgstautodetect.so libgstwavparse.so libgstpulseaudio.so; do
+  if ! find squashfs-root -path "*/gstreamer-1.0/$plugin" -print -quit | grep -q .; then
+    echo "The AppImage is missing the GStreamer plugin $plugin, so audio cannot play." >&2
+    exit 1
+  fi
+done
 # The host's libwayland must be used (packaging/strip_appimage_wayland.sh).
 if compgen -G 'squashfs-root/usr/lib/libwayland-*' >/dev/null; then
   echo "The AppImage still bundles libwayland, which crashes on newer GPU drivers." >&2
