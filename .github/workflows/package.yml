@@ -204,6 +204,14 @@ jobs:
             unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
           fi
           tauri build --bundles ${{ matrix.bundle }}
+      - name: Remove the bundled Wayland libraries from the AppImage
+        # They crash the app on newer hosts whose GPU driver expects the
+        # system libwayland (seen with NVIDIA on Ubuntu 26.04).
+        if: runner.os == 'Linux'
+        run: |
+          for appimage in src-tauri/target/release/bundle/appimage/*.AppImage; do
+            bash packaging/strip_appimage_wayland.sh "$appimage"
+          done
       - name: Remove temporary macOS signing identity
         if: runner.os == 'macOS' && always()
         run: bash packaging/cleanup_macos_signing.sh

@@ -38,6 +38,11 @@ appimage_app="$(find squashfs-root -type f -name sonara-desktop -print -quit)"
 appimage_tools="$(find squashfs-root -type d -path '*/sonara/tools' -print -quit)"
 require "the AppImage executable" "$appimage_app"
 require "the AppImage document tools" "$appimage_tools"
+# The host's libwayland must be used (packaging/strip_appimage_wayland.sh).
+if compgen -G 'squashfs-root/usr/lib/libwayland-*' >/dev/null; then
+  echo "The AppImage still bundles libwayland, which crashes on newer GPU drivers." >&2
+  exit 1
+fi
 # Start through AppRun, as the AppImage does: Tauri's AppImage rewrites
 # WebKit's helper paths to be relative to the directory AppRun enters.
 test -x squashfs-root/AppRun || { echo "The AppImage has no AppRun launcher." >&2; exit 1; }
