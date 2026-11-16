@@ -141,6 +141,28 @@ jobs:
       - name: Run the desktop smoke test
         run: xvfb-run --auto-servernum node e2e/desktop-smoke.mjs
 
+  macos-tools:
+    name: macOS document tools (${{ matrix.os }})
+    # Runs the release build's Poppler/Tesseract staging and smoke check, so a
+    # broken dylib bundle fails here instead of after a release is tagged.
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install macOS document tools
+        run: brew install poppler tesseract dylibbundler
+      - name: Stage Poppler and Tesseract
+        run: bash packaging/stage_macos_tools.sh packaging/staging/sonara/tools
+      - name: Smoke-check staged PDF and OCR tools
+        run: python packaging/check_native_tools.py --tools packaging/staging/sonara/tools
+
   audit:
     name: Dependency vulnerability audit
     runs-on: ubuntu-latest

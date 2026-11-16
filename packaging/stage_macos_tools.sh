@@ -27,12 +27,25 @@ done
 
 # Bundle each executable's transitive dylib closure and rewrite install names
 # to resolve beside the staged tools. System-provided /usr/lib dependencies remain.
+#
+# Homebrew's poppler links its own libraries through @rpath, which
+# dylibbundler cannot resolve on its own. The -s directories let it find them.
+# dylibbundler asks on stdin for any library it still cannot find, and with no
+# answer it repeats the prompt until the job times out, so answer "quit": an
+# unresolved library then fails this step in seconds.
+search_paths=()
+for prefix in "$(brew --prefix)" "$poppler_prefix" "$tesseract_prefix" "$(brew --prefix leptonica 2>/dev/null || true)"; do
+  if [[ -n "$prefix" && -d "$prefix/lib" ]]; then
+    search_paths+=(-s "$prefix/lib")
+  fi
+done
 dylibbundler -od -b \
   -x "$output/bin/pdftotext" \
   -x "$output/bin/pdftoppm" \
   -x "$output/bin/tesseract" \
   -d "$output/lib" \
-  -p '@executable_path/../lib'
+  -p '@executable_path/../lib' \
+  ${search_paths[@]+"${search_paths[@]}"} <<<"quit"
 
 for tool in "$output/bin/pdftotext" "$output/bin/pdftoppm" "$output/bin/tesseract"; do
   otool -L "$tool" | while read -r dependency _; do
