@@ -103,7 +103,7 @@ The real end-to-end test is opt-in:
 SONARA_RUN_INTEGRATION=1 .venv/bin/python -m unittest discover -s tests -p 'test_integration_*.py' -v
 ```
 
-It generates a deterministic PDF corpus with the Python standard library and runs actual Poppler. The corpus covers single-column prose, two columns, heading/list/table/footnote layout, line-end hyphenation, a mixed searchable/image-only document, and duplicate passages. Each supported fixture has expected text/order/page count; tests compare structured Poppler output with the legacy `-layout` tokens, verify source boxes and stable IDs, and assert ambiguity/duplicate/scan warnings. Additional opt-in tests use actual `PiperVoice` through the persistent worker, validate chunk mappings and PCM with Python's `wave` module, cancel an active worker process, verify corrupt-model errors, and run the PDF-to-CLI path which writes `speech.wav`, per-passage WAV files, `index.html`, and `audio_chunks.json`. No test needs audio hardware or network access. All generated fixtures and output use temporary directories and are removed on exit.
+It generates a deterministic PDF corpus with the Python standard library and runs actual Poppler. The corpus covers single-column prose, two columns, heading/list/table/footnote layout, line-end hyphenation, a mixed searchable/image-only document, and duplicate passages. Each supported fixture has expected text/order/page count; tests compare structured Poppler output with the legacy `-layout` tokens, verify source boxes and stable IDs, and assert ambiguity/duplicate/scan warnings. Additional opt-in tests use actual `PiperVoice` through the persistent worker, validate chunk mappings and PCM with Python's `wave` module, cancel an active worker process, verify corrupt-model errors, and run the PDF-to-CLI path which writes `speech.wav`, per-passage WAV files and a complete `audio_chunks.json`, and no `index.html`. No test needs audio hardware or network access. All generated fixtures and output use temporary directories and are removed on exit.
 
 The Phase 0 baseline generator is `tests/fixtures/pdf_fixture.py`; its expected extracted text is:
 
@@ -126,28 +126,9 @@ Corpus definitions, expected content, and warning expectations are in `tests/fix
 - Local voice and configuration: `models/piper/en_US-john-medium.onnx` and `models/piper/en_US-john-medium.onnx.json`; model identity and hashes are in [the model record](../models/piper/README.md).
 - Recreate/check Python dependencies with `python3 -m venv .venv`, `.venv/bin/python -m pip install -r requirements.txt`, and `.venv/bin/python -m pip check`.
 
-## Browser acceptance checklist
+## Browser player (retired)
 
-Browser behavior is currently **unverified**. Cached Chromium binaries (revisions 1228, 1243, and 1247), their headless shells, and a Playwright Node package were found, but every binary failed to launch in this execution environment. Standard Chromium exited with `SIGTRAP` after Crashpad reported `setsockopt: Operation not permitted`; headless shells exited with `sandbox_host_linux ... Operation not permitted`. Firefox and Brave also refuse to start because Snap confinement reports elevated permissions. A system WebKitGTK 4.1 installation was tested as an alternative, but GTK could not connect to the available display and Xvfb could not establish its display. The Playwright wrapper could not resolve package metadata offline. Do not interpret the static HTML assertions as playback verification.
-
-When a supported browser is available, generate a reader using the fixture and test the page directly:
-
-```sh
-.venv/bin/python tests/fixtures/pdf_fixture.py /tmp/sonara-known-text.pdf
-.venv/bin/python sonara.py read /tmp/sonara-known-text.pdf \
-  --voice en_US-john-medium --data-dir ./models/piper --output-dir /tmp/sonara-browser-check
-```
-
-Open `/tmp/sonara-browser-check/index.html` as a local `file://` page and verify each item. Use browser devtools to inspect audio state and local storage. Do not infer audible playback from `audio.paused` alone; listen to confirm audio is audible.
-
-1. Confirm the audio loads (`readyState`, finite `duration`, no media error); click Play and listen, then Pause and Resume.
-2. Seek to a different position and confirm `currentTime` changes and playback resumes there.
-3. Change the speed slider; confirm `playbackRate` follows the selected rate and the audible rate changes.
-4. Play/seek long enough to save progress, reload the page, and confirm position and speed restore. Repeat in the target browser because `file:` storage behavior differs by engine/profile.
-5. Temporarily rename one `audio_file` referenced in `audio_chunks.json`, reload the page, and confirm the visible chunk error and Retry/Skip controls appear; restore the file afterward. Also test a malformed WAV.
-6. With network disabled, repeat load/play to confirm the page makes no cloud request. If storage is denied for local files, confirm the page displays its warning and document that resume is unavailable in that browser.
-
-Player HTML structure and JavaScript parsing have unit-level assertions only. The checklist has not yet been performed. Real browser playback, seek, speed, storage persistence, missing-media rendering, audible output, and file-origin restrictions remain outstanding. Playwright's headless browser also mutes audio by default, so audible output needs a usable headed browser/audio device even after the launch restriction is resolved.
+Sonara 2.0 removed the CLI's standalone HTML player (`index.html`), so its browser checklist is retired; it was never run, because no browser could launch in the test environments. Listening, seeking, speed, saved progress and media-error recovery are covered by the desktop app's tests: `useAudioPlayer`/`useSonara` unit tests and the WebDriver E2E run above. Dated entries below that mention `index.html` describe the 1.x CLI.
 
 ## Evidence from Phase 0 and Phase 1 work (2026-10-25)
 
@@ -191,20 +172,6 @@ Player HTML structure and JavaScript parsing have unit-level assertions only. Th
 - Separate CLI smoke used `tests/fixtures/pdf_fixture.py` and the real installed Poppler/Piper path. Extraction exactly matched the expected text; CLI exited 0; five persisted chunks were present and referenced by the player; combined WAV was mono PCM16 at 22,050 Hz with 352,000 frames. Temporary smoke outputs were removed on process exit.
 - `.venv/bin/python -m pip check` passed. CLI help describes the persistent active-Python worker and the executable/PATH fallback. At the time of that historical run, Git metadata was unavailable in its execution workspace; the repository now has active Git metadata and this audit uses `git status` and `git diff`.
 - Browser verification remains blocked. A bounded `timeout 12s /usr/bin/firefox --headless --screenshot /tmp/sonara-firefox-check.png about:blank` attempt exited 1 with Snap's `snap-confine ... Refusing to continue` error. Therefore actual playback, pause/resume, seeking, rate behavior, storage round-trip/reload, missing-media recovery, and audible output remain unverified. The Playwright wrapper also remains unavailable in this environment. The existing manual checklist above is still required; Node syntax parsing does not substitute for a browser test.
-
-### Phase 4 manual browser checklist
-
-Use a generated `index.html` with the `audio_chunks.json` and chunk paths intact. In a named browser/profile, verify:
-
-1. The first chunk loads and emits audible sound; then Pause stops sound and Play resumes.
-2. Seek to the middle of a chunk and across a chunk boundary; verify the passage and local time are correct.
-3. Change the speed control at several values and confirm audible rate changes.
-4. Pause during a configured inter-passage delay and resume; verify the delay resumes without skipping a passage.
-5. Let playback save progress, reload, and verify passage, offset, and rate restoration. Repeat from `file://` and record whether the browser permits local storage.
-6. Rename a manifest-referenced WAV, reload, and verify the visible error; test Retry after restoring it and Skip when more passages remain.
-7. Confirm final passage completion and that the page makes no network requests.
-
-No browser checks above have been performed in this environment.
 
 ## Phase 5 Tauri desktop checks
 

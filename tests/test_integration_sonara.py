@@ -58,7 +58,7 @@ class SonaraIntegrationTests(unittest.TestCase):
         configuration = json.loads(config.read_text(encoding="utf-8"))
         cls.expected_sample_rate = configuration["audio"]["sample_rate"]
 
-    def test_real_pdf_extraction_piper_wav_and_player(self):
+    def test_real_pdf_extraction_piper_wav_and_manifest(self):
         with tempfile.TemporaryDirectory(prefix="sonara-integration-") as temp_dir:
             temp = Path(temp_dir)
             pdf = make_pdf(temp / "known-text.pdf")
@@ -80,10 +80,11 @@ class SonaraIntegrationTests(unittest.TestCase):
                 piper="piper",
                 pdftotext="pdftotext",
             )
-            player_path = sonara.read_document(args)
+            manifest_path = sonara.read_document(args)
             wav_path = output_dir / "speech.wav"
 
-            self.assertEqual(player_path, output_dir / "index.html")
+            self.assertEqual(manifest_path, output_dir / "audio_chunks.json")
+            self.assertFalse((output_dir / "index.html").exists())
             self.assertTrue(wav_path.is_file())
             self.assertGreater(wav_path.stat().st_size, 44)
             with wave.open(str(wav_path), "rb") as audio:
@@ -94,10 +95,8 @@ class SonaraIntegrationTests(unittest.TestCase):
                 self.assertGreater(audio.getnframes(), 0)
                 self.assertGreater(audio.getnframes() / audio.getframerate(), 0)
 
-            player = player_path.read_text(encoding="utf-8")
-            self.assertIn("This audio chunk could not be loaded", player)
-            self.assertIn("localStorage.setItem", player)
-            chunk_manifest = json.loads((output_dir / "audio_chunks.json").read_text(encoding="utf-8"))
+            chunk_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertTrue(chunk_manifest["complete"])
             self.assertEqual(chunk_manifest["engine"], "Piper")
             self.assertEqual(len(chunk_manifest["chunks"]), len(build_narration_plan(sonara.extract_pdf_document(pdf)).units))
             self.assertTrue(all(chunk["duration_seconds"] > 0 for chunk in chunk_manifest["chunks"]))
@@ -109,7 +108,6 @@ class SonaraIntegrationTests(unittest.TestCase):
                     self.assertEqual(chunk_audio.getnchannels(), 1)
                     self.assertEqual(chunk_audio.getsampwidth(), 2)
                     self.assertGreater(chunk_audio.getnframes(), 0)
-                self.assertIn(chunk["audio_file"], player)
 
 
 @unittest.skipUnless(

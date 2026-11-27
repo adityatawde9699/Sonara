@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
-import html
 import importlib.util
 import json
 import os
@@ -214,109 +213,6 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def player_html(title: str, manifest: dict[str, Any] | None = None) -> str:
-    safe_title = html.escape(title)
-    payload = manifest or {"schema_version": 1, "document_source_sha256": "", "chunks": []}
-    manifest_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    manifest_json = manifest_json.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{safe_title} — Sonara</title>
-<style>
-:root{{color-scheme:light dark;font:16px system-ui,sans-serif}}body{{max-width:48rem;margin:clamp(1rem,8vh,5rem) auto;padding:0 1rem;background:#10151b;color:#edf3f8}}
-main{{background:#19222c;border:1px solid #344454;border-radius:1rem;padding:clamp(1rem,4vw,2rem);box-shadow:0 1rem 3rem #0005}}
-h1{{font-size:1.5rem;margin-top:0}}button,input{{font:inherit}}button{{border:0;border-radius:.5rem;padding:.65rem 1rem;background:#75d5bd;color:#10211c;font-weight:650;cursor:pointer}}button:disabled{{opacity:.45;cursor:not-allowed}}
-.controls{{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:.8rem 0}}.seek-row,.speed-row{{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:.75rem;margin:1.1rem 0}}input[type=range]{{width:100%;accent-color:#75d5bd}}#status{{min-height:1.5em;color:#b9cbd6}}#error-actions[hidden]{{display:none}}.hint{{font-size:.9rem;color:#aebdca}}audio{{display:none}}
-</style></head><body><main><h1>{safe_title}</h1>
-<p class="hint">Local, sentence-chunk playback. Progress is saved in this browser when storage is available.</p>
-<audio id="audio" preload="metadata"></audio>
-<div class="controls"><button id="play" type="button">Play</button><button id="pause" type="button" disabled>Pause</button><button id="retry" type="button" hidden>Retry chunk</button><button id="skip" type="button" hidden>Skip chunk</button></div>
-<label class="seek-row" for="seek"><span>Position</span><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek through document"><span id="time">0:00 / 0:00</span></label>
-<label class="speed-row" for="speed"><span>Speed</span><input id="speed" type="range" min="0.7" max="1.5" step="0.1" value="1"><span id="speed-label">1.0×</span></label>
-<p id="status" role="status" aria-live="polite">Ready to play.</p>
-</main>
-<script id="sonara-manifest" type="application/json">{manifest_json}</script>
-<script>
-const manifest=JSON.parse(document.querySelector('#sonara-manifest').textContent);
-const chunks=Array.isArray(manifest.chunks)?manifest.chunks:[];
-const audio=document.querySelector('#audio'), playButton=document.querySelector('#play'), pauseButton=document.querySelector('#pause');
-const retryButton=document.querySelector('#retry'), skipButton=document.querySelector('#skip'), seek=document.querySelector('#seek');
-const timeLabel=document.querySelector('#time'), speed=document.querySelector('#speed'), speedLabel=document.querySelector('#speed-label'), status=document.querySelector('#status');
-const storageKey='sonara-progress-v1:'+String(manifest.document_source_sha256||'unknown')+':'+String(manifest.narration_ruleset_version||'legacy');
-const durations=chunks.map(c=>Number.isFinite(c.duration_seconds)&&c.duration_seconds>0?c.duration_seconds:0);
-const starts=[];let total=0;for(const duration of durations){{starts.push(total);total+=duration}}
-let segment=0,pendingOffset=0,pendingAutoplay=false,expectedSrc='',playing=false,failed=false,failedResume=false,pauseTimer=null,pauseDeadline=0,pauseRemaining=0,inNarrationPause=false;
-let storageAvailable=true,stored=null;
-try{{stored=localStorage.getItem(storageKey)}}catch{{storageAvailable=false;status.textContent='This browser blocks saved progress for local files. Playback works, but progress will not be restored.'}}
-let saved=null;if(stored){{try{{saved=JSON.parse(stored)}}catch{{status.textContent='Saved progress is invalid and will be replaced.'}}}}
-if(saved&&Number.isFinite(saved.rate)&&saved.rate>=0.7&&saved.rate<=1.5)speed.value=String(saved.rate);
-function clock(value){{value=Math.max(0,Math.floor(value||0));return Math.floor(value/60)+':'+String(value%60).padStart(2,'0')}}
-function currentPosition(){{return (starts[segment]||0)+(audio.currentTime||0)}}
-function renderTime(position=currentPosition()){{timeLabel.textContent=clock(position)+' / '+clock(total);seek.value=String(total?Math.round(Math.max(0,Math.min(1,position/total))*1000):0)}}
-function setPlaying(value){{playing=value;playButton.disabled=value||!chunks.length;pauseButton.disabled=!value}}
-function setSpeed(persist=true){{audio.playbackRate=Number(speed.value);speedLabel.textContent=audio.playbackRate.toFixed(1)+'×';if(persist)saveProgress()}}
-function saveProgress(index=segment,offset=audio.currentTime||0){{
- if(!storageAvailable||!chunks.length)return;
- try{{localStorage.setItem(storageKey,JSON.stringify({{version:1,document:manifest.document_source_sha256,segment:index,offset,rate:Number(speed.value)}}))}}
- catch{{storageAvailable=false;status.textContent='Progress could not be saved by this browser.'}}
-}}
-function clearPause(){{if(pauseTimer!==null)clearTimeout(pauseTimer);pauseTimer=null;inNarrationPause=false;pauseRemaining=0}}
-function showLoadError(){{failedResume=playing||pendingAutoplay;pendingAutoplay=false;failed=true;setPlaying(false);status.textContent='This audio chunk could not be loaded. Check that its WAV file is beside the player.';retryButton.hidden=false;skipButton.hidden=segment>=chunks.length-1}}
-function loadChunk(index,offset=0,autoplay=false){{
- clearPause();if(index<0||index>=chunks.length){{setPlaying(false);return}}
- segment=index;pendingOffset=Math.max(0,offset||0);pendingAutoplay=autoplay;failed=false;failedResume=false;retryButton.hidden=true;skipButton.hidden=true;setPlaying(false);
- const entry=chunks[index];if(!entry.audio_file){{showLoadError();return}}
- audio.pause();expectedSrc=new URL(entry.audio_file,location.href).href;audio.src=expectedSrc;audio.load();status.textContent='Loading passage '+(index+1)+' of '+chunks.length+'…';renderTime(starts[index]+pendingOffset);
-}}
-async function startPlayback(){{
- if(!chunks.length){{status.textContent='No audio chunks are available.';return}}
- if(failed){{status.textContent='Retry this chunk or skip it to continue.';return}}
- if(inNarrationPause){{const wait=pauseRemaining;pauseDeadline=Date.now()+wait;pauseTimer=setTimeout(()=>{{pauseTimer=null;inNarrationPause=false;loadChunk(segment+1,0,true)}},wait);setPlaying(true);status.textContent='Resuming the narration pause…';return}}
- if(audio.ended){{loadChunk(0,0,true);return}}
- try{{await audio.play();setPlaying(true);status.textContent='Playing passage '+(segment+1)+' of '+chunks.length+'.'}}
- catch{{setPlaying(false);status.textContent='Playback was blocked by the browser. Press Play to start audio.'}}
-}}
-function pausePlayback(){{
- if(pauseTimer!==null){{clearTimeout(pauseTimer);pauseTimer=null;pauseRemaining=Math.max(0,pauseDeadline-Date.now());inNarrationPause=true}}
- else audio.pause();setPlaying(false);saveProgress();status.textContent='Paused.';
-}}
-function seekTo(position,resume=playing){{
- position=Math.max(0,Math.min(total,position));let index=chunks.length-1,offset=durations[index]||0;
- for(let i=0;i<chunks.length;i++){{if(position<starts[i]+durations[i]||i===chunks.length-1){{index=i;offset=Math.max(0,position-starts[i]);break}}}}
- loadChunk(index,offset,resume);saveProgress(index,offset);
-}}
-playButton.addEventListener('click',startPlayback);pauseButton.addEventListener('click',pausePlayback);
-retryButton.addEventListener('click',()=>loadChunk(segment,pendingOffset,failedResume));
-skipButton.addEventListener('click',()=>loadChunk(segment+1,0,failedResume));
-speed.addEventListener('input',setSpeed);
-seek.addEventListener('input',()=>renderTime((Number(seek.value)/1000)*total));
-seek.addEventListener('change',()=>seekTo((Number(seek.value)/1000)*total,playing));
-audio.addEventListener('loadedmetadata',async()=>{{
- if(audio.currentSrc&&audio.currentSrc!==expectedSrc)return;
- const upper=Math.max(0,audio.duration-0.02);audio.currentTime=Math.min(pendingOffset,upper);setSpeed();renderTime();
- status.textContent='Ready — passage '+(segment+1)+' of '+chunks.length+'.';
- if(pendingAutoplay){{pendingAutoplay=false;await startPlayback()}}
-}});
-audio.addEventListener('timeupdate',()=>{{renderTime();saveProgress()}});
-audio.addEventListener('error',()=>{{if(!audio.currentSrc||audio.currentSrc===expectedSrc)showLoadError()}});
-audio.addEventListener('ended',()=>{{
- if(audio.currentSrc&&audio.currentSrc!==expectedSrc)return;
- saveProgress(segment,audio.duration);setPlaying(false);
- if(segment>=chunks.length-1){{status.textContent='Reading complete.';return}}
- const delay=Math.max(0,Number(chunks[segment].pause_after_ms)||0);pauseRemaining=delay;inNarrationPause=delay>0;
- if(delay){{pauseDeadline=Date.now()+delay;status.textContent='Pause between passages…';pauseTimer=setTimeout(()=>{{pauseTimer=null;inNarrationPause=false;loadChunk(segment+1,0,true)}},delay)}}
- else loadChunk(segment+1,0,true);
-}});
-window.addEventListener('beforeunload',()=>{{saveProgress();audio.pause()}});
-if(!chunks.length){{playButton.disabled=true;pauseButton.disabled=true;seek.disabled=true;status.textContent='No audio chunks were written for this document.'}}
-else{{
- let restoreIndex=0,restoreOffset=0;
- if(saved&&saved.version===1&&saved.document===manifest.document_source_sha256&&Number.isInteger(saved.segment)&&saved.segment>=0&&saved.segment<chunks.length&&Number.isFinite(saved.offset)&&saved.offset>=0){{restoreIndex=saved.segment;restoreOffset=Math.min(saved.offset,durations[restoreIndex])}}
- segment=restoreIndex;pendingOffset=restoreOffset;loadChunk(segment,restoreOffset,false);setSpeed(false);renderTime(starts[segment]+restoreOffset);
-}}
-</script></body></html>'''
-
-
 def synthesize(text: str, voice: str, data_dir: Path, output: Path, piper: str) -> None:
     try:
         validate_voice_name(voice)
@@ -367,6 +263,7 @@ def synthesize(text: str, voice: str, data_dir: Path, output: Path, piper: str) 
 
 
 def read_document(args: argparse.Namespace) -> Path:
+    """Extract, plan and synthesize a document; return its audio manifest path."""
     doc_path = (getattr(args, "document", None) or getattr(args, "pdf", None))
     if doc_path is None:
         raise SonaraError("No input document was specified.")
@@ -421,9 +318,8 @@ def read_document(args: argparse.Namespace) -> Path:
         synthesize(" ".join(unit.spoken_text for unit in plan.units), args.voice, data_dir, speech, args.piper)
         manifest = _legacy_audio_manifest(document, speech, args.voice)
         _write_json_atomic(out / "audio_chunks.json", manifest)
-    _write_text_atomic(out / "index.html", player_html(doc_path.name, manifest))
     _cleanup_old_chunks(out, old_manifest, manifest)
-    return out / "index.html"
+    return out / "audio_chunks.json"
 
 
 def _piper_python_api_available(piper: str) -> bool:
@@ -764,7 +660,7 @@ def _voice_argument(value: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sonara", description="Read a document (.pdf, .txt, .text, .md, .docx, .epub) aloud with local Piper TTS.")
     sub = parser.add_subparsers(dest="command", required=True)
-    read = sub.add_parser("read", help="extract a document (.pdf, .txt, .text, .md, .docx, .epub), synthesize audio, and create a resumable browser player")
+    read = sub.add_parser("read", help="extract a document (.pdf, .txt, .text, .md, .docx, .epub) and synthesize mapped passage WAVs with a manifest")
     read.add_argument("document", type=Path, metavar="DOCUMENT", help="Path to document (.pdf, .txt, .text, .md, .docx, .epub)")
     read.add_argument("--voice", required=True, type=_voice_argument, help="installed Piper voice model name or Kokoro voice id")
     read.add_argument("--engine", choices=("piper", "kokoro"), default="piper", help="local speech engine")
@@ -801,12 +697,16 @@ def main(argv: list[str] | None = None) -> int:
                 raise SonaraError(f"Document does not exist or is not a file: {args.document}")
             print(json.dumps(preview_document(args), ensure_ascii=False))
             return 0
-        player = read_document(args)
+        manifest_path = read_document(args)
     except (SonaraError, OSError) as exc:
         print(f"sonara: {exc}", file=sys.stderr)
         return 2
-    print(f"Created local reader: {player}")
-    print("Open it in a browser to play audio and save reading progress.")
+    out = manifest_path.parent
+    print(f"Synthesized audio in {out}")
+    print(f"  manifest: {manifest_path}")
+    if (out / "speech.wav").is_file() and not getattr(args, "no_combined_audio", False):
+        print(f"  combined audio: {out / 'speech.wav'}")
+    print("Open the document in the Sonara desktop app to listen with read-along and saved progress.")
     return 0
 
 

@@ -7,6 +7,7 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 ### Breaking
 
 - Desktop data moves to a version 2 layout (see docs/CONFIGURATION.md, "Desktop data layout"). The first launch upgrades Sonara 1.x data once: the library is converted and the original kept as `library.json.v1.bak`, the audio cache moves to `audio-cache/`, and the last session is kept if all of its audio is present. The upgrade is one-way: Sonara 1.x shows an empty library on upgraded data.
+- The CLI no longer writes a browser player (`index.html`). `sonara.py read` produces the passage WAVs, `speech.wav` and `audio_chunks.json`; listen in the desktop app.
 - The `audio_chunks.json` manifest is schema 2. Every manifest carries `total_units`, `completed_units` and `complete`, and `page_count`.
 
 ### Changed

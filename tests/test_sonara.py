@@ -2,10 +2,7 @@ import contextlib
 import io
 from contextlib import redirect_stderr
 from dataclasses import replace
-import re
-import shutil
 from io import StringIO
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -175,45 +172,7 @@ class ExtractTests(unittest.TestCase):
             popen.assert_not_called()
 
 
-class PlayerTests(unittest.TestCase):
-    def test_title_is_escaped_and_player_persists_progress_and_speed(self):
-        page = sonara.player_html("<script>bad</script>.pdf")
-        self.assertIn("&lt;script&gt;bad&lt;/script&gt;.pdf", page)
-        self.assertIn("localStorage.setItem", page)
-        self.assertIn("playbackRate", page)
-        self.assertIn("No audio chunks are available.", page)
-        self.assertIn("blocks saved progress for local files", page)
-
-    def test_chunk_player_has_accessible_controls_recovery_and_document_progress(self):
-        manifest = {
-            "schema_version": 1,
-            "document_source_sha256": "a" * 64,
-            "narration_ruleset_version": "rules-1",
-            "chunks": [{
-                "audio_file": "chunks/doc/run/chunk-000000.wav",
-                "duration_seconds": 2.0,
-                "pause_after_ms": 300,
-            }],
-        }
-        page = sonara.player_html("Research.pdf", manifest)
-        for expected in (
-            'aria-label="Seek through document"',
-            'id="play"',
-            'id="pause"',
-            'id="retry"',
-            'id="skip"',
-            "audio.play()",
-            "audio.pause()",
-            "localStorage.setItem",
-            "sonara-progress-v1:",
-            "pause_after_ms",
-            "loadedmetadata",
-            "beforeunload",
-            "Progress could not be saved",
-        ):
-            self.assertIn(expected, page)
-        self.assertIn("chunks/doc/run/chunk-000000.wav", page)
-
+class CliTests(unittest.TestCase):
     def test_cli_rejects_a_voice_name_that_is_a_path(self):
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
@@ -221,32 +180,6 @@ class PlayerTests(unittest.TestCase):
         self.assertIn("Invalid voice name", stderr.getvalue())
         with self.assertRaisesRegex(sonara.SonaraError, "Invalid voice name"):
             sonara.synthesize("Hello.", "../x", Path("models"), Path("out.wav"), "piper")
-
-    def test_chunk_player_manifest_cannot_close_its_script_element(self):
-        manifest = {
-            "schema_version": 1,
-            "document_source_sha256": "b" * 64,
-            "chunks": [{"audio_file": "</script><script>alert(1)</script>", "duration_seconds": 1}],
-        }
-        page = sonara.player_html("<title>.pdf", manifest)
-        self.assertIn("\\u003c/script\\u003e", page)
-        self.assertIn("&lt;title&gt;.pdf", page)
-        self.assertNotIn("<script>alert(1)</script>", page)
-
-    @unittest.skipUnless(shutil.which("node"), "Node.js is unavailable for embedded player syntax check")
-    def test_generated_player_javascript_parses(self):
-        page = sonara.player_html("test.pdf", {
-            "schema_version": 1,
-            "document_source_sha256": "c" * 64,
-            "chunks": [{"audio_file": "chunks/test.wav", "duration_seconds": 1.0}],
-        })
-        scripts = re.findall(r"<script(?: [^>]*)?>(.*?)</script>", page, flags=re.DOTALL)
-        self.assertEqual(len(scripts), 2)
-        with tempfile.TemporaryDirectory() as temp:
-            script = Path(temp) / "player.js"
-            script.write_text(scripts[1], encoding="utf-8")
-            result = subprocess.run([shutil.which("node"), "--check", str(script)], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_stale_chunk_cleanup_only_removes_manifest_owned_files(self):
         with tempfile.TemporaryDirectory() as temp:

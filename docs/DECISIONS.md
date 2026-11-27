@@ -34,6 +34,8 @@ Pin the actually exercised Piper runtime and its ONNX Runtime dependency in one 
 
 The generated HTML reports when local-file browser policy prevents progress storage. Browser behavior could not be verified in this environment: cached Chromium revisions 1228, 1243, and 1247 plus Playwright were present, but all browser binaries failed because the environment denied Crashpad/sandbox operations; Firefox and Brave failed under Snap confinement; WebKitGTK could not connect to a display, including Xvfb. Phase 0 remains incomplete until the browser checklist in `docs/TESTING.md` is run in a usable browser.
 
+**Superseded in 2.0:** the CLI's HTML player was removed; playback and saved progress live in the desktop app.
+
 ## 2026-10-25: Phase 1 PDF source mapping with Poppler bbox output
 
 Use the existing Poppler binary's `pdftotext -bbox-layout` output as the PDF adapter's source of text blocks and page/point coordinates. It emits block, line, and word boxes without adding a Python PDF parser; the standard-library XML parser is sufficient for this output. Keep the old `-layout` extraction as a comparison baseline and compatibility text behavior. The generated corpus passed exact expected-text/order/page checks and token-order comparison against `-layout`; two-column and side-by-side table-like cases are flagged for review. Extraction now caps PDF input at 100 MiB, bbox output at 32 MiB, diagnostics at 1 MiB, and execution at 60 seconds.
@@ -53,6 +55,8 @@ Use Piper 1.8.0's Python API in one supervised local worker process per synthesi
 ## 2026-10-25: Phase 4 browser playback artifacts and cache cleanup
 
 Keep playback in the existing generated local HTML page for this phase; do not add a server, Rust audio device layer, or frontend framework. Persist each successfully synthesized passage WAV in a unique run directory and reference it from the versioned JSON manifest; retain the combined `speech.wav` for compatibility. The player owns sequencing, segment/time seek mapping, rate, pause timers, local progress, and explicit retry/skip states. On regeneration, remove only old chunk files explicitly named by the prior manifest and constrained under the selected output's `chunks/` directory. Prune content-addressed cache WAVs by least-recently-used order toward 512 MiB, protecting entries needed by the active synthesis plan; this means the active plan can temporarily exceed the limit. Browser `localStorage` remains best-effort because `file:` origin policy varies. In this environment Firefox cannot launch due Snap confinement, so the code-level checks and real synthesis test do not constitute verified browser playback or saved progress. Synthesis currently finishes before opening the generated player; pause affects browser playback only, not inference.
+
+**Superseded in 2.0:** the CLI's HTML player was removed; playback and saved progress live in the desktop app.
 
 ## 2026-10-25: Phase 5 Tauri core and local media boundary
 
