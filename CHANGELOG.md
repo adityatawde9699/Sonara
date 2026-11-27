@@ -2,7 +2,11 @@
 
 This file records notable user-facing changes. The `v1.0.0` GitHub release exists but has no installer assets. Historical implementation notes and validation evidence remain in `docs/TESTING.md` and `docs/ROADMAP.md`.
 
-## Unreleased (v2.0.0)
+## v2.0.0 - 2026-11-27
+
+Sonara 2.0 starts playback after the first passage instead of after the whole document, and makes the assistant cite the document it reads. Linux x86_64 and macOS Apple Silicon only; Windows installers are still not built.
+
+**Before upgrading:** the first launch converts your library to a new layout, and Sonara 1.x cannot read it, or reading positions saved by 2.0. Your old library is kept as `library.json.v1.bak` in Sonara's data directory (on Linux `~/.local/share/com.sonara.reader/`). Copy it back over `library.json` if you return to 1.x.
 
 ### Breaking
 
@@ -29,6 +33,13 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 - The desktop app no longer writes the combined `speech.wav`, halving the disk used per session. The CLI still writes it; `--no-combined-audio` turns it off, and `--cache-dir` sets the synthesis cache directory.
 - Saved positions record the passage's narration unit as well as its number, so a position survives a re-synthesis that renumbers passages.
 - A library or reading position saved by a newer Sonara is refused instead of being silently replaced.
+
+### Known limitations
+
+- `llama-server` is not bundled. The managed mode uses the one on PATH or one you choose, and it is not stopped if Sonara crashes.
+- Assistant summaries do not carry citations yet.
+- Minimum and recommended hardware for 2.0 are not published. The memory profile and the low-end streaming run in the 2.0 plan have not been done yet.
+- macOS builds are signed ad hoc unless the Apple notarization secrets are set (see docs/RELEASE_PROCESS.md).
 
 ## v1.0.10 - 2026-11-17
 
