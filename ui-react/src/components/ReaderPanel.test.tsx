@@ -106,6 +106,35 @@ describe("ReaderPanel read-along", () => {
     expect(screen.queryByRole("button", { name: "Listen from paragraph 35" })).not.toBeInTheDocument();
   });
 
+  it("shows a cited span on its page and offers to listen from it", async () => {
+    vi.mocked(getReaderDocument).mockResolvedValue({
+      sourceSha256: "h",
+      pageLabel: "page",
+      blocks: blocks.map((block, index) => ({ ...block, page: index < 30 ? 1 : 2 })),
+    });
+    const onPlay = vi.fn();
+    render(
+      <ReaderPanel
+        sourceName="r.pdf" sourceSha256="h" chunks={chunks} activeChunk={0} onPlayFromChunk={onPlay}
+        jumpTarget={{ blockId: "b-33", start: 21, end: 51, key: 1 }}
+      />
+    );
+    const cited = await screen.findByText("Second sentence is spoken now.", { selector: "mark.reader-cited" });
+    expect(cited.closest("p")).toHaveClass("is-cited");
+    expect(screen.getByText("Section 2 of 2")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Showing the cited passage · page 2");
+    expect(screen.getByText("Page 2")).toHaveClass("reader-page-marker");
+    // The passage that speaks offset 21 of block 34 is passage 3.
+    fireEvent.click(screen.getByRole("button", { name: "Listen from here" }));
+    expect(onPlay).toHaveBeenCalledWith(2);
+    expect(screen.queryByText("Showing the cited passage", { exact: false })).not.toBeInTheDocument();
+  });
+
+  it("says so when a cited block is not in the document", async () => {
+    render(<ReaderPanel sourceName="r.pdf" sourceSha256="h" chunks={chunks} jumpTarget={{ blockId: "gone", start: 0, end: 1, key: 1 }} />);
+    expect(await screen.findByText(/cited passage is not in this document/)).toBeInTheDocument();
+  });
+
   it("falls back to plain text when the extracted blocks are unavailable", async () => {
     vi.mocked(getReaderDocument).mockRejectedValueOnce(new Error("missing"));
     vi.mocked(getDocumentText).mockResolvedValueOnce("Plain one.\n\nPlain two.");

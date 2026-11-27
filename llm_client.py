@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import ipaddress
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -18,7 +19,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from retrieval import Bm25Index, VectorIndex, chunk_document, format_passages, fuse_rankings, select_passages
+from retrieval import (
+    Bm25Index,
+    Passage,
+    VectorIndex,
+    chunk_blocks,
+    chunk_document,
+    format_passages,
+    fuse_rankings,
+    select_passages,
+)
 
 
 DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434/v1"
@@ -439,13 +449,7 @@ def test_connection(config: LlmConfig) -> dict[str, Any]:
         }
 
 
-def ask_document(
-    config: LlmConfig,
-    question: str,
-    context_text: str = "",
-    history: Iterable[dict[str, str]] = (),
-) -> str:
-    """Answer a user question grounded in the open document text."""
+def _ask_messages(question: str, context: str, history: Iterable[dict[str, str]]) -> list[dict[str, str]]:
     system_prompt = (
         "You are Sonara's AI Reading Assistant. You help users understand, explore, "
         "and discuss documents while they listen to the audiobook.\n"
@@ -465,19 +469,89 @@ def ask_document(
             messages.append({"role": role, "content": content})
 
     user_content = question
-    if context_text.strip():
-        # Retrieval picks the passages that fit the context budget, for every
-        # provider; a short document fits whole.
-        safe_context = retrieve_relevant_context(config, question, context_text)
+    if context.strip():
         user_content = (
             f"--- DOCUMENT CONTEXT ---\n"
-            f"{safe_context}\n"
+            f"{context}\n"
             f"--- END DOCUMENT CONTEXT ---\n\n"
             f"User Question: {question}"
         )
-
     messages.append({"role": "user", "content": user_content})
+    return messages
+
+
+def ask_document(
+    config: LlmConfig,
+    question: str,
+    context_text: str = "",
+    history: Iterable[dict[str, str]] = (),
+) -> str:
+    """Answer a user question grounded in the open document text."""
+    # Retrieval picks the passages that fit the context budget, for every
+    # provider; a short document fits whole.
+    context = retrieve_relevant_context(config, question, context_text) if context_text.strip() else ""
+    messages = _ask_messages(question, context, history)
     return chat_completion(config, messages, max_tokens=max(config.max_tokens, 1024))
+
+
+_PASSAGE_LABEL = re.compile(r"\[Passages?\s+(\d+(?:\s*(?:,|and|&|-|–)\s*\d+)*)\]", re.IGNORECASE)
+CITATION_EXCERPT_CHARS = 240
+
+
+def cited_passage_numbers(answer: str) -> list[int]:
+    """One-based passage numbers cited in ``answer``, in first-cited order.
+
+    Accepts ``[Passage 3]`` and the grouped forms models also write:
+    ``[Passages 2, 5]``, ``[Passage 2 and 4]``. Ranges are not expanded.
+    """
+    numbers: list[int] = []
+    for match in _PASSAGE_LABEL.finditer(answer):
+        for number in re.findall(r"\d+", match.group(1)):
+            value = int(number)
+            if value not in numbers:
+                numbers.append(value)
+    return numbers
+
+
+def citations_for(answer: str, passages: list[Passage], sent: Iterable[int], *, page_label: str = "page") -> list[dict[str, Any]]:
+    """Citations for the labels in ``answer`` that name a passage that was sent.
+
+    A label for a passage the model never saw is dropped: it is invented.
+    """
+    sent_set = set(sent)
+    citations: list[dict[str, Any]] = []
+    for number in cited_passage_numbers(answer):
+        index = number - 1
+        if index not in sent_set or not 0 <= index < len(passages):
+            continue
+        passage = passages[index]
+        excerpt = passage.text if len(passage.text) <= CITATION_EXCERPT_CHARS else passage.text[:CITATION_EXCERPT_CHARS].rsplit(" ", 1)[0] + "…"
+        citations.append({
+            "label": f"Passage {number}",
+            "passageIndex": index,
+            "page": passage.page,
+            "pageLabel": page_label,
+            "spans": [{"blockId": piece.block_id, "start": piece.start, "end": piece.end} for piece in passage.pieces],
+            "excerpt": excerpt,
+        })
+    return citations
+
+
+def ask_with_citations(
+    config: LlmConfig,
+    question: str,
+    passages: list[Passage],
+    history: Iterable[dict[str, str]] = (),
+    *,
+    page_label: str = "page",
+    embed: Callable[[str], list[float]] | None = None,
+) -> dict[str, Any]:
+    """Answer from document passages; return the answer and what it cites."""
+    sent = select_context_passages(config, question, [passage.text for passage in passages], embed=embed)
+    context = format_passages([passage.text for passage in passages], sent)
+    messages = _ask_messages(question, context, history)
+    answer = chat_completion(config, messages, max_tokens=max(config.max_tokens, 1024))
+    return {"answer": answer, "citations": citations_for(answer, passages, sent, page_label=page_label)}
 
 
 HTTP_PROVIDERS = frozenset({"ollama", "llama_cpp", "openai", "gemini", "custom"})
@@ -622,14 +696,30 @@ def retrieve_relevant_context(
     embed: Callable[[str], list[float]] | None = None,
 ) -> str:
     """Labelled passages for the prompt: the whole document if it fits, else the best matches."""
-    budget = budget_chars or context_budget_chars(config)
     passages = chunk_document(document_text)
     if not passages:
         return ""
+    chosen = select_context_passages(config, question, passages, top_k=top_k, budget_chars=budget_chars, embed=embed)
+    return format_passages(passages, chosen)
+
+
+def select_context_passages(
+    config: LlmConfig,
+    question: str,
+    passages: list[str],
+    *,
+    top_k: int = 6,
+    budget_chars: int | None = None,
+    embed: Callable[[str], list[float]] | None = None,
+) -> list[int]:
+    """Indexes of the passages to send: all of them if they fit, else the best matches."""
+    budget = budget_chars or context_budget_chars(config)
+    if not passages:
+        return []
     if sum(len(passage) + 20 for passage in passages) <= budget:
-        return format_passages(passages, range(len(passages)))
+        return list(range(len(passages)))
     ranking = rank_passages(config, question, passages, embed=embed)
-    return format_passages(passages, select_passages(passages, ranking, budget, top_k=top_k))
+    return select_passages(passages, ranking, budget, top_k=top_k)
 
 
 # Long documents are summarised map-reduce: each window of the document is
@@ -764,6 +854,56 @@ def _read_bounded_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+# Extractors whose block pages are real source pages; the rest use virtual
+# pages of about 300 words, which the assistant calls sections.
+_PAGED_EXTRACTORS = ("Poppler", "tesseract")
+
+
+def page_label_for(extractor: str) -> str:
+    return "page" if extractor.startswith(_PAGED_EXTRACTORS) else "section"
+
+
+def load_document_blocks(target_path: str) -> tuple[list[dict[str, Any]], str]:
+    """Blocks and extractor name for a session directory or a document file.
+
+    A session directory's ``extracted_document.json`` is read; any other file
+    is extracted. Raises ``ValueError`` with a user-facing message.
+    """
+    p = Path(target_path).expanduser().resolve()
+    if p.is_dir():
+        json_path = p / "extracted_document.json"
+        if not json_path.is_file():
+            raise ValueError("This session has no extracted document.")
+        try:
+            data = json.loads(_read_bounded_text(json_path))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Failed reading extracted_document.json: {exc}") from exc
+        blocks = data.get("blocks") if isinstance(data, dict) else None
+        if not isinstance(blocks, list):
+            raise ValueError("extracted_document.json has no blocks.")
+        return [block for block in blocks if isinstance(block, dict)], str(data.get("extractor", ""))
+    if p.is_file():
+        from sonara import extract_document
+
+        try:
+            document = extract_document(p)
+        except Exception as exc:
+            raise ValueError(f"Failed extracting document text from {p.name}: {exc}") from exc
+        return document.to_dict()["blocks"], document.extractor
+    raise ValueError(f"Path not found: {target_path}")
+
+
+def document_passages(target_path: str) -> tuple[list[Passage], str]:
+    """Retrieval passages with provenance, and how to label their pages."""
+    blocks, extractor = load_document_blocks(target_path)
+    return chunk_blocks(blocks), page_label_for(extractor)
+
+
+def document_plain_text(target_path: str) -> str:
+    blocks, _ = load_document_blocks(target_path)
+    return "\n\n".join(block["text"] for block in blocks if isinstance(block.get("text"), str) and block["text"])
+
+
 def extract_text_from_target(target_path: str) -> dict[str, Any]:
     """Read plain text from reader-output directory or directly extract from a document file."""
     from pathlib import Path
@@ -819,13 +959,28 @@ def rpc_handler(request: dict[str, Any]) -> dict[str, Any]:
 
     if action == "chat":
         question = str(request.get("question", ""))
-        context = str(request.get("context", ""))
         history = request.get("history", [])
+        document = request.get("document")
+        if isinstance(document, str) and document:
+            # The backend names the open document; passages keep their
+            # location so the answer's citations can point into it.
+            try:
+                passages, page_label = document_passages(document)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True, **ask_with_citations(config, question, passages, history, page_label=page_label)}
+        context = str(request.get("context", ""))
         answer = ask_document(config, question, context, history)
-        return {"ok": True, "answer": answer}
+        return {"ok": True, "answer": answer, "citations": []}
 
     if action == "summarize":
         text = str(request.get("text", ""))
+        document = request.get("document")
+        if isinstance(document, str) and document:
+            try:
+                text = document_plain_text(document)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
         mode = str(request.get("mode", "summary"))
         summary = summarize_document(config, text, mode)
         return {"ok": True, "summary": summary}

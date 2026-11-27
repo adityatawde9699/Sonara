@@ -305,3 +305,14 @@ Post-change cross-language suite results:
 - `npm run build` — passed (TypeScript build and Vite production build).
 
 Graphical playback and audio-device acceptance remain unavailable in the headless session. The new profile propagation is covered by the UI binding suite and Rust build/tests; there is not yet a dedicated Rust command test asserting the profile argument reaches the child process.
+
+## Managed llama-server (opt-in)
+
+`llm_server.rs` has fake-server tests that always run. A test against the real program runs only when a GGUF is named:
+
+```sh
+cd src-tauri
+SONARA_LLAMA_SERVER_GGUF=/path/to/model.gguf cargo test --locked a_real_llama_server
+```
+
+It needs `llama-server` on PATH. It starts the server, waits for `/health`, asks one chat completion and stops it. Verified with llama.cpp build 8681 (Debian) and Llama 3.2 1B Instruct Q4_K_M. A cited answer was also checked by hand against Llama 3.2 3B Instruct: the answer cited `[Passage 2]` and the citation pointed at page 2.

@@ -49,10 +49,16 @@ export interface ReaderBlock {
   id: string;
   kind: string;
   text: string;
+  /** One-based source page, when the extractor recorded one. */
+  page?: number | null;
 }
+
+/** "page" for real PDF pages; "section" for the virtual pages of other formats. */
+export type PageLabel = "page" | "section";
 
 export interface ReaderDocument {
   sourceSha256: string;
+  pageLabel?: PageLabel;
   blocks: ReaderBlock[];
 }
 
@@ -347,6 +353,7 @@ export interface LlmConfig {
   provider: "ollama" | "llama_cpp" | "embedded_llama_cpp" | "openai" | "gemini" | "custom";
   endpoint?: string;
   model?: string;
+  /** Never set by the UI: Rust adds the saved key (llmSetApiKey) to requests. */
   apiKey?: string;
   temperature?: number;
   maxTokens?: number;
@@ -354,6 +361,11 @@ export interface LlmConfig {
   embeddingEndpoint?: string;
   modelPath?: string;
   modelDirectory?: string;
+  /** llama.cpp provider: Sonara runs llama-server; Rust supplies the endpoints. */
+  managedServer?: boolean;
+  /** GGUF files for the managed llama-server. */
+  serverModel?: string;
+  serverEmbeddingModel?: string;
   contextSize?: number;
   threads?: number;
   batchSize?: number;
@@ -375,10 +387,29 @@ export interface LlmTestResult {
   modelState?: string;
 }
 
+/** Code-point offsets [start, end) in a document block. */
+export interface CitationSpan {
+  blockId: string;
+  start: number;
+  end: number;
+}
+
+/** A passage an answer cites, among those the model was given. */
+export interface Citation {
+  /** As written in the answer, such as "Passage 3". */
+  label: string;
+  passageIndex: number;
+  page?: number | null;
+  pageLabel: PageLabel | string;
+  spans: CitationSpan[];
+  excerpt: string;
+}
+
 export interface LlmChatResult {
   ok: boolean;
   answer?: string;
   error?: string;
+  citations?: Citation[];
 }
 
 export interface LlmSummarizeResult {
@@ -393,7 +424,6 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
   endpoint: "http://localhost:11434/v1",
   model: "llama3.2",
   embeddingModel: "",
-  apiKey: "",
   temperature: 0.7,
   maxTokens: 1024,
   modelPath: "",
@@ -406,32 +436,108 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
 
 export const LLM_STORAGE_KEY = "sonara-llm-config-v1";
 
-// The API key is never written to localStorage. It is kept only in memory for
-// the lifetime of the window so Settings and the Assistant share one value.
-let sessionApiKey = "";
+// API keys never live in the webview: Settings hands a key to Rust
+// (llmSetApiKey), which keeps it in the OS keychain and adds it to requests.
+function withoutApiKey(config: LlmConfig): LlmConfig {
+  const rest = { ...config };
+  delete rest.apiKey;
+  return rest;
+}
 
 export function loadStoredLlmConfig(): LlmConfig {
   try {
     const raw = localStorage.getItem(LLM_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      const config = { ...DEFAULT_LLM_CONFIG, ...parsed, apiKey: sessionApiKey };
-      if (parsed.apiKey) localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify({ ...parsed, apiKey: "" }));
-      return config;
+      // Older builds could leave a key here; drop it.
+      if ("apiKey" in parsed) localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(withoutApiKey(parsed)));
+      return withoutApiKey({ ...DEFAULT_LLM_CONFIG, ...parsed });
     }
   } catch {
     // Fallback to default
   }
-  return { ...DEFAULT_LLM_CONFIG, apiKey: sessionApiKey };
+  return withoutApiKey({ ...DEFAULT_LLM_CONFIG });
 }
 
 export function saveStoredLlmConfig(config: LlmConfig): void {
-  sessionApiKey = config.apiKey ?? "";
   try {
-    localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify({ ...config, apiKey: "" }));
+    localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(withoutApiKey(config)));
   } catch {
     // Ignore storage errors
   }
+}
+
+export type LlamaServerState = "stopped" | "starting" | "ready" | "failed";
+
+export interface LlamaServerStatus {
+  state: LlamaServerState;
+  endpoint?: string | null;
+  embeddingEndpoint?: string | null;
+  model?: string | null;
+  error?: string | null;
+  logTail: string[];
+  restarts: number;
+}
+
+export async function llamaServerStatus(): Promise<LlamaServerStatus> {
+  return invoke<LlamaServerStatus>("llama_server_status");
+}
+
+/** The llama-server program Sonara will run: the one chosen, else from PATH. */
+export async function llamaServerExecutable(): Promise<string | null> {
+  return invoke<string | null>("llama_server_executable");
+}
+
+export async function llamaServerChooseExecutable(): Promise<string | null> {
+  return invoke<string | null>("llama_server_choose_executable");
+}
+
+export async function llamaServerStart(options: {
+  model: string;
+  embeddingModel?: string;
+  contextSize?: number;
+  threads?: number;
+}): Promise<LlamaServerStatus> {
+  return invoke<LlamaServerStatus>("llama_server_start", options);
+}
+
+export async function llamaServerStop(): Promise<LlamaServerStatus> {
+  return invoke<LlamaServerStatus>("llama_server_stop");
+}
+
+export interface DirUsage {
+  bytes: number;
+  files: number;
+}
+
+export interface StorageUsage {
+  audioCache: DirUsage;
+  embeddingCache: DirUsage;
+  sessions: DirUsage;
+}
+
+export async function storageUsage(): Promise<StorageUsage> {
+  return invoke<StorageUsage>("storage_usage");
+}
+
+/** Clear a cache; returns the usage after clearing. */
+export async function clearCache(kind: "audio" | "embeddings"): Promise<StorageUsage> {
+  return invoke<StorageUsage>("clear_cache", { kind });
+}
+
+/** Where a saved key lives: the OS keychain, or memory for this run only. */
+export type KeyStorage = "keychain" | "session";
+
+export async function llmSetApiKey(provider: LlmConfig["provider"], key: string): Promise<KeyStorage> {
+  return invoke<KeyStorage>("llm_set_api_key", { provider, key });
+}
+
+export async function llmApiKeyStatus(provider: LlmConfig["provider"]): Promise<KeyStorage | null> {
+  return invoke<KeyStorage | null>("llm_api_key_status", { provider });
+}
+
+export async function llmClearApiKey(provider: LlmConfig["provider"]): Promise<void> {
+  return invoke<void>("llm_clear_api_key", { provider });
 }
 
 export async function llmTestConnection(config: LlmConfig): Promise<LlmTestResult> {
@@ -450,21 +556,36 @@ export async function llmChooseModel(): Promise<string | null> {
   return invoke("llm_choose_model");
 }
 
+/** Ask about the open document; the backend gives the worker the document itself. */
 export async function llmChat(
   config: LlmConfig,
   question: string,
-  context?: string,
   history?: ChatMessage[]
 ): Promise<LlmChatResult> {
-  return invoke<LlmChatResult>("llm_chat", { config, question, context, history });
+  return invoke<LlmChatResult>("llm_chat", { config, question, history });
 }
 
+/** Summarize the open document, or `text` when given (such as a selected passage). */
 export async function llmSummarize(
   config: LlmConfig,
-  text: string,
-  mode?: "summary" | "takeaways" | "explain_passage"
+  mode?: "summary" | "takeaways" | "explain_passage",
+  text?: string
 ): Promise<LlmSummarizeResult> {
   return invoke<LlmSummarizeResult>("llm_summarize", { config, text, mode });
+}
+
+/** The error of a request stopped with `llmCancel`; see LLM_CANCELLED in llm_rpc.rs. */
+export const LLM_CANCELLED = "The request was stopped.";
+
+/** Stop the assistant request in flight. False when nothing was running. */
+export async function llmCancel(): Promise<boolean> {
+  return invoke<boolean>("llm_cancel");
+}
+
+/** The chip text for a citation: "p. 12", "sec. 3", or the passage number. */
+export function citationChipLabel(citation: Citation): string {
+  if (citation.page) return citation.pageLabel === "page" ? `p. ${citation.page}` : `sec. ${citation.page}`;
+  return `passage ${citation.passageIndex + 1}`;
 }
 
 export async function getDocumentText(): Promise<string> {

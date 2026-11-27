@@ -6,11 +6,12 @@ use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Stdio};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +30,10 @@ pub(crate) struct LlmConfigInput {
     pub threads: Option<u32>,
     pub batch_size: Option<u32>,
     pub idle_timeout_seconds: Option<u32>,
+    /// llama.cpp provider: use the server Sonara supervises (llm_server.rs).
+    /// Rust then fills in the endpoints; the worker never sees this flag.
+    #[serde(default, skip_serializing)]
+    pub managed_server: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -56,6 +61,31 @@ pub(crate) struct LlmChatResult {
     pub ok: bool,
     pub answer: Option<String>,
     pub error: Option<String>,
+    /// Passages the answer cites, among those it was given.
+    #[serde(default)]
+    pub citations: Vec<Citation>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Citation {
+    /// The label as written in the answer, such as "Passage 3".
+    pub label: String,
+    pub passage_index: u32,
+    pub page: Option<u32>,
+    /// "page" or "section"; see `session::page_label_for`.
+    pub page_label: String,
+    pub spans: Vec<CitationSpan>,
+    pub excerpt: String,
+}
+
+/// Code-point offsets `[start, end)` in a document block.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CitationSpan {
+    pub block_id: String,
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -71,6 +101,9 @@ pub(crate) struct LlmSummarizeResult {
 pub(crate) const LLM_RPC_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) const LLM_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The error of a request stopped with `llm_cancel`. The frontend matches it.
+pub(crate) const LLM_CANCELLED: &str = "The request was stopped.";
 
 pub(crate) const MAX_LLM_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -153,6 +186,8 @@ pub(crate) fn invoke_llm_rpc(
     if exited {
         *worker_guard = None;
     }
+    // Only a cancel during this request counts.
+    state.llm_cancel_requested.store(false, Ordering::SeqCst);
     if worker_guard.is_none() {
         // The worker may call an HTTP provider, so proxy and CA settings pass.
         let mut command = process_tree::worker_command(&runtime.python, true);
@@ -164,6 +199,15 @@ pub(crate) fn invoke_llm_rpc(
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         configure_runtime_command(&mut command, &runtime);
+        // Keep the assistant's embedding cache with the rest of Sonara's
+        // data (storage::EMBEDDING_CACHE_DIR), where Settings can clear it.
+        // A SONARA_CACHE_DIR the user set still wins.
+        let app_data = app
+            .filter(|_| std::env::var_os("SONARA_CACHE_DIR").is_none())
+            .and_then(|app| app.path().app_local_data_dir().ok());
+        if let Some(app_data) = app_data {
+            command.env("SONARA_CACHE_DIR", app_data);
+        }
         let mut child = command
             .spawn()
             .map_err(|error| format!("Failed to start Sonara's local LLM worker: {error}"))?;
@@ -232,7 +276,31 @@ pub(crate) fn invoke_llm_rpc(
     // Any failure leaves the stream out of step with requests, so the worker
     // is replaced rather than reused; a late reply can never answer the next call.
     discard_llm_worker(state, &mut worker_guard);
+    if state.llm_cancel_requested.swap(false, Ordering::SeqCst) {
+        return Err(LLM_CANCELLED.to_owned());
+    }
     Err(failure)
+}
+
+/// Stop the request in flight by killing its worker through the side
+/// handle, as shutdown does; the waiting call then sees the worker exit.
+/// Returns false when no request holds the worker.
+pub(crate) fn cancel_llm_request(state: &AppState) -> bool {
+    if state.llm_worker.try_lock().is_ok() {
+        return false;
+    }
+    state.llm_cancel_requested.store(true, Ordering::SeqCst);
+    let child = state
+        .llm_child
+        .lock()
+        .ok()
+        .and_then(|mut handle| handle.take());
+    if let Some(child) = child {
+        if let Ok(mut child) = child.lock() {
+            process_tree::kill_and_reap(&mut child);
+        }
+    }
+    true
 }
 
 pub(crate) fn discard_llm_worker(state: &AppState, worker_guard: &mut Option<LlmWorker>) {
@@ -312,6 +380,7 @@ mod tests {
             threads: None,
             batch_size: None,
             idle_timeout_seconds: None,
+            managed_server: None,
         };
         let state = AppState::default();
         let result = llm_test_connection_inner(None, &state, config)
@@ -383,6 +452,52 @@ mod tests {
         let status = child.lock().unwrap().try_wait().unwrap();
         assert!(status.is_some(), "busy worker should have been killed");
         busy.join().unwrap();
+    }
+
+    #[test]
+    fn cancel_stops_only_a_request_in_flight() {
+        let state = Arc::new(AppState::default());
+        assert!(!cancel_llm_request(&state), "nothing is running");
+
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let pid = child.id();
+        let child = Arc::new(Mutex::new(child));
+        *state.llm_child.lock().unwrap() = Some(Arc::clone(&child));
+        *state.llm_worker.lock().unwrap() = Some(LlmWorker {
+            child: Arc::clone(&child),
+            pid,
+            stdin,
+            lines: spawn_llm_line_reader(stdout),
+        });
+
+        // An in-flight request holds the worker lock and waits for a line.
+        let (held, waiting) = (Arc::new(std::sync::Barrier::new(2)), Arc::clone(&state));
+        let held_clone = Arc::clone(&held);
+        let request = thread::spawn(move || {
+            let mut guard = waiting.llm_worker.lock().unwrap();
+            held_clone.wait();
+            let reply = guard
+                .as_ref()
+                .unwrap()
+                .lines
+                .recv_timeout(Duration::from_secs(10));
+            assert!(matches!(reply, Err(RecvTimeoutError::Disconnected)));
+            discard_llm_worker(&waiting, &mut guard);
+            waiting.llm_cancel_requested.swap(false, Ordering::SeqCst)
+        });
+        held.wait();
+
+        assert!(cancel_llm_request(&state));
+        assert!(request.join().unwrap(), "the request sees it was cancelled");
+        assert!(child.lock().unwrap().try_wait().unwrap().is_some());
+        assert!(state.llm_worker.lock().unwrap().is_none());
     }
 
     #[test]

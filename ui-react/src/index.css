@@ -1922,3 +1922,64 @@ html[data-theme="light"] .modal-backdrop { background: rgb(31 27 22 / 32%); }
   }
   .progress-track span { left: 0; width: 100%; transform: none; opacity: 0.6; }
 }
+
+/* Assistant citations */
+.citation-group { display: inline-flex; gap: 4px; margin: 0 2px; vertical-align: baseline; }
+.citation-chip {
+  font: inherit;
+  font-size: 0.8em;
+  line-height: 1.5;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+.citation-chip:hover:not(:disabled) { border-color: var(--accent); }
+.citation-chip:disabled { color: var(--text-3); cursor: default; }
+
+/* Reader: cited passages and source pages */
+.reader-cited-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--hair-strong);
+  color: var(--text-2);
+}
+.reader-cited-bar > span { flex: 1 1 auto; }
+.reader-cited { background: color-mix(in srgb, var(--accent) 22%, transparent); color: inherit; border-radius: 2px; }
+.reader-paragraph.is-cited { animation: reader-cited-flash 1.2s var(--ease) 1; }
+@keyframes reader-cited-flash { from { background: color-mix(in srgb, var(--accent) 14%, transparent); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .reader-paragraph.is-cited { animation: none; } }
+.reader-page-marker {
+  margin: 24px 0 8px;
+  font-size: 0.75rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.assistant-note { margin: 4px 0; text-align: center; font-size: 0.8rem; color: var(--text-3); }
+
+/* Settings: API key saved in the keychain */
+.api-key-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.api-key-row .llm-input { flex: 1 1 200px; }
+.api-key-status { flex: 1 1 auto; color: var(--text-2); font-size: 0.875rem; }
+.api-key-error { color: var(--negative); }
+
+/* Settings: storage */
+.storage-list { margin: 0; display: grid; gap: 12px; }
+.storage-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.storage-row dt { display: grid; gap: 2px; flex: 1 1 220px; }
+.storage-row dd { margin: 0; display: flex; align-items: center; gap: 12px; }
+.storage-label { font-weight: 500; }
+.storage-size { color: var(--text-2); font-size: 0.8125rem; }
+
+/* Settings: managed llama-server */
+.llama-server-panel { display: grid; gap: 12px; padding: 12px; border: 1px solid var(--hair-strong); border-radius: 8px; grid-column: 1 / -1; }
+.llama-server-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 0.8125rem; }
+.llama-server-log pre { max-height: 180px; overflow: auto; font-size: 0.75rem; white-space: pre-wrap; color: var(--text-2); }

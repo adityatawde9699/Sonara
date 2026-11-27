@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { type FrontendChunk, getDocumentText, getReaderDocument } from "../lib/tauri";
+import { type FrontendChunk, type PageLabel, getDocumentText, getReaderDocument } from "../lib/tauri";
 import { splitAtCodePoints } from "../lib/readAlong";
 import { AArrowDown, AArrowUp, Play, Search } from "lucide-react";
 
@@ -14,14 +14,24 @@ interface Props {
   activeChunk?: number;
   /** Start listening from a passage. */
   onPlayFromChunk?: (index: number) => void;
+  /** A span to show, such as a passage the assistant cited. A new `key` shows it again. */
+  jumpTarget?: JumpTarget | null;
+}
+
+export interface JumpTarget {
+  blockId: string;
+  start: number;
+  end: number;
+  key: number;
 }
 
 interface Block {
   id: string | null;
   text: string;
+  page: number | null;
 }
 
-export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk = 0, onPlayFromChunk }: Props) {
+export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk = 0, onPlayFromChunk, jumpTarget = null }: Props) {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -30,8 +40,13 @@ export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk
   const [fontScale, setFontScale] = useState(1);
   const [followAlong, setFollowAlong] = useState(true);
   const activeRef = useRef<HTMLParagraphElement | null>(null);
+  const citedRef = useRef<HTMLParagraphElement | null>(null);
+  const [pageLabel, setPageLabel] = useState<PageLabel>("section");
+  // The jump being shown; cleared when the reader follows the player again.
+  const [shownJump, setShownJump] = useState<JumpTarget | null>(null);
 
-  const hasSpans = chunks.some((chunk) => chunk.source);
+  // Citations name blocks, so a jump also needs the block-level document.
+  const hasSpans = chunks.some((chunk) => chunk.source) || jumpTarget !== null;
 
   const loadText = async () => {
     setLoading(true);
@@ -41,14 +56,15 @@ export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk
       if (hasSpans) {
         try {
           const document = await getReaderDocument();
-          loaded = document.blocks.map((block) => ({ id: block.id, text: block.text }));
+          loaded = document.blocks.map((block) => ({ id: block.id, text: block.text, page: block.page ?? null }));
+          setPageLabel(document.pageLabel === "page" ? "page" : "section");
         } catch {
           loaded = null; // fall back to plain text without highlighting
         }
       }
       if (!loaded) {
         const result = await getDocumentText();
-        loaded = result.split(/\n\s*\n/).map((block) => block.trim()).filter(Boolean).map((text) => ({ id: null, text }));
+        loaded = result.split(/\n\s*\n/).map((block) => block.trim()).filter(Boolean).map((text) => ({ id: null, text, page: null }));
       }
       if (!loaded.some((block) => block.text.trim())) throw new Error("No readable text was returned for this document.");
       setBlocks(loaded);
@@ -114,6 +130,29 @@ export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk
     activeRef.current?.scrollIntoView?.({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
   }, [activeBlock, activeSource?.start, followAlong, page]);
 
+  // Show a cited span: stop following the player and turn to its block.
+  const jumpBlock = shownJump ? blockIndexById.get(shownJump.blockId) ?? -1 : -1;
+  useEffect(() => {
+    if (!jumpTarget) return;
+    setShownJump(jumpTarget);
+  }, [jumpTarget]);
+  useEffect(() => {
+    if (jumpBlock < 0) return;
+    setFollowAlong(false);
+    setPage(Math.floor(jumpBlock / BLOCKS_PER_PAGE));
+  }, [jumpBlock, shownJump?.key]);
+  useEffect(() => {
+    if (jumpBlock < 0) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    citedRef.current?.scrollIntoView?.({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+  }, [jumpBlock, page, shownJump?.key]);
+
+  // The passage that speaks the cited span, for "Listen from here".
+  const jumpChunk = shownJump
+    ? chunks.findIndex((chunk) => chunk.source?.blockId === shownJump.blockId
+      && chunk.source.start <= shownJump.start && shownJump.start < chunk.source.end)
+    : -1;
+
   const turnPage = (next: number) => {
     setFollowAlong(false);
     setPage(Math.min(pages - 1, Math.max(0, next)));
@@ -136,7 +175,10 @@ export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk
               type="button"
               className={`button button-secondary reader-follow ${followAlong ? "is-on" : ""}`}
               aria-pressed={followAlong}
-              onClick={() => setFollowAlong((value) => !value)}
+              onClick={() => {
+                setShownJump(null);
+                setFollowAlong((value) => !value);
+              }}
             >
               Follow along
             </button>
@@ -160,20 +202,50 @@ export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk
       ) : (
         <>
           {query && matchCount === 0 && <p className="reader-search-empty" role="status">No matches in this document.</p>}
+          {shownJump && (
+            <div className="reader-cited-bar" role="status">
+              <span>
+                {jumpBlock < 0
+                  ? "The cited passage is not in this document's extracted text."
+                  : `Showing the cited passage${blocks[jumpBlock]?.page ? ` · ${pageLabel} ${blocks[jumpBlock].page}` : ""}`}
+              </span>
+              {jumpChunk >= 0 && onPlayFromChunk && (
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => {
+                    setShownJump(null);
+                    setFollowAlong(true);
+                    onPlayFromChunk(jumpChunk);
+                  }}
+                ><Play size={16} fill="currentColor" aria-hidden="true" />Listen from here</button>
+              )}
+              <button type="button" className="text-button" onClick={() => setShownJump(null)}>Dismiss</button>
+            </div>
+          )}
           <article className="reader-content" style={{ "--reader-scale": fontScale } as React.CSSProperties} aria-label="Extracted document text">
             {pageBlocks.map((block, index) => {
               const blockIndex = page * BLOCKS_PER_PAGE + index;
               const matched = needle && block.text.toLocaleLowerCase().includes(needle);
               const speaking = blockIndex === activeBlock && activeSource;
+              const cited = blockIndex === jumpBlock && shownJump;
               const firstChunk = firstChunkByBlock.get(blockIndex);
-              const className = ["reader-paragraph", matched ? "is-search-match" : "", speaking ? "is-speaking" : ""].filter(Boolean).join(" ");
+              const className = ["reader-paragraph", matched ? "is-search-match" : "", speaking ? "is-speaking" : "", cited ? "is-cited" : ""].filter(Boolean).join(" ");
               let content: React.ReactNode = block.text;
-              if (speaking) {
+              if (cited) {
+                const [before, quoted, after] = splitAtCodePoints(block.text, shownJump.start, shownJump.end);
+                content = <>{before}<mark className="reader-cited">{quoted}</mark>{after}</>;
+              } else if (speaking) {
                 const [before, spoken, after] = splitAtCodePoints(block.text, activeSource.start, activeSource.end);
                 content = <>{before}<mark className="reader-spoken" aria-current="true">{spoken}</mark>{after}</>;
               }
-              return (
-                <p className={className} key={block.id ?? `${blockIndex}-${block.text.slice(0, 24)}`} ref={speaking ? activeRef : undefined}>
+              // Source page markers, for documents with real pages (PDF).
+              const previousPage = blockIndex > 0 ? blocks[blockIndex - 1].page : null;
+              const pageMarker = pageLabel === "page" && block.page && block.page !== previousPage
+                ? <p className="reader-page-marker" key={`page-${block.page}-${blockIndex}`} aria-hidden="true">Page {block.page}</p>
+                : null;
+              return [pageMarker,
+                <p className={className} key={block.id ?? `${blockIndex}-${block.text.slice(0, 24)}`} ref={cited ? citedRef : speaking ? activeRef : undefined}>
                   {firstChunk !== undefined && onPlayFromChunk && (
                     <button
                       type="button"
@@ -187,8 +259,8 @@ export function ReaderPanel({ sourceName, sourceSha256, chunks = [], activeChunk
                     ><Play size={16} fill="currentColor" aria-hidden="true" /></button>
                   )}
                   {content}
-                </p>
-              );
+                </p>,
+              ];
             })}
           </article>
           <footer className="reader-footer">

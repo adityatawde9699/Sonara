@@ -6,6 +6,7 @@
 //!   library.json
 //!   progress/<sha>.json
 //!   audio-cache/            content-addressed synthesis cache
+//!   embeddings/             assistant retrieval vectors (llm_client.py)
 //!   sessions/<run-id>/      one directory per synthesis run
 //!   current-session         the run id of the session to reopen
 //! ```
@@ -22,6 +23,9 @@ pub(crate) const DATA_VERSION_FILE: &str = "data-version";
 pub(crate) const DATA_VERSION: u32 = 2;
 pub(crate) const SESSIONS_DIR: &str = "sessions";
 pub(crate) const AUDIO_CACHE_DIR: &str = "audio-cache";
+/// llm_client.py writes `$SONARA_CACHE_DIR/embeddings`; the LLM worker is
+/// given the app data directory as `SONARA_CACHE_DIR`.
+pub(crate) const EMBEDDING_CACHE_DIR: &str = "embeddings";
 const CURRENT_SESSION_FILE: &str = "current-session";
 
 pub(crate) fn sessions_dir(app_data: &Path) -> PathBuf {
@@ -106,6 +110,89 @@ pub(crate) fn prune_runs(app_data: &Path, keep: &[&Path]) {
     }
 }
 
+/// Size of one part of Sonara's data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DirUsage {
+    pub(crate) bytes: u64,
+    pub(crate) files: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StorageUsage {
+    pub(crate) audio_cache: DirUsage,
+    pub(crate) embedding_cache: DirUsage,
+    /// The session being listened to (and a run being synthesized).
+    pub(crate) sessions: DirUsage,
+}
+
+/// Total size of regular files under `dir`, without following symlinks.
+fn dir_usage(dir: &Path) -> DirUsage {
+    let mut usage = DirUsage::default();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file() {
+                usage.files += 1;
+                usage.bytes += entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            }
+        }
+    }
+    usage
+}
+
+pub(crate) fn storage_usage(app_data: &Path) -> StorageUsage {
+    StorageUsage {
+        audio_cache: dir_usage(&audio_cache_dir(app_data)),
+        embedding_cache: dir_usage(&app_data.join(EMBEDDING_CACHE_DIR)),
+        sessions: dir_usage(&sessions_dir(app_data)),
+    }
+}
+
+/// Delete every synthesized passage in the audio cache. Sessions keep their
+/// own copies, so what is open still plays; documents re-synthesize later.
+pub(crate) fn clear_audio_cache(app_data: &Path) -> Result<(), String> {
+    let dir = audio_cache_dir(app_data);
+    match fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not clear the audio cache: {error}")),
+    }
+}
+
+/// Delete the assistant's stored embeddings: the `<sha256>.json` files
+/// llm_client.py writes. Anything else in the directory is left alone.
+pub(crate) fn clear_embedding_cache(app_data: &Path) -> Result<(), String> {
+    let Ok(entries) = fs::read_dir(app_data.join(EMBEDDING_CACHE_DIR)) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let is_index = name.to_str().is_some_and(|name| {
+            name.strip_suffix(".json").is_some_and(|stem| {
+                stem.len() == 64
+                    && stem
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+        });
+        if is_index && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            fs::remove_file(entry.path())
+                .map_err(|error| format!("Could not clear the embedding cache: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Remove one run directory, as after a cancelled or failed run.
 pub(crate) fn remove_run(run_dir: &Path) {
     let _ = fs::remove_dir_all(run_dir);
@@ -134,6 +221,49 @@ mod tests {
         assert!(odd_dir.exists());
         assert!(create_run_dir(&root, "run-1").is_err());
         assert!(create_run_dir(&root, "../escape").is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn caches_are_measured_and_cleared_without_touching_other_files() {
+        let root = std::env::temp_dir().join(format!("sonara-usage-{}", make_job_id()));
+        let audio = audio_cache_dir(&root).join("ab");
+        fs::create_dir_all(&audio).unwrap();
+        fs::write(audio.join("one.wav"), [0u8; 100]).unwrap();
+        let embeddings = root.join(EMBEDDING_CACHE_DIR);
+        fs::create_dir_all(&embeddings).unwrap();
+        let index = embeddings.join(format!("{}.json", "a".repeat(64)));
+        fs::write(&index, [0u8; 40]).unwrap();
+        let other = embeddings.join("notes.json");
+        fs::write(&other, b"{}").unwrap();
+        let run = create_run_dir(&root, "run-1").unwrap();
+        fs::write(run.join("audio_chunks.json"), [0u8; 7]).unwrap();
+
+        let usage = storage_usage(&root);
+        assert_eq!(
+            usage.audio_cache,
+            DirUsage {
+                bytes: 100,
+                files: 1
+            }
+        );
+        assert_eq!(
+            usage.embedding_cache,
+            DirUsage {
+                bytes: 42,
+                files: 2
+            }
+        );
+        assert_eq!(usage.sessions, DirUsage { bytes: 7, files: 1 });
+
+        clear_audio_cache(&root).unwrap();
+        clear_embedding_cache(&root).unwrap();
+        assert!(!audio_cache_dir(&root).exists());
+        assert!(!index.exists());
+        assert!(other.exists());
+        assert!(run.join("audio_chunks.json").exists());
+        // Clearing what is already gone is fine.
+        clear_audio_cache(&root).unwrap();
         let _ = fs::remove_dir_all(&root);
     }
 

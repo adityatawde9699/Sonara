@@ -581,7 +581,20 @@ pub(crate) fn validate_progress_shape(progress: &Progress) -> Result<(), String>
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReaderDocument {
     pub(crate) source_sha256: String,
+    /// "page" for real source pages (PDF), "section" for the virtual pages
+    /// of about 300 words given to TXT, Markdown, DOCX and EPUB.
+    pub(crate) page_label: &'static str,
     pub(crate) blocks: Vec<ReaderBlock>,
+}
+
+/// How to name a block's page, from the extractor that produced it. Must
+/// match `page_label_for` in llm_client.py.
+pub(crate) fn page_label_for(extractor: &str) -> &'static str {
+    if extractor.starts_with("Poppler") || extractor.starts_with("tesseract") {
+        "page"
+    } else {
+        "section"
+    }
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -590,6 +603,8 @@ pub(crate) struct ReaderBlock {
     pub(crate) id: String,
     pub(crate) kind: String,
     pub(crate) text: String,
+    /// One-based source page, when the extractor recorded one.
+    pub(crate) page: Option<u32>,
 }
 
 /// Same cap as the text the assistant may read (llm_client.py).
@@ -633,11 +648,21 @@ pub(crate) fn load_reader_document(
                     .unwrap_or("paragraph")
                     .to_owned(),
                 text: block.get("text")?.as_str()?.to_owned(),
+                page: block
+                    .pointer("/source/page")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|page| u32::try_from(page).ok())
+                    .filter(|page| *page > 0),
             })
         })
         .collect();
+    let extractor = value
+        .get("extractor")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
     Ok(ReaderDocument {
         source_sha256: source_sha256.to_owned(),
+        page_label: page_label_for(extractor),
         blocks,
     })
 }
@@ -655,8 +680,9 @@ mod tests {
             root.join("extracted_document.json"),
             serde_json::json!({
                 "source_sha256": sha,
+                "extractor": "Poppler pdftotext -bbox-layout",
                 "blocks": [
-                    {"id": "b-0", "kind": "heading", "text": "Title"},
+                    {"id": "b-0", "kind": "heading", "text": "Title", "source": {"page": 3}},
                     {"id": "b-1", "kind": "paragraph", "text": "Body."},
                     {"kind": "paragraph", "text": "no id: skipped"},
                 ],
@@ -667,6 +693,10 @@ mod tests {
         let document = load_reader_document(&root, &sha).unwrap();
         assert_eq!(document.blocks.len(), 2);
         assert_eq!(document.blocks[0].kind, "heading");
+        assert_eq!(document.blocks[0].page, Some(3));
+        assert_eq!(document.blocks[1].page, None);
+        assert_eq!(document.page_label, "page");
+        assert_eq!(page_label_for("Native EPUB reader"), "section");
         assert!(load_reader_document(&root, &"d".repeat(64)).is_err());
         let _ = fs::remove_dir_all(&root);
     }

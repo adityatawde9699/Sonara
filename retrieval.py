@@ -2,7 +2,10 @@
 
 Every provider gets retrieval, not only the one with an embedding server:
 
-- ``chunk_document`` splits text into paragraph-aligned passages.
+- ``chunk_blocks`` builds passages from extracted document blocks, keeping
+  the block id, character offsets and page of every piece, so an answer's
+  citations can point back into the document. ``chunk_document`` does the
+  same split on plain text, without locations.
 - ``Bm25Index`` ranks passages lexically. It is pure Python, needs no model
   and runs on the device, so it works with Ollama, embedded llama.cpp and
   cloud providers alike, and no document text leaves the device to build it.
@@ -63,6 +66,109 @@ def _stem(token: str) -> str:
                 return token
             return stem
     return token
+
+
+@dataclass(frozen=True)
+class SourcePiece:
+    """Code-point offsets ``[start, end)`` within one document block."""
+
+    block_id: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class Passage:
+    """A retrieval passage and where its text comes from."""
+
+    text: str
+    pieces: tuple[SourcePiece, ...]
+    # One-based page of the first piece; None when blocks carry no page.
+    page: int | None = None
+
+
+_SENTENCE_END = re.compile(r"(?<=[.!?…])[\"')\]]*\s+")
+
+
+def _trimmed(text: str, start: int, end: int) -> tuple[int, int]:
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return start, end
+
+
+def _split_block(text: str, max_chars: int) -> list[tuple[int, int]]:
+    """Offsets of pieces of ``text`` no longer than ``max_chars``: whole
+    sentences where possible, word boundaries for an over-long sentence."""
+    start, end = _trimmed(text, 0, len(text))
+    if end - start <= max_chars:
+        return [(start, end)] if end > start else []
+    sentences: list[tuple[int, int]] = []
+    cursor = start
+    for match in _SENTENCE_END.finditer(text, start, end):
+        sentences.append((cursor, match.start() + len(match.group(0).rstrip())))
+        cursor = match.end()
+    sentences.append((cursor, end))
+    bounded: list[tuple[int, int]] = []
+    for a, b in sentences:
+        a, b = _trimmed(text, a, b)
+        while b - a > max_chars:
+            cut = text.rfind(" ", a, a + max_chars + 1)
+            cut = cut if cut > a else a + max_chars
+            bounded.append(_trimmed(text, a, cut))
+            a, b = _trimmed(text, cut, b)
+        if b > a:
+            bounded.append((a, b))
+    pieces: list[tuple[int, int]] = []
+    for a, b in bounded:
+        if pieces and b - pieces[-1][0] <= max_chars:
+            pieces[-1] = (pieces[-1][0], b)
+        else:
+            pieces.append((a, b))
+    return pieces
+
+
+def chunk_blocks(blocks: Iterable[dict], max_chars: int = PASSAGE_CHARS) -> list[Passage]:
+    """Passages of at most ``max_chars`` characters from extracted blocks.
+
+    ``blocks`` are ``extracted_document.json`` blocks: ``id``, ``text`` and
+    ``source.page``. Short blocks on the same page are merged into one
+    passage; a long block is split at sentence ends. Each passage's text is its pieces joined by
+    blank lines, and every piece is an exact slice of its block's text.
+    """
+    passages: list[Passage] = []
+    texts: list[str] = []
+    pieces: list[SourcePiece] = []
+    page: int | None = None
+    size = 0
+
+    def flush() -> None:
+        nonlocal texts, pieces, page, size
+        if texts:
+            passages.append(Passage("\n\n".join(texts), tuple(pieces), page))
+        texts, pieces, page, size = [], [], None, 0
+
+    for block in blocks:
+        block_id = block.get("id")
+        text = block.get("text")
+        if not isinstance(block_id, str) or not isinstance(text, str):
+            continue
+        source = block.get("source")
+        block_page = source.get("page") if isinstance(source, dict) else None
+        block_page = block_page if isinstance(block_page, int) and block_page > 0 else None
+        for start, end in _split_block(text, max_chars):
+            length = end - start
+            # A passage stays on one page, so its citation names the right one.
+            if texts and (size + length + 2 > max_chars or block_page != page):
+                flush()
+            if not texts:
+                page = block_page
+            texts.append(text[start:end])
+            pieces.append(SourcePiece(block_id, start, end))
+            size += length + (2 if size else 0)
+    flush()
+    return passages
 
 
 def chunk_document(text: str, max_chars: int = PASSAGE_CHARS) -> list[str]:

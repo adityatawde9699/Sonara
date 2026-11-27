@@ -11,11 +11,13 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 mod audio_server;
 mod library;
 mod llm_rpc;
+mod llm_server;
 mod migrate;
 mod models;
 mod pickers;
 mod process_tree;
 mod runtime;
+mod secrets;
 mod session;
 mod storage;
 mod voices;
@@ -23,8 +25,8 @@ mod voices;
 use audio_server::AudioServer;
 use library::{LibraryDocument, LIBRARY_FILE};
 use llm_rpc::{
-    invoke_llm_rpc, llm_test_connection_inner, shutdown_llm_worker, ChatMessageInput,
-    LlmChatResult, LlmConfigInput, LlmSummarizeResult, LlmTestResult, LlmWorker,
+    cancel_llm_request, invoke_llm_rpc, llm_test_connection_inner, shutdown_llm_worker,
+    ChatMessageInput, LlmChatResult, LlmConfigInput, LlmSummarizeResult, LlmTestResult, LlmWorker,
 };
 use pickers::{choose_document_path, choose_gguf_path};
 use runtime::{
@@ -50,6 +52,13 @@ struct AppState {
     /// is held for the whole of a request, so shutdown uses this one to kill a
     /// busy worker instead of waiting behind the in-flight call.
     llm_child: Mutex<Option<Arc<Mutex<Child>>>>,
+    /// Set by `llm_cancel` so the stopped request reports a cancellation
+    /// rather than a crashed worker.
+    llm_cancel_requested: std::sync::atomic::AtomicBool,
+    /// Assistant API keys; see secrets.rs.
+    api_keys: secrets::ApiKeys,
+    /// The llama-server Sonara supervises, in the managed llama.cpp mode.
+    llama_servers: llm_server::LlamaServers,
     /// Serializes read-modify-write updates of the library file.
     library: Mutex<()>,
     /// The passages of the run being synthesized, published as they finish
@@ -629,6 +638,7 @@ async fn llm_test_connection(
 ) -> Result<LlmTestResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let config = prepare_llm_config(&state, config)?;
         llm_test_connection_inner(Some(&app), &state, config)
     })
     .await
@@ -640,16 +650,20 @@ async fn llm_chat(
     app: AppHandle,
     config: LlmConfigInput,
     question: String,
-    context: Option<String>,
     history: Option<Vec<ChatMessageInput>>,
 ) -> Result<LlmChatResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let config = prepare_llm_config(&state, config)?;
+        // The worker reads the open document itself, so its passages keep
+        // their block ids and pages for citations, and the webview never
+        // sends the document text. With nothing open, the question is asked
+        // without a document.
         let req = serde_json::json!({
             "action": "chat",
             "config": config,
             "question": question,
-            "context": context.unwrap_or_default(),
+            "document": assistant_document(&state)?,
             "history": history.unwrap_or_default(),
         });
         let val = invoke_llm_rpc(Some(&app), &state, &req)?;
@@ -665,15 +679,26 @@ async fn llm_chat(
 async fn llm_summarize(
     app: AppHandle,
     config: LlmConfigInput,
-    text: String,
+    text: Option<String>,
     mode: Option<String>,
 ) -> Result<LlmSummarizeResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let config = prepare_llm_config(&state, config)?;
+        // Without text (a selected passage to explain), the worker reads the
+        // open document.
+        let document = match text {
+            Some(_) => None,
+            None => Some(
+                assistant_document(&state)?
+                    .ok_or_else(|| "No document is currently loaded or selected.".to_owned())?,
+            ),
+        };
         let req = serde_json::json!({
             "action": "summarize",
             "config": config,
-            "text": text,
+            "text": text.unwrap_or_default(),
+            "document": document,
             "mode": mode.unwrap_or_else(|| "summary".to_string()),
         });
         let val = invoke_llm_rpc(Some(&app), &state, &req)?;
@@ -683,6 +708,172 @@ async fn llm_summarize(
     })
     .await
     .map_err(|e| format!("LLM summarize task failed: {e}"))?
+}
+
+/// The config as the worker needs it: with the provider's saved API key
+/// (the webview sends none) and, in the managed llama.cpp mode, the
+/// endpoints of the server Sonara runs.
+fn prepare_llm_config(
+    state: &AppState,
+    mut config: LlmConfigInput,
+) -> Result<LlmConfigInput, String> {
+    if config.api_key.as_deref().is_none_or(str::is_empty) {
+        config.api_key = state.api_keys.get(&config.provider);
+    }
+    if config.provider == "llama_cpp" && config.managed_server == Some(true) {
+        let status = state.llama_servers.status();
+        let Some(endpoint) = status.endpoint else {
+            return Err(match status.state {
+                llm_server::ServerState::Starting => {
+                    "llama-server is still loading its model. Try again in a moment.".to_owned()
+                }
+                _ => "Start llama-server in Settings first.".to_owned(),
+            });
+        };
+        config.endpoint = Some(endpoint);
+        config.embedding_endpoint = status.embedding_endpoint;
+    }
+    Ok(config)
+}
+
+#[tauri::command]
+fn llama_server_status(state: State<'_, AppState>) -> llm_server::ServerStatus {
+    state.llama_servers.status()
+}
+
+/// The llama-server program Sonara will run, if one was picked or is on PATH.
+#[tauri::command]
+fn llama_server_executable(app: AppHandle) -> Result<Option<String>, String> {
+    Ok(llm_server::find_executable(&app_data_dir(&app)?)
+        .map(|path| path.to_string_lossy().into_owned()))
+}
+
+/// Pick the llama-server program with the native picker and remember it.
+#[tauri::command]
+async fn llama_server_choose_executable(app: AppHandle) -> Result<Option<String>, String> {
+    let app_data = app_data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = pickers::choose_executable_path("Choose llama.cpp's llama-server")? else {
+            return Ok(None);
+        };
+        llm_server::save_executable(&app_data, &path)?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| format!("Choosing llama-server failed: {e}"))?
+}
+
+/// Start llama-server with a GGUF model (and an embedding model). The
+/// program is the remembered or PATH one; the webview cannot name it.
+#[tauri::command]
+fn llama_server_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    model: String,
+    embedding_model: Option<String>,
+    context_size: Option<u32>,
+    threads: Option<u32>,
+) -> Result<llm_server::ServerStatus, String> {
+    let executable = llm_server::find_executable(&app_data_dir(&app)?).ok_or_else(|| {
+        "llama-server was not found on PATH. Choose the program in Settings.".to_owned()
+    })?;
+    state.llama_servers.start(llm_server::StartRequest {
+        executable,
+        model: PathBuf::from(model),
+        embedding_model: embedding_model
+            .filter(|path| !path.trim().is_empty())
+            .map(PathBuf::from),
+        context_size,
+        threads,
+    })
+}
+
+#[tauri::command]
+fn llama_server_stop(state: State<'_, AppState>) -> llm_server::ServerStatus {
+    state.llama_servers.stop();
+    state.llama_servers.status()
+}
+
+/// Save an assistant API key in the OS credential store, or for this run
+/// when there is none. Returns where it was kept.
+#[tauri::command]
+async fn llm_set_api_key(
+    app: AppHandle,
+    provider: String,
+    key: String,
+) -> Result<secrets::KeyStorage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AppState>().api_keys.save(&provider, &key)
+    })
+    .await
+    .map_err(|e| format!("Saving the API key failed: {e}"))?
+}
+
+/// Where the provider's key is kept, or null when none is saved.
+#[tauri::command]
+async fn llm_api_key_status(
+    app: AppHandle,
+    provider: String,
+) -> Result<Option<secrets::KeyStorage>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(app.state::<AppState>().api_keys.status(&provider))
+    })
+    .await
+    .map_err(|e| format!("Checking the API key failed: {e}"))?
+}
+
+#[tauri::command]
+async fn llm_clear_api_key(app: AppHandle, provider: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().api_keys.clear(&provider))
+        .await
+        .map_err(|e| format!("Removing the API key failed: {e}"))?
+}
+
+#[tauri::command]
+async fn storage_usage(app: AppHandle) -> Result<storage::StorageUsage, String> {
+    let app_data = app_data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || storage::storage_usage(&app_data))
+        .await
+        .map_err(|e| format!("Measuring storage failed: {e}"))
+}
+
+/// Clear a cache: "audio" (synthesized passages) or "embeddings" (the
+/// assistant's retrieval vectors). Neither affects the open session.
+#[tauri::command]
+async fn clear_cache(app: AppHandle, kind: String) -> Result<storage::StorageUsage, String> {
+    let app_data = app_data_dir(&app)?;
+    if kind == "audio" {
+        let state = app.state::<AppState>();
+        // A run reads and writes the cache while it synthesizes.
+        let busy = state
+            .active
+            .lock()
+            .map_err(|_| "Synthesis state is unavailable.".to_owned())?
+            .is_some();
+        if busy {
+            return Err(
+                "Wait for speech preparation to finish before clearing the audio cache.".to_owned(),
+            );
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        match kind.as_str() {
+            "audio" => storage::clear_audio_cache(&app_data)?,
+            "embeddings" => storage::clear_embedding_cache(&app_data)?,
+            _ => return Err("Unknown cache.".to_owned()),
+        }
+        Ok(storage::storage_usage(&app_data))
+    })
+    .await
+    .map_err(|e| format!("Clearing the cache failed: {e}"))?
+}
+
+/// Stop the assistant request in flight. The worker is stopped with it (an
+/// embedded model unloads) and the next request starts a fresh one.
+/// Returns false when nothing was running.
+#[tauri::command]
+fn llm_cancel(state: State<'_, AppState>) -> bool {
+    cancel_llm_request(&state)
 }
 
 #[tauri::command]
@@ -713,27 +904,30 @@ async fn llm_discover_models(
     .map_err(|e| format!("LLM discover models task failed: {e}"))?
 }
 
+/// The document the assistant reads: the session being listened to, else
+/// the selected file. Derived only from backend state, so the frontend
+/// cannot choose which file is read.
+fn assistant_document(state: &AppState) -> Result<Option<String>, String> {
+    let session_dir =
+        current_session_dir(state)?.filter(|dir| dir.join("extracted_document.json").is_file());
+    if let Some(session_dir) = session_dir {
+        return Ok(Some(session_dir.to_string_lossy().into_owned()));
+    }
+    let guard = state
+        .selected_document
+        .lock()
+        .map_err(|_| "Document state unavailable.".to_owned())?;
+    Ok(guard
+        .as_ref()
+        .map(|selected| selected.to_string_lossy().into_owned()))
+}
+
 #[tauri::command]
 async fn get_document_text(app: AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        // The target is derived only from backend state; the frontend cannot
-        // choose which file is read.
-        let target = {
-            let session_dir =
-                current_session_dir(&state)?.filter(|dir| dir.join("document_text.txt").is_file());
-            if let Some(session_dir) = session_dir {
-                session_dir.to_string_lossy().into_owned()
-            } else if let Ok(guard) = state.selected_document.lock() {
-                if let Some(selected) = guard.as_ref() {
-                    selected.to_string_lossy().into_owned()
-                } else {
-                    return Err("No document is currently loaded or selected.".to_owned());
-                }
-            } else {
-                return Err("Document state unavailable.".to_owned());
-            }
-        };
+        let target = assistant_document(&state)?
+            .ok_or_else(|| "No document is currently loaded or selected.".to_owned())?;
 
         let req = serde_json::json!({
             "action": "get_document_text",
@@ -982,6 +1176,17 @@ pub fn run() {
             llm_test_connection,
             llm_chat,
             llm_summarize,
+            llm_cancel,
+            llama_server_status,
+            llama_server_executable,
+            llama_server_choose_executable,
+            llama_server_start,
+            llama_server_stop,
+            storage_usage,
+            clear_cache,
+            llm_set_api_key,
+            llm_api_key_status,
+            llm_clear_api_key,
             llm_model_status,
             llm_discover_models,
             llm_choose_model,
@@ -1032,6 +1237,7 @@ pub fn run() {
                 let app = window.app_handle();
                 app.state::<AudioServer>().stop();
                 shutdown_llm_worker(app.state::<AppState>().inner());
+                app.state::<AppState>().llama_servers.stop();
                 models::cancel_download(app.state::<models::ModelDownloads>().inner());
                 if let Ok(mut active) = app.state::<AppState>().active.lock() {
                     if let Some(job) = active.take() {

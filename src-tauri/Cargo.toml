@@ -16,6 +16,9 @@ serde_json = "=1.0.154"
 libc = "=0.2.191"
 getrandom = "=0.4.2"
 tauri = { version = "=2.10.3" }
+# Assistant API keys in the OS credential store (src/secrets.rs): Keychain,
+# Windows Credential Manager, or the Secret Service over pure-Rust D-Bus.
+keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "async-secret-service", "tokio", "crypto-rust"] }
 
 [target.'cfg(windows)'.dependencies]
 # Job Objects keep each worker's process tree together (src/process_tree.rs).

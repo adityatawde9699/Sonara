@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { TopBar } from "./components/TopBar";
 import { DocumentCard } from "./components/DocumentCard";
 import { PlayerCard } from "./components/PlayerCard";
-import { ReaderPanel } from "./components/ReaderPanel";
+import { type JumpTarget, ReaderPanel } from "./components/ReaderPanel";
 import { ShortcutsModal } from "./components/ShortcutsModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { HistoryDrawer } from "./components/HistoryDrawer";
@@ -43,6 +43,15 @@ function PassageStrip({ count, current }: { count: number; current: number }) {
 export default function App() {
   const sonara = useSonara();
   const [page, setPage] = useState<"home" | "library" | "reader" | "about">("home");
+  type Page = typeof page;
+  const navigate = (next: Page) => {
+    // A citation is shown once; coming back to the reader later follows the player.
+    if (next !== "reader") setJumpTarget(null);
+    setPage(next);
+  };
+  // A passage the assistant cited, to show in the reader.
+  const [jumpTarget, setJumpTarget] = useState<JumpTarget | null>(null);
+  const canShowInReader = Boolean(sonara.session) && isListeningPhase(sonara.phase);
   const [libraryQuery, setLibraryQuery] = useState("");
   const [libraryFilter, setLibraryFilter] = useState<"all" | "favorites">("all");
   const [theme, setTheme] = useState<"dark" | "light">(() => {
@@ -65,13 +74,13 @@ export default function App() {
   });
   const chooseFromLibrary = async () => {
     await sonara.chooseDocument();
-    setPage("home");
+    navigate("home");
   };
   const openFromLibrary = async (sourceSha256: string) => {
     const outcome = await sonara.openRecentDocument(sourceSha256);
     if (outcome === "failed") return;
     sonara.setIsHistoryOpen(false);
-    setPage(outcome === "current" ? "reader" : "home");
+    navigate(outcome === "current" ? "reader" : "home");
   };
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -81,7 +90,7 @@ export default function App() {
     const handleGlobalSearch = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "k" && !isModalDialogOpen()) {
         event.preventDefault();
-        setPage("library");
+        navigate("library");
         requestAnimationFrame(() => document.getElementById("global-search-input")?.focus());
       }
     };
@@ -90,7 +99,7 @@ export default function App() {
   }, []);
   const handleGlobalSearch = (value: string) => {
     setLibraryQuery(value);
-    if (value) setPage("library");
+    if (value) navigate("library");
   };
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -114,7 +123,7 @@ export default function App() {
   return (
     <main className="app-layout" data-ui="sonara-app" data-player={sonara.session && isListeningPhase(sonara.phase) ? "true" : "false"}>
       <aside className="app-rail" aria-label="Sonara navigation">
-        <button className="rail-brand" type="button" onClick={() => setPage("home")} aria-label="Sonara home">
+        <button className="rail-brand" type="button" onClick={() => navigate("home")} aria-label="Sonara home">
           <span className="rail-brand-mark" aria-hidden="true">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
               <path d="M5 10v4M9 7v10M13 4v16M17 8v8M21 10v4" />
@@ -124,15 +133,15 @@ export default function App() {
         </button>
 
         <nav className="rail-nav" aria-label="Primary">
-          <button className={`rail-nav-item ${page === "home" ? "is-current" : ""}`} type="button" onClick={() => setPage("home")} title="Home">
+          <button className={`rail-nav-item ${page === "home" ? "is-current" : ""}`} type="button" onClick={() => navigate("home")} title="Home">
             <House size={18} aria-hidden="true" />
             <span>Home</span>
           </button>
-          <button className={`rail-nav-item ${page === "library" ? "is-current" : ""}`} type="button" onClick={() => setPage("library")} title="Library">
+          <button className={`rail-nav-item ${page === "library" ? "is-current" : ""}`} type="button" onClick={() => navigate("library")} title="Library">
             <Library size={18} aria-hidden="true" />
             <span>Library</span><span className="nav-count">{sonara.recentDocs.length}</span>
           </button>
-          <button className={`rail-nav-item ${page === "reader" ? "is-current" : ""}`} type="button" onClick={() => setPage("reader")} disabled={!sonara.session} title="Reading view">
+          <button className={`rail-nav-item ${page === "reader" ? "is-current" : ""}`} type="button" onClick={() => navigate("reader")} disabled={!sonara.session} title="Reading view">
             <BookOpenText size={18} aria-hidden="true" />
             <span>Reading view</span>
           </button>
@@ -144,7 +153,7 @@ export default function App() {
             <Settings size={18} aria-hidden="true" />
             <span>Settings</span>
           </button>
-          <button className={`rail-nav-item ${page === "about" ? "is-current" : ""}`} type="button" onClick={() => setPage("about")} aria-current={page === "about" ? "page" : undefined} title="About Sonara">
+          <button className={`rail-nav-item ${page === "about" ? "is-current" : ""}`} type="button" onClick={() => navigate("about")} aria-current={page === "about" ? "page" : undefined} title="About Sonara">
             <Info size={18} aria-hidden="true" />
             <span>About</span>
           </button>
@@ -177,7 +186,7 @@ export default function App() {
               <header className="page-heading"><div><h1 id="library-title">Library</h1><p className="subtitle">Documents prepared for listening, kept on this device</p></div><button className="button button-primary" type="button" onClick={() => void chooseFromLibrary()} disabled={!sonara.tauriReady}><Plus size={16} aria-hidden="true" />Import document</button></header>
               <div className="library-toolbar"><label className="library-search"><Search size={16} aria-hidden="true" /><input aria-label="Search your library" placeholder="Search" value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} />{libraryQuery && <button type="button" aria-label="Clear search" onClick={() => setLibraryQuery("")}><X size={16} aria-hidden="true" /></button>}</label><div className="filter-tabs" role="group" aria-label="Library filter"><button type="button" className={libraryFilter === "all" ? "active" : ""} onClick={() => setLibraryFilter("all")}>All documents</button><button type="button" className={libraryFilter === "favorites" ? "active" : ""} onClick={() => setLibraryFilter("favorites")}>Favorites</button></div></div>
               {filteredDocs.length ? <ul className="library-list">{filteredDocs.map((doc) => <li className="library-row" key={doc.sourceSha256}><span className="recent-file-mark">{formatDocumentType(doc.sourceName)}</span><div className="library-copy"><strong title={doc.sourceName}>{doc.sourceName}</strong><span>{doc.chunksCount} passages <i>·</i> {formatDuration(doc.totalDurationSeconds)} <i>·</i> {new Date(doc.lastListenedAt).toLocaleDateString()}</span></div><button className={`favorite-button ${favorites.includes(doc.sourceSha256) ? "is-favorite" : ""}`} type="button" aria-label={`${favorites.includes(doc.sourceSha256) ? "Remove from" : "Add to"} favorites: ${doc.sourceName}`} onClick={() => toggleFavorite(doc.sourceSha256)}><Star size={16} fill={favorites.includes(doc.sourceSha256) ? "currentColor" : "none"} aria-hidden="true" /></button>{sonara.session?.sourceSha256 === doc.sourceSha256
-                ? <button className="button button-secondary" type="button" onClick={() => setPage("reader")}>Open reader</button>
+                ? <button className="button button-secondary" type="button" onClick={() => navigate("reader")}>Open reader</button>
                 : <button className="button button-secondary" type="button" onClick={() => void openFromLibrary(doc.sourceSha256)} disabled={!doc.available} title={doc.available ? undefined : "The file was moved or deleted. Import it again."} aria-label={`Listen again: ${doc.sourceName}`}>Listen again</button>}</li>)}</ul> : <div className="library-empty"><h2>{sonara.recentDocs.length ? "No matching documents" : "No documents yet"}</h2><p>{sonara.recentDocs.length ? "Try another title or change the filter." : "Imported documents appear here once their speech is prepared."}</p>{!sonara.recentDocs.length && <button className="button button-primary" type="button" onClick={() => void chooseFromLibrary()} disabled={!sonara.tauriReady}>Import a document</button>}</div>}
             </section>
           ) : page === "about" ? (
@@ -197,7 +206,7 @@ export default function App() {
                   <h2 id="about-story-title">For papers, reports and long articles</h2>
                   <p>Listen to a document while you follow its text, pause anywhere, and come back to the same passage later.</p>
                 </div>
-                <button className="button button-primary" type="button" onClick={() => setPage("library")}>Explore your library</button>
+                <button className="button button-primary" type="button" onClick={() => navigate("library")}>Explore your library</button>
               </section>
 
               <section className="about-capabilities" aria-label="How Sonara works">
@@ -230,12 +239,13 @@ export default function App() {
               </aside>
             </section>
           ) : page === "reader" && sonara.session && isListeningPhase(sonara.phase) ? (
-            <section className="reader-page"><button className="back-link" type="button" onClick={() => setPage("home")}><ArrowLeft size={16} aria-hidden="true" />Home</button><ReaderPanel
+            <section className="reader-page"><button className="back-link" type="button" onClick={() => navigate("home")}><ArrowLeft size={16} aria-hidden="true" />Home</button><ReaderPanel
               sourceName={sonara.session.sourceName}
               sourceSha256={sonara.session.sourceSha256}
               chunks={sonara.session.chunks}
               activeChunk={sonara.playerState.segment}
               onPlayFromChunk={(index) => sonara.seekToChunk(index, true)}
+              jumpTarget={jumpTarget}
             /></section>
           ) : <>
           {!sonara.tauriReady && (
@@ -277,7 +287,7 @@ export default function App() {
                     <PassageStrip count={sonara.session.chunks.length} current={sonara.playerState.segment} />
                     <div className="continue-progress" role="progressbar" aria-label="Listening progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(currentProgress)}><span style={{ width: `${currentProgress}%` }} /></div>
                     <div className="continue-time"><span>{formatDuration(sonara.playerState.globalPosition)} listened</span><span>{Math.round(currentProgress)}%</span></div>
-                    <div className="continue-actions"><button className="button button-primary" type="button" onClick={() => void sonara.startPlayback()} disabled={sonara.playerState.isPlaying || sonara.playerState.hasError}><Play size={16} fill="currentColor" aria-hidden="true" /><span>{sonara.playerState.isPlaying ? "Listening now" : "Resume listening"}</span></button><button className="continue-text-action" type="button" onClick={() => setPage("reader")}>Read along</button></div>
+                    <div className="continue-actions"><button className="button button-primary" type="button" onClick={() => void sonara.startPlayback()} disabled={sonara.playerState.isPlaying || sonara.playerState.hasError}><Play size={16} fill="currentColor" aria-hidden="true" /><span>{sonara.playerState.isPlaying ? "Listening now" : "Resume listening"}</span></button><button className="continue-text-action" type="button" onClick={() => navigate("reader")}>Read along</button></div>
                   </div>
                 </section>;
               })()}
@@ -421,6 +431,13 @@ export default function App() {
           sonara.setIsAssistantOpen(false);
           sonara.setIsSettingsOpen(true);
         }}
+        onOpenCitation={canShowInReader ? (citation) => {
+          const span = citation.spans[0];
+          if (!span) return;
+          sonara.setIsAssistantOpen(false);
+          setJumpTarget({ ...span, key: Date.now() });
+          navigate("reader");
+        } : undefined}
       />
     </main>
   );

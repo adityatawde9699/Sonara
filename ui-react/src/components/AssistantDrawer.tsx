@@ -1,15 +1,18 @@
 import { type FC, useState, useEffect, useRef } from "react";
 import { useModalDialog } from "../hooks/useModalDialog";
 import {
+  type Citation,
   type FrontendSession,
   type LlmConfig,
   type ChatMessage,
+  LLM_CANCELLED,
+  citationChipLabel,
   loadStoredLlmConfig,
+  llmCancel,
   llmChat,
   llmSummarize,
-  getDocumentText,
 } from "../lib/tauri";
-import { Check, Copy, SendHorizontal, Settings, X } from "lucide-react";
+import { Check, Copy, SendHorizontal, Settings, Square, X } from "lucide-react";
 
 interface Props {
   isOpen: boolean;
@@ -17,6 +20,8 @@ interface Props {
   session: FrontendSession | null;
   documentName?: string;
   onOpenSettings?: () => void;
+  /** Show a cited passage in the reader; absent when the reader is unavailable. */
+  onOpenCitation?: (citation: Citation) => void;
 }
 
 interface MessageItem {
@@ -24,7 +29,11 @@ interface MessageItem {
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: number;
+  /** Passages the answer cites, keyed by one-based passage number. */
+  citations?: Map<number, Citation>;
 }
+
+const PASSAGE_LABEL = /(\[Passages?\s+\d+(?:\s*(?:,|and|&|-|–)\s*\d+)*\])/i;
 
 function stripThinking(raw: string): string {
   if (!raw) return "";
@@ -42,39 +51,20 @@ export const AssistantDrawer: FC<Props> = ({
   session,
   documentName,
   onOpenSettings,
+  onOpenCitation,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [docText, setDocText] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const dialogRef = useModalDialog<HTMLElement>(isOpen, onClose);
 
   const llmConfig: LlmConfig = loadStoredLlmConfig();
   const docTitle = documentName || session?.sourceName || "Active Document";
-
-  // Pre-load document text when drawer is opened
-  useEffect(() => {
-    if (!isOpen) return;
-
-    let mounted = true;
-    getDocumentText()
-      .then((text) => {
-        if (mounted && text) {
-          setDocText(text);
-        }
-      })
-      .catch(() => {
-        // Text retrieval will fall back to empty context if not ready
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, [isOpen]);
 
   // Scroll to bottom when messages update
   useEffect(() => {
@@ -92,6 +82,24 @@ export const AssistantDrawer: FC<Props> = ({
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  /** A stopped request is a note, not an error. */
+  const stoppedNote = (): MessageItem => ({
+    id: `msg-${Date.now()}-stop`,
+    role: "system",
+    content: "Stopped.",
+    timestamp: Date.now(),
+  });
+
+  const handleStop = async () => {
+    setIsStopping(true);
+    setStatusMessage("Stopping…");
+    try {
+      await llmCancel();
+    } catch {
+      // The request's own error is shown when it returns.
+    }
+  };
 
   const handleSend = async (userPrompt?: string) => {
     const question = (userPrompt ?? input).trim();
@@ -115,25 +123,18 @@ export const AssistantDrawer: FC<Props> = ({
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
     try {
-      let context = docText;
-      if (!context) {
-        try {
-          context = await getDocumentText();
-          setDocText(context);
-        } catch {
-          context = "";
-        }
-      }
-
-      const res = await llmChat(llmConfig, question, context, history);
+      const res = await llmChat(llmConfig, question, history);
       if (res.ok && res.answer) {
         const assistantMsg: MessageItem = {
           id: `msg-${Date.now()}-a`,
           role: "assistant",
           content: res.answer,
           timestamp: Date.now(),
+          citations: new Map((res.citations ?? []).map((citation) => [citation.passageIndex + 1, citation])),
         };
         setMessages((prev) => [...prev, assistantMsg]);
+      } else if (res.error === LLM_CANCELLED) {
+        setMessages((prev) => [...prev, stoppedNote()]);
       } else {
         const errMsg = res.error || "No response received from LLM.";
         setMessages((prev) => [
@@ -150,7 +151,7 @@ export const AssistantDrawer: FC<Props> = ({
       const msg = err instanceof Error ? err.message : String(err);
       setMessages((prev) => [
         ...prev,
-        {
+        msg === LLM_CANCELLED ? stoppedNote() : {
           id: `msg-${Date.now()}-err`,
           role: "assistant",
           content: `**Error communicating with LLM engine**\n\n${msg}`,
@@ -159,6 +160,8 @@ export const AssistantDrawer: FC<Props> = ({
       ]);
     } finally {
       setIsLoading(false);
+      setIsStopping(false);
+      setStatusMessage(null);
     }
   };
 
@@ -186,13 +189,7 @@ export const AssistantDrawer: FC<Props> = ({
     setStatusMessage(`Generating ${actionLabel.toLowerCase()}…`);
 
     try {
-      let text = docText;
-      if (!text) {
-        text = await getDocumentText();
-        setDocText(text);
-      }
-
-      const res = await llmSummarize(llmConfig, text, mode);
+      const res = await llmSummarize(llmConfig, mode);
       if (res.ok && res.summary) {
         const assistantMsg: MessageItem = {
           id: `msg-${Date.now()}-a`,
@@ -201,6 +198,8 @@ export const AssistantDrawer: FC<Props> = ({
           timestamp: Date.now(),
         };
         setMessages((prev) => [...prev, assistantMsg]);
+      } else if (res.error === LLM_CANCELLED) {
+        setMessages((prev) => [...prev, stoppedNote()]);
       } else {
         setMessages((prev) => [
           ...prev,
@@ -216,7 +215,7 @@ export const AssistantDrawer: FC<Props> = ({
       const msg = err instanceof Error ? err.message : String(err);
       setMessages((prev) => [
         ...prev,
-        {
+        msg === LLM_CANCELLED ? stoppedNote() : {
           id: `msg-${Date.now()}-err`,
           role: "assistant",
           content: `**Error**\n\n${msg}`,
@@ -225,6 +224,7 @@ export const AssistantDrawer: FC<Props> = ({
       ]);
     } finally {
       setIsLoading(false);
+      setIsStopping(false);
       setStatusMessage(null);
     }
   };
@@ -240,8 +240,34 @@ export const AssistantDrawer: FC<Props> = ({
     setMessages([]);
   };
 
+  /** A passage label as chips for the passages it cites; text when none were sent. */
+  const renderCitationLabel = (label: string, key: string, citations?: Map<number, Citation>) => {
+    const cited = (label.match(/\d+/g) ?? [])
+      .map((number) => citations?.get(Number(number)))
+      .filter((citation): citation is Citation => Boolean(citation));
+    if (!cited.length) return <span key={key}>{label}</span>;
+    return (
+      <span key={key} className="citation-group">
+        {cited.map((citation) => (
+          <button
+            key={citation.passageIndex}
+            type="button"
+            className="citation-chip"
+            title={citation.excerpt}
+            aria-label={`Show ${citation.label}, ${citationChipLabel(citation)}, in the reader`}
+            disabled={!onOpenCitation}
+            onClick={() => onOpenCitation?.(citation)}
+          >
+            {citationChipLabel(citation)}
+          </button>
+        ))}
+      </span>
+    );
+  };
+
   // Helper to format text with lightweight Markdown styling
-  const renderFormattedContent = (content: string) => {
+  const renderFormattedContent = (content: string, citations?: Map<number, Citation>) => {
+    const renderInlineFormatting = (text: string) => renderInline(text, citations);
     const cleanContent = stripThinking(content);
     const lines = cleanContent.split("\n");
     return lines.map((line, idx) => {
@@ -295,8 +321,8 @@ export const AssistantDrawer: FC<Props> = ({
     });
   };
 
-  const renderInlineFormatting = (text: string) => {
-    // Basic bold and code rendering
+  const renderInline = (text: string, citations?: Map<number, Citation>) => {
+    // Basic bold and code rendering, and passage labels as citation chips.
     const parts = text.split(/(\*\*.*?\*\*|`.*?`)/g);
     return parts.map((part, i) => {
       if (part.startsWith("**") && part.endsWith("**")) {
@@ -305,7 +331,9 @@ export const AssistantDrawer: FC<Props> = ({
       if (part.startsWith("`") && part.endsWith("`")) {
         return <code key={i} className="md-code">{part.slice(1, -1)}</code>;
       }
-      return part;
+      return part.split(PASSAGE_LABEL).map((piece, j) =>
+        PASSAGE_LABEL.test(piece) ? renderCitationLabel(piece, `${i}-${j}`, citations) : piece,
+      );
     });
   };
 
@@ -415,7 +443,9 @@ export const AssistantDrawer: FC<Props> = ({
               </div>
             </div>
           ) : (
-            messages.map((m) => (
+            messages.map((m) => m.role === "system" ? (
+              <p key={m.id} className="assistant-note" role="note">{m.content}</p>
+            ) : (
               <div
                 key={m.id}
                 className={`assistant-msg-row ${m.role === "user" ? "user-row" : "assistant-row"}`}
@@ -438,7 +468,7 @@ export const AssistantDrawer: FC<Props> = ({
                     )}
                   </div>
                   <div className="bubble-body">
-                    {renderFormattedContent(m.content)}
+                    {renderFormattedContent(m.content, m.citations)}
                   </div>
                 </div>
               </div>
@@ -501,15 +531,28 @@ export const AssistantDrawer: FC<Props> = ({
               disabled={isLoading}
               aria-label="Ask assistant question"
             />
-            <button
-              type="submit"
-              className="assistant-send-btn"
-              disabled={!input.trim() || isLoading}
-              aria-label="Send message"
-              title="Send message"
-            >
-              <SendHorizontal size={16} aria-hidden="true" />
-            </button>
+            {isLoading ? (
+              <button
+                type="button"
+                className="assistant-send-btn assistant-stop-btn"
+                onClick={() => void handleStop()}
+                disabled={isStopping}
+                aria-label="Stop the answer"
+                title="Stop"
+              >
+                <Square size={14} fill="currentColor" aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="assistant-send-btn"
+                disabled={!input.trim()}
+                aria-label="Send message"
+                title="Send message"
+              >
+                <SendHorizontal size={16} aria-hidden="true" />
+              </button>
+            )}
           </form>
         </div>
       </aside>

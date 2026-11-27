@@ -214,6 +214,20 @@ async function main() {
     await click("button[title='Library']");
     await waitFor("the reader action", async () => (await bodyText()).includes("Open reader"));
 
+    step("measuring local storage in Settings");
+    // Close the library drawer opened above.
+    await run(`document.querySelector(".modal-backdrop")?.click(); return true;`);
+    await click("button.rail-nav-item[title='Settings']");
+    const storage = await waitFor("storage sizes", async () => {
+      const rows = await run(`return [...document.querySelectorAll(".storage-row")].map((row) => row.innerText.replace(/\\s+/g, " "))`);
+      return rows.length === 3 && rows.every((row) => !row.includes("…")) ? rows : null;
+    });
+    // Synthesis filled the audio cache and the session.
+    if (!/Audio cache.*\d+(\.\d)? [KMG]?B · \d+ files?/.test(storage[0]) || /Empty/.test(storage[2])) {
+      throw new Error(`unexpected storage sizes ${JSON.stringify(storage)}`);
+    }
+    console.log(`  ${storage[0].replace(/Synthesized.*?again\. /, "")}`);
+
     step("checking the version 2 data layout on disk");
     checkDataLayout(appData);
     console.log("Desktop smoke test passed.");

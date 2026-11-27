@@ -195,3 +195,81 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Ou
 pub(crate) fn choose_gguf_path() -> Result<Option<PathBuf>, String> {
     Err("Model file selection is not supported on this operating system.".to_owned())
 }
+
+/// Pick a program, such as llama.cpp's `llama-server`.
+#[cfg(target_os = "linux")]
+pub(crate) fn choose_executable_path(title: &str) -> Result<Option<PathBuf>, String> {
+    let output = match Command::new("zenity")
+        .arg("--file-selection")
+        .arg(format!("--title={title}"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => Command::new("kdialog")
+            .arg("--getopenfilename")
+            .arg(".")
+            .arg("*|All files (*)")
+            .arg("--title")
+            .arg(title)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|error| format!("Could not open the file picker: {error}"))?,
+    };
+    picked_path(output)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn choose_executable_path(title: &str) -> Result<Option<PathBuf>, String> {
+    let script = format!(
+        r#"POSIX path of (choose file with prompt "{}")"#,
+        title.replace('"', "")
+    );
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| format!("Could not open the macOS file picker: {error}"))?;
+    picked_path(output)
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn choose_executable_path(title: &str) -> Result<Option<PathBuf>, String> {
+    let script = format!(
+        r#"Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Filter = "Programs (*.exe)|*.exe|All files (*.*)|*.*"
+$dialog.Title = "{}"
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ Write-Output $dialog.FileName }}"#,
+        title.replace('"', "")
+    );
+    let output = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| format!("Could not open the Windows file picker: {error}"))?;
+    picked_path(output)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+pub(crate) fn choose_executable_path(_title: &str) -> Result<Option<PathBuf>, String> {
+    Err("File selection is not supported on this operating system.".to_owned())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn picked_path(output: std::process::Output) -> Result<Option<PathBuf>, String> {
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8(output.stdout)
+        .map_err(|_| "The file picker returned an invalid path.".to_owned())?;
+    let value = value.trim();
+    Ok((!value.is_empty()).then(|| PathBuf::from(value)))
+}

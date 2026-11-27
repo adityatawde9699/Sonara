@@ -12,7 +12,8 @@
 
 - The Rust audio listener binds to `127.0.0.1` on an ephemeral port and checks a per-launch token, request host, active document/passage, canonical path, byte ranges, and response bounds. It shuts down with the application lifecycle.
 - The Tauri frontend capability set is limited to `core:default`; document selection and filesystem access are mediated by Rust commands rather than an exposed arbitrary filesystem API.
-- API keys are blanked before the frontend persists LLM configuration to WebView local storage. Keys may still be held in memory and passed to the local worker for configured requests; this is not OS keychain storage.
+- API keys are kept by the Rust process in the OS credential store (Keychain, Windows Credential Manager, Secret Service via the `keyring` crate), or in Rust memory for the session when no store exists. The webview sends a key once, to save it, and never holds or reads it afterwards. Rust adds the key to the request for the LLM worker, so it is still passed to the worker process over its stdin.
+- The managed `llama-server` program comes from PATH or the native file picker, never from the webview; the webview can only name GGUF model files, which must exist and end in `.gguf`. Servers bind to 127.0.0.1 on a free port.
 - Remote AI providers can receive prompts and bounded document context. Users must choose and configure the provider; ordinary extraction and local Piper narration do not need that provider.
 
 ## Remaining risks and review work

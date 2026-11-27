@@ -209,8 +209,14 @@ describe("Tauri bindings", () => {
     });
     const loadedCfg = loadStoredLlmConfig();
     expect(loadedCfg.provider).toBe("openai");
-    expect(loadedCfg.apiKey).toBe("sk-test"); // shared in memory so the Assistant can authenticate
+    // Keys stay in Rust: neither storage nor the loaded config holds one.
+    expect(loadedCfg.apiKey).toBeUndefined();
     expect(localStorage.getItem("sonara-llm-config-v1")).not.toContain("sk-test");
+    // A key an older build left in storage is removed on load.
+    localStorage.setItem("sonara-llm-config-v1", JSON.stringify({ provider: "gemini", apiKey: "old-key" }));
+    expect(loadStoredLlmConfig().apiKey).toBeUndefined();
+    expect(localStorage.getItem("sonara-llm-config-v1")).not.toContain("old-key");
+    saveStoredLlmConfig({ provider: "openai", endpoint: "https://api.openai.com/v1", model: "gpt-4o-mini" });
 
     // Invoke mock
     const mockInvoke = vi.fn().mockImplementation((cmd, args) => {
@@ -235,8 +241,10 @@ describe("Tauri bindings", () => {
     expect(chatRes.ok).toBe(true);
     expect(chatRes.answer).toBe("Answer for What is this doc?");
 
-    const sumRes = await llmSummarize(loadedCfg, "doc text", "summary");
+    const sumRes = await llmSummarize(loadedCfg, "summary");
     expect(sumRes.ok).toBe(true);
+    // The backend reads the open document; the webview sends no text.
+    expect(mockInvoke).toHaveBeenCalledWith("llm_summarize", { config: loadedCfg, text: undefined, mode: "summary" });
     expect(sumRes.summary).toBe("Summary of document");
 
     const docText = await getDocumentText();

@@ -20,6 +20,6 @@ The assistant can be configured for an OpenAI-compatible remote endpoint, includ
 
 ## Logs and user control
 
-Do not share raw logs without checking for local file paths, document titles, prompts, or other personal information. Remove generated audio and caches using the application's controls or the relevant paths documented in the UI/CLI. Exact cleanup behavior can vary by workflow; inspect the selected output and cache directory before deleting files manually.
+Do not share raw logs without checking for local file paths, document titles, prompts, or other personal information. The assistant's embedding cache (passage vectors from a local embedding server) is stored under `embeddings/` in Sonara's data directory; Settings → Storage shows its size and clears it, as it does for the audio cache. Assistant API keys are kept in the system keychain, not in Sonara's files. Remove generated audio and caches using the application's controls or the relevant paths documented in the UI/CLI. Exact cleanup behavior can vary by workflow; inspect the selected output and cache directory before deleting files manually.
 
 This document describes source behavior and is not a guarantee that no information ever leaves the device. Review the current provider configuration before using external services.

@@ -1,4 +1,7 @@
 import { type FC, useState, useEffect } from "react";
+import { ApiKeyField } from "./ApiKeyField";
+import { StorageSection } from "./StorageSection";
+import { LlamaServerPanel } from "./LlamaServerPanel";
 import { useModalDialog } from "../hooks/useModalDialog";
 import { ModelDownloads } from "./ModelDownloads";
 import {
@@ -73,7 +76,6 @@ export const SettingsModal: FC<Props> = ({
   onModelsChanged,
 }) => {
   const [llmConfig, setLlmConfig] = useState<LlmConfig>(() => loadStoredLlmConfig());
-  const [showApiKey, setShowApiKey] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<LlmTestResult | null>(null);
   const [modelState, setModelState] = useState("UNLOADED");
@@ -345,7 +347,7 @@ export const SettingsModal: FC<Props> = ({
               >
                 <option value="ollama">Ollama (Local & Private · Recommended)</option>
                 <option value="embedded_llama_cpp">llama.cpp embedded (Local · GGUF, no server)</option>
-                <option value="llama_cpp">llama.cpp server (Legacy HTTP · GGUF)</option>
+                <option value="llama_cpp">llama.cpp server (HTTP · GGUF · Sonara can run it)</option>
                 <option value="gemini">Google Gemini (Gemini 1.5 Flash)</option>
                 <option value="openai">OpenAI (GPT-4o mini)</option>
                 <option value="custom">Custom (OpenAI-Compatible / LM Studio)</option>
@@ -380,8 +382,16 @@ export const SettingsModal: FC<Props> = ({
                 <label className="llm-field"><span className="llm-label">Maximum response tokens</span><input type="number" className="llm-input" min={1} max={32768} step={128} value={llmConfig.maxTokens ?? 1024} onChange={(e) => handleConfigUpdate({ maxTokens: Number(e.target.value) })} /></label>
               </div>
             </> : <>
+            {llmConfig.provider === "llama_cpp" && <div className="llm-field">
+              <label className="llm-checkbox">
+                <input type="checkbox" checked={Boolean(llmConfig.managedServer)} onChange={(e) => handleConfigUpdate({ managedServer: e.target.checked })} />
+                <span>Let Sonara run llama-server</span>
+              </label>
+              <span className="llm-hint">Sonara starts llama-server on this device with the models you choose, restarts it if it exits, and stops it when Sonara closes. Turn this off to use a server you run yourself.</span>
+            </div>}
+            {llmConfig.provider === "llama_cpp" && llmConfig.managedServer && <LlamaServerPanel config={llmConfig} onChange={handleConfigUpdate} />}
             {/* Endpoint */}
-            <div className="llm-field">
+            {!(llmConfig.provider === "llama_cpp" && llmConfig.managedServer) && <div className="llm-field">
               <label htmlFor="llm-endpoint" className="llm-label">
                 API Endpoint URL
               </label>
@@ -393,7 +403,7 @@ export const SettingsModal: FC<Props> = ({
                 onChange={(e) => handleConfigUpdate({ endpoint: e.target.value })}
                 placeholder={llmConfig.provider === "llama_cpp" ? "http://127.0.0.1:9931/v1" : "http://localhost:11434/v1"}
               />
-            </div>
+            </div>}
 
             {/* Model Name */}
             <div className="llm-field">
@@ -410,7 +420,7 @@ export const SettingsModal: FC<Props> = ({
               />
             </div>
 
-            {llmConfig.provider === "llama_cpp" && <div className="llm-field">
+            {llmConfig.provider === "llama_cpp" && !llmConfig.managedServer && <div className="llm-field">
               <label htmlFor="llm-embedding-endpoint" className="llm-label">Embedding server URL</label>
               <input id="llm-embedding-endpoint" type="text" className="llm-input" value={llmConfig.embeddingEndpoint || ""} onChange={(event) => handleConfigUpdate({ embeddingEndpoint: event.target.value })} placeholder="same server as chat" />
               <span className="llm-hint">Optional separate loopback server running an embedding model with --embedding.</span>
@@ -425,32 +435,7 @@ export const SettingsModal: FC<Props> = ({
 
             {/* API Key */}
             {llmConfig.provider !== "embedded_llama_cpp" && <>
-            <div className="llm-field">
-              <div className="llm-field-head">
-                <label htmlFor="llm-api-key" className="llm-label">
-                  API Key
-                </label>
-                {llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? (
-                  <span className="llm-hint">Not required for local inference</span>
-                ) : (
-                  <button
-                    type="button"
-                    className="llm-toggle-key-btn"
-                    onClick={() => setShowApiKey(!showApiKey)}
-                  >
-                    {showApiKey ? "Hide" : "Show"}
-                  </button>
-                )}
-              </div>
-              <input
-                id="llm-api-key"
-                type={showApiKey ? "text" : "password"}
-                className="llm-input"
-                value={llmConfig.apiKey || ""}
-                onChange={(e) => handleConfigUpdate({ apiKey: e.target.value })}
-                placeholder={llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp" ? "Optional for local inference" : "sk-..."}
-              />
-            </div>
+            <ApiKeyField provider={llmConfig.provider} optional={llmConfig.provider === "ollama" || llmConfig.provider === "llama_cpp"} />
             </>}
           </div>
 
@@ -504,6 +489,8 @@ export const SettingsModal: FC<Props> = ({
             })}
           </div>
         </div>
+
+        {isTauriAvailable() && <StorageSection />}
 
         {/* Specs & Privacy */}
         <div className="settings-section">

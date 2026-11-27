@@ -12,10 +12,18 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 
 ### Added
 
+- Assistant answers cite the document. Each `[Passage N]` in an answer becomes a chip showing the page (PDF) or section (other formats); its tooltip shows the cited text, and clicking it opens the reading view at that passage, highlighted, with "Listen from here". Only passages the model was actually given can be cited; any other label stays plain text.
+- A Stop button ends an assistant answer in progress. The worker stops with it (an embedded model unloads) and the next question starts a fresh one.
+- API keys are saved in the system keychain (macOS Keychain, Windows Credential Manager, or the Secret Service on Linux) and survive restarts. The webview no longer holds a key after you save it. Where no keychain is available, Settings says the key is kept for this session only.
+- Settings → Storage shows the size of the audio cache, the assistant's embeddings and the current session, and clears either cache.
+- The llama.cpp provider can run `llama-server` for you ("Let Sonara run llama-server"). Sonara starts it on a free loopback port with the chat GGUF you choose, and a second instance with `--embeddings` for an optional embedding model. It waits until the server is ready, restarts it if it exits (at most twice a minute, then reports the failure with the server's output), and stops it when Sonara closes. `llama-server` is not bundled: Sonara uses the one on PATH, or one you choose.
+- The reading view marks where each PDF page begins.
 - Listening starts as soon as the first passage is ready, instead of after the whole document is synthesized. The player shows how many passages are ready and an estimated total length. If playback catches up with synthesis, it waits for the next passage ("Preparing passage N…") instead of stopping. A saved position in a passage that is not ready yet is held and resumed when that passage arrives. When synthesis finishes, playback carries on where it is. Cancelling returns to the document that was open before.
 
 ### Changed
 
+- The assistant reads the open document itself instead of receiving its text from the webview, so passages keep their block and page. Long blocks are split at sentence ends, and a passage never spans two pages.
+- The assistant's embedding cache moves into Sonara's data directory (`embeddings/`), unless `SONARA_CACHE_DIR` is set. Embeddings in the old `~/.cache/sonara/embeddings` are no longer used and can be deleted.
 - Cancelling synthesis lets the Python worker shut down cleanly (it now handles SIGTERM), so its speech engine closes and unfinished passages are removed.
 - Each synthesis run writes to its own directory. Cancelling or failing a run no longer leaves a partial manifest behind or leaks the previous session's audio, and the session you were listening to stays intact while a new document is prepared.
 - The desktop app no longer writes the combined `speech.wav`, halving the disk used per session. The CLI still writes it; `--no-combined-audio` turns it off, and `--cache-dir` sets the synthesis cache directory.
