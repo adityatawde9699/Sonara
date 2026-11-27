@@ -2,9 +2,9 @@
 
 This file records notable user-facing changes. The `v1.0.0` GitHub release exists but has no installer assets. Historical implementation notes and validation evidence remain in `docs/TESTING.md` and `docs/ROADMAP.md`.
 
-## v2.0.0 - 2026-11-27
+## v2.0.1 - 2026-11-28
 
-Sonara 2.0 starts playback after the first passage instead of after the whole document, and makes the assistant cite the document it reads. Linux x86_64 and macOS Apple Silicon only; Windows installers are still not built.
+The first published 2.0 release; v2.0.0 was tagged but never published (see below). Sonara 2.0 starts playback after the first passage instead of after the whole document, and makes the assistant cite the document it reads. Linux x86_64 and macOS Apple Silicon only; Windows installers are still not built.
 
 **Before upgrading:** the first launch converts your library to a new layout, and Sonara 1.x cannot read it, or reading positions saved by 2.0. Your old library is kept as `library.json.v1.bak` in Sonara's data directory (on Linux `~/.local/share/com.sonara.reader/`). Copy it back over `library.json` if you return to 1.x.
 
@@ -40,6 +40,14 @@ Sonara 2.0 starts playback after the first passage instead of after the whole do
 - Assistant summaries do not carry citations yet.
 - Minimum and recommended hardware for 2.0 are not published. The memory profile and the low-end streaming run in the 2.0 plan have not been done yet.
 - macOS builds are signed ad hoc unless the Apple notarization secrets are set (see docs/RELEASE_PROCESS.md).
+
+### Security
+
+- Updates the Rust crates `cookie` to 0.18.3 (RUSTSEC-2026-0594, private cookie nonces can repeat in processes that fork) and `url` to 2.5.9 (RUSTSEC-2026-0592, stack overflow in `Url::origin()` on nested `blob:` URLs). Both come in through Tauri.
+
+## v2.0.0 - 2026-11-27 (not published)
+
+Tagged, but no installers were published: the packaging run stalled, and its lockfile contained the two advisories fixed in v2.0.1. v2.0.1 replaces it with the same changes.
 
 ## v1.0.10 - 2026-11-17
 
