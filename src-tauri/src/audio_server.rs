@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(parse_byte_range("bytes=1-2,4-5", 100), None);
     }
 
-    /// A temporary reader-output tree behind a running `AudioServer`.
+    /// A temporary session run directory behind a running `AudioServer`.
     struct AudioFixture {
         root: PathBuf,
         server: AudioServer,
@@ -506,9 +506,12 @@ mod tests {
                 narration_ruleset_version: "rules-test".to_owned(),
                 voice: "test".to_owned(),
                 engine: "piper".to_owned(),
+                language: None,
+                page_count: None,
                 sample_rate: 22050,
                 channels: 1,
                 sample_width_bytes: 2,
+                dir: reader_output.clone(),
                 chunks: chunk_files
                     .into_iter()
                     .map(|path| ReaderChunk {
@@ -516,11 +519,12 @@ mod tests {
                         duration_seconds: 1.0,
                         pause_after_ms: 0,
                         source: None,
+                        unit_id: None,
                     })
                     .collect(),
             });
             let server = AudioServer::start(Arc::new(move |hash: &str, index: usize| {
-                session_audio_lookup(&state, Some(&reader_output), hash, index)
+                session_audio_lookup(&state, hash, index)
             }))
             .unwrap();
             let rest = server.base_url.strip_prefix("http://").unwrap();

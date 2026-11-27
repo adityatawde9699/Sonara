@@ -27,6 +27,10 @@ describe("HistoryDrawer component", () => {
         lastListenedAt: Date.now() - 5000,
         engine: "Piper",
         available: true,
+        createdAt: 0,
+        pageCount: null,
+        language: null,
+        complete: true,
       },
     ];
 
@@ -57,6 +61,10 @@ describe("HistoryDrawer component", () => {
         lastListenedAt: Date.now(),
         engine: "Piper",
         available: true,
+        createdAt: 0,
+        pageCount: null,
+        language: null,
+        complete: true,
       },
     ];
 
@@ -75,7 +83,10 @@ describe("HistoryDrawer component", () => {
 
   it("opens available documents and disables ones whose file is gone", () => {
     const onOpenDocument = vi.fn();
-    const base = { voice: "v", engine: "Piper", chunksCount: 1, totalDurationSeconds: 10, lastListenedAt: Date.now() };
+    const base = {
+      voice: "v", engine: "Piper", chunksCount: 1, totalDurationSeconds: 10, lastListenedAt: Date.now(),
+      createdAt: 0, pageCount: null, language: null, complete: true,
+    };
     render(
       <HistoryDrawer
         isOpen={true}

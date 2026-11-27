@@ -101,7 +101,7 @@ describe("Tauri bindings", () => {
     expect(await currentSession()).toBeNull();
     expect(await loadProgress("hash123")).toEqual({ segment: 2, offsetSeconds: 5 });
     await expect(saveProgress({
-      version: 1,
+      version: 2,
       sourceSha256: "hash123",
       segment: 2,
       offsetSeconds: 5,

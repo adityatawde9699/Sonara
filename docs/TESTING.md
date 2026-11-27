@@ -20,13 +20,14 @@ Not verified: listener judgement of the voice profiles, normalization rules, or 
 
 ### Desktop end-to-end test
 
-`e2e/desktop-smoke.mjs` drives the real app through `tauri-driver` and WebKitWebDriver (Linux; `webkit2gtk-driver` on Debian/Ubuntu, `cargo install tauri-driver --locked`). It has no npm dependencies and speaks the W3C WebDriver protocol over `fetch`. The native file picker cannot be automated, so the test seeds `library.json` in a temporary `XDG_DATA_HOME`. It then:
+`e2e/desktop-smoke.mjs` drives the real app through `tauri-driver` and WebKitWebDriver (Linux; `webkit2gtk-driver` on Debian/Ubuntu, `cargo install tauri-driver --locked`). It has no npm dependencies and speaks the W3C WebDriver protocol over `fetch`. The native file picker cannot be automated, so the test seeds Sonara 1.x data (a version 1 `library.json` and a 1.x audio cache) in a temporary `XDG_DATA_HOME`. It then:
 
 1. reopens the document from the library by hash;
 2. prepares speech with the Python worker and the Ryan Piper voice;
 3. waits for the first passage's metadata from the loopback audio server, and checks the URL shape;
 4. opens the reading view, checks that the first passage is highlighted, and uses "Listen from here" on paragraph 2;
-5. checks that the library shows the finished document.
+5. checks that the library shows the finished document;
+6. checks the data version 2 layout on disk: the upgraded library and its backup, the moved cache, one run directory named by `current-session` with a version 2 `session.json`, no `reader-output/`, and no combined `speech.wav`.
 
 The CI job `e2e` runs it under Xvfb after downloading the Ryan voice and checking its pinned hashes. The test found a real race: when progress was restored before the player's `<audio>` element mounted, the passage never loaded (about one run in six). Fixed with a ref callback that loads the pending passage on mount (`useAudioPlayer.attachAudio`), with a unit test that fails without the fix.
 

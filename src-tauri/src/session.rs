@@ -19,6 +19,19 @@ pub(crate) struct ReaderChunk {
     /// saved before this existed have none.
     #[serde(default)]
     pub(crate) source: Option<SourceSpan>,
+    /// The narration unit this passage speaks. Saved progress names it, so a
+    /// position survives a re-synthesis that renumbers passages.
+    #[serde(default)]
+    pub(crate) unit_id: Option<String>,
+}
+
+/// Narration unit ids are short hash-like tokens; anything else is dropped.
+pub(crate) fn valid_unit_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_:.".contains(&byte))
 }
 
 /// Character offsets of a passage within one extracted document block.
@@ -57,10 +70,29 @@ pub(crate) struct ReaderSession {
     pub(crate) voice: String,
     #[serde(default = "default_engine_name")]
     pub(crate) engine: String,
+    #[serde(default)]
+    pub(crate) language: Option<String>,
+    #[serde(default)]
+    pub(crate) page_count: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) channels: u16,
     pub(crate) sample_width_bytes: u16,
     pub(crate) chunks: Vec<ReaderChunk>,
+    /// The canonical run directory that holds this session's files. Not
+    /// stored: it is wherever `session.json` was read from.
+    #[serde(skip)]
+    pub(crate) dir: PathBuf,
+}
+
+/// `session.json` inside a run directory.
+pub(crate) const SESSION_FILE: &str = "session.json";
+pub(crate) const SESSION_VERSION: u8 = 2;
+
+#[derive(Deserialize, Serialize)]
+struct SessionFile {
+    version: u8,
+    #[serde(flatten)]
+    session: ReaderSession,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -84,6 +116,7 @@ pub(crate) struct FrontendChunk {
     pub(crate) duration_seconds: f64,
     pub(crate) pause_after_ms: u64,
     pub(crate) source: Option<SourceSpan>,
+    pub(crate) unit_id: Option<String>,
 }
 
 impl FrontendSession {
@@ -105,6 +138,7 @@ impl FrontendSession {
                     duration_seconds: chunk.duration_seconds,
                     pause_after_ms: chunk.pause_after_ms,
                     source: chunk.source.clone(),
+                    unit_id: chunk.unit_id.clone(),
                 })
                 .collect(),
         }
@@ -115,6 +149,8 @@ pub(crate) fn default_engine_name() -> String {
     "Piper".to_owned()
 }
 
+/// Saved reading position. Version 2 adds `unitId`; version 1 files (from
+/// Sonara 1.x) are still read, as version 2 without a unit id.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Progress {
@@ -123,8 +159,42 @@ pub(crate) struct Progress {
     pub(crate) segment: usize,
     pub(crate) offset_seconds: f64,
     pub(crate) playback_rate: f64,
+    #[serde(default)]
+    pub(crate) unit_id: Option<String>,
 }
 
+pub(crate) const PROGRESS_VERSION: u8 = 2;
+
+/// Parse a saved progress file, upgrading version 1 in memory. A newer
+/// version is an error, so this build never rewrites what it cannot read.
+pub(crate) fn parse_progress(bytes: &[u8]) -> Result<Progress, String> {
+    let mut progress: Progress = serde_json::from_slice(bytes)
+        .map_err(|_| "Saved reading progress is invalid and was not restored.".to_owned())?;
+    match progress.version {
+        1 => {
+            progress.version = PROGRESS_VERSION;
+            progress.unit_id = None;
+        }
+        PROGRESS_VERSION => {}
+        _ => {
+            return Err(
+                "Saved reading progress is from a newer version of Sonara and was not restored."
+                    .to_owned(),
+            )
+        }
+    }
+    if progress
+        .unit_id
+        .as_deref()
+        .is_some_and(|unit| !valid_unit_id(unit))
+    {
+        progress.unit_id = None;
+    }
+    Ok(progress)
+}
+
+/// Build the session for a finished run from its `audio_chunks.json`, and
+/// save it as the run's `session.json`.
 pub(crate) fn load_reader_session(
     output_dir: &Path,
     source_path: &Path,
@@ -135,7 +205,14 @@ pub(crate) fn load_reader_session(
             .map_err(|error| format!("Could not read the audio manifest: {error}"))?,
     )
     .map_err(|error| format!("The generated audio manifest is invalid: {error}"))?;
-    let session_meta_path = output_dir.join("desktop-session.json");
+    // Schema 1 manifests have no completion flag; they are written whole.
+    if manifest
+        .get("complete")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+    {
+        return Err("Speech generation stopped before the document was finished.".to_owned());
+    }
     let source_name = source_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -213,6 +290,11 @@ pub(crate) fn load_reader_session(
             duration_seconds,
             pause_after_ms,
             source: SourceSpan::from_manifest(value),
+            unit_id: value
+                .get("unit_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|unit| valid_unit_id(unit))
+                .map(str::to_owned),
         });
     }
     let session = ReaderSession {
@@ -233,23 +315,52 @@ pub(crate) fn load_reader_session(
             .and_then(serde_json::Value::as_str)
             .unwrap_or("Piper")
             .to_owned(),
+        language: manifest
+            .get("language")
+            .and_then(serde_json::Value::as_str)
+            .filter(|language| language.len() <= 16)
+            .map(str::to_owned),
+        page_count: manifest
+            .get("page_count")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pages| u32::try_from(pages).ok())
+            .filter(|pages| *pages > 0),
         sample_rate,
         channels,
         sample_width_bytes,
         chunks,
+        dir: canonical_output,
     };
-    atomic_write_json(&session_meta_path, &session)?;
+    save_session(&session)?;
     Ok(session)
 }
 
-pub(crate) fn load_saved_session(output_dir: &Path) -> Option<ReaderSession> {
-    let bytes = fs::read(output_dir.join("desktop-session.json")).ok()?;
-    let mut session: ReaderSession = serde_json::from_slice(&bytes).ok()?;
+/// Write `session.json` into the session's own run directory.
+pub(crate) fn save_session(session: &ReaderSession) -> Result<(), String> {
+    atomic_write_json(
+        &session.dir.join(SESSION_FILE),
+        &SessionFile {
+            version: SESSION_VERSION,
+            session: session.clone(),
+        },
+    )
+}
+
+/// Read a run directory's `session.json`, checking that every passage is a
+/// file inside that directory.
+pub(crate) fn load_saved_session(run_dir: &Path) -> Option<ReaderSession> {
+    let bytes = fs::read(run_dir.join(SESSION_FILE)).ok()?;
+    let file: SessionFile = serde_json::from_slice(&bytes).ok()?;
+    if file.version != SESSION_VERSION {
+        return None;
+    }
+    let mut session = file.session;
     validate_hash(&session.source_sha256).ok()?;
     if session.chunks.is_empty() {
         return None;
     }
-    let root = output_dir.canonicalize().ok()?;
+    let root = run_dir.canonicalize().ok()?;
+    session.dir = root.clone();
     for chunk in &mut session.chunks {
         let path = PathBuf::from(&chunk.audio_file).canonicalize().ok()?;
         if !path.starts_with(&root)
@@ -315,34 +426,29 @@ pub(crate) fn is_safe_relative_audio_path(path: &Path) -> bool {
 /// lock is held only long enough to copy one path.
 pub(crate) fn session_audio_lookup(
     state: &AppState,
-    reader_output: Option<&Path>,
     document_hash: &str,
     index: usize,
 ) -> AudioLookup {
-    let audio_file = {
-        let Ok(session) = state.session.lock() else {
-            return AudioLookup::StateError;
-        };
-        match session
-            .as_ref()
-            .filter(|session| session.source_sha256 == document_hash)
-            .and_then(|session| session.chunks.get(index))
-        {
-            Some(chunk) => PathBuf::from(&chunk.audio_file),
-            None => return AudioLookup::NotFound,
-        }
+    let Ok(session) = state.session.lock() else {
+        return AudioLookup::StateError;
     };
-    match reader_output {
-        Some(reader_output) => AudioLookup::Passage {
-            audio_file,
-            chunks_root: reader_output.join("chunks"),
+    match session
+        .as_ref()
+        .filter(|session| session.source_sha256 == document_hash)
+        .and_then(|session| Some((session, session.chunks.get(index)?)))
+    {
+        Some((session, chunk)) if !session.dir.as_os_str().is_empty() => AudioLookup::Passage {
+            audio_file: PathBuf::from(&chunk.audio_file),
+            chunks_root: session.dir.join("chunks"),
         },
-        None => AudioLookup::Unavailable,
+        Some(_) => AudioLookup::Unavailable,
+        None => AudioLookup::NotFound,
     }
 }
 
 pub(crate) fn validate_progress_shape(progress: &Progress) -> Result<(), String> {
-    if progress.version == 1
+    if progress.version == PROGRESS_VERSION
+        && progress.unit_id.as_deref().is_none_or(valid_unit_id)
         && progress.offset_seconds.is_finite()
         && progress.offset_seconds >= 0.0
         && progress.playback_rate.is_finite()
@@ -480,18 +586,124 @@ mod tests {
         assert!(validate_hash(&"a".repeat(64)).is_ok());
         assert!(validate_hash("not-a-hash").is_err());
         let progress = Progress {
-            version: 1,
+            version: PROGRESS_VERSION,
             source_sha256: "a".repeat(64),
             segment: 0,
             offset_seconds: 2.0,
             playback_rate: 1.0,
+            unit_id: Some("u-0001".to_owned()),
         };
         assert!(validate_progress_shape(&progress).is_ok());
         let invalid = Progress {
             playback_rate: 2.0,
-            ..progress
+            ..progress.clone()
         };
         assert!(validate_progress_shape(&invalid).is_err());
+        let bad_unit = Progress {
+            unit_id: Some("../x y".to_owned()),
+            ..progress.clone()
+        };
+        assert!(validate_progress_shape(&bad_unit).is_err());
+        let old = Progress {
+            version: 1,
+            ..progress
+        };
+        assert!(validate_progress_shape(&old).is_err());
+    }
+
+    #[test]
+    fn version_one_progress_is_read_and_newer_versions_are_refused() {
+        let v1 = serde_json::json!({
+            "version": 1, "sourceSha256": "a".repeat(64), "segment": 3,
+            "offsetSeconds": 1.5, "playbackRate": 1.1
+        });
+        let progress = parse_progress(v1.to_string().as_bytes()).unwrap();
+        assert_eq!(progress.version, PROGRESS_VERSION);
+        assert_eq!(progress.segment, 3);
+        assert_eq!(progress.unit_id, None);
+
+        let v2 = serde_json::json!({
+            "version": 2, "sourceSha256": "a".repeat(64), "segment": 3,
+            "offsetSeconds": 1.5, "playbackRate": 1.1, "unitId": "u-7"
+        });
+        assert_eq!(
+            parse_progress(v2.to_string().as_bytes())
+                .unwrap()
+                .unit_id
+                .as_deref(),
+            Some("u-7")
+        );
+        let v3 = serde_json::json!({
+            "version": 3, "sourceSha256": "a".repeat(64), "segment": 0,
+            "offsetSeconds": 0.0, "playbackRate": 1.0
+        });
+        assert!(parse_progress(v3.to_string().as_bytes())
+            .unwrap_err()
+            .contains("newer version"));
+        assert!(parse_progress(b"{nope").is_err());
+    }
+
+    fn write_run(root: &Path, complete: Option<bool>) {
+        let chunks = root.join("chunks/run");
+        fs::create_dir_all(&chunks).unwrap();
+        fs::write(chunks.join("chunk-000000.wav"), b"RIFF").unwrap();
+        let mut manifest = serde_json::json!({
+            "schema_version": 2,
+            "document_source_sha256": "e".repeat(64),
+            "narration_ruleset_version": "rules",
+            "engine": "Piper",
+            "voice": "en_US-test-medium",
+            "language": "en",
+            "page_count": 4,
+            "audio_format": {"sample_rate": 22050, "channels": 1, "sample_width_bytes": 2},
+            "chunks": [{
+                "unit_id": "u-0", "source_block_id": "b-0", "source_start": 0,
+                "source_end": 5, "pause_after_ms": 200, "duration_seconds": 1.25,
+                "audio_file": "chunks/run/chunk-000000.wav"
+            }],
+        });
+        if let Some(complete) = complete {
+            manifest["complete"] = serde_json::Value::Bool(complete);
+        }
+        fs::write(root.join("audio_chunks.json"), manifest.to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_finished_run_saves_a_versioned_session_that_reloads_from_its_directory() {
+        let root = std::env::temp_dir().join(format!("sonara-run-{}", make_job_id()));
+        write_run(&root, Some(true));
+        let session = load_reader_session(&root, Path::new("/docs/report.pdf")).unwrap();
+        assert_eq!(session.source_name, "report.pdf");
+        assert_eq!(session.page_count, Some(4));
+        assert_eq!(session.language.as_deref(), Some("en"));
+        assert_eq!(session.chunks[0].unit_id.as_deref(), Some("u-0"));
+        assert_eq!(session.dir, root.canonicalize().unwrap());
+
+        let stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join(SESSION_FILE)).unwrap()).unwrap();
+        assert_eq!(stored["version"], SESSION_VERSION);
+        assert!(stored.get("dir").is_none());
+
+        let reloaded = load_saved_session(&root).unwrap();
+        assert_eq!(reloaded.dir, session.dir);
+        assert_eq!(reloaded.chunks.len(), 1);
+
+        // A chunk that has gone missing makes the saved session unusable.
+        fs::remove_file(root.join("chunks/run/chunk-000000.wav")).unwrap();
+        assert!(load_saved_session(&root).is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unfinished_manifest_is_not_a_session() {
+        let root = std::env::temp_dir().join(format!("sonara-partial-{}", make_job_id()));
+        write_run(&root, Some(false));
+        assert!(load_reader_session(&root, Path::new("/docs/a.pdf")).is_err());
+        assert!(!root.join(SESSION_FILE).exists());
+        // Schema 1 manifests carry no flag and were always written whole.
+        write_run(&root, None);
+        assert!(load_reader_session(&root, Path::new("/docs/a.pdf")).is_ok());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -510,11 +722,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let path = root.join("progress.json");
         let progress = Progress {
-            version: 1,
+            version: PROGRESS_VERSION,
             source_sha256: "f".repeat(64),
             segment: 4,
             offset_seconds: 12.75,
             playback_rate: 1.2,
+            unit_id: None,
         };
         atomic_write_json(&path, &progress).unwrap();
         let restored: Progress = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

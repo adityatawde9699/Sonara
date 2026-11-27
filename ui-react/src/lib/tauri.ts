@@ -19,6 +19,12 @@ export interface LibraryDocument {
   totalDurationSeconds: number;
   /** Unix time in milliseconds. */
   lastListenedAt: number;
+  /** When the document was first prepared, in Unix milliseconds. */
+  createdAt: number;
+  pageCount: number | null;
+  language: string | null;
+  /** False for a document whose audio was only partly prepared. */
+  complete: boolean;
   /** False when the source file has been moved or deleted. */
   available: boolean;
 }
@@ -35,6 +41,8 @@ export interface FrontendChunk {
   pauseAfterMs: number;
   /** Absent for sessions prepared before read-along highlighting existed. */
   source?: SourceSpan | null;
+  /** The narration unit spoken; absent for sessions from Sonara 1.x. */
+  unitId?: string | null;
 }
 
 export interface ReaderBlock {
@@ -103,12 +111,29 @@ export const FALLBACK_VOICES: VoiceInfo[] = [
   { id: "en_US-john-medium", name: "John (American Male · LibriVox)", quality: "medium", language: "en_US", isDefault: false },
 ];
 
+export const PROGRESS_VERSION = 2;
+
 export interface Progress {
   version: number;
   sourceSha256: string;
   segment: number;
   offsetSeconds: number;
   playbackRate: number;
+  /** The passage's narration unit, so a position survives renumbering. */
+  unitId?: string | null;
+}
+
+/**
+ * The passage a saved position points at: the chunk with the saved unit id
+ * when there is one, otherwise the saved index. Returns -1 when neither
+ * fits this session.
+ */
+export function resolveProgressSegment(progress: Progress, chunks: FrontendChunk[]): number {
+  if (progress.unitId) {
+    const byUnit = chunks.findIndex((chunk) => chunk.unitId === progress.unitId);
+    if (byUnit >= 0) return byUnit;
+  }
+  return progress.segment >= 0 && progress.segment < chunks.length ? progress.segment : -1;
 }
 
 export interface SynthesisFinished {

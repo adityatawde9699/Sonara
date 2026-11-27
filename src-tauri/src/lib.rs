@@ -11,11 +11,13 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 mod audio_server;
 mod library;
 mod llm_rpc;
+mod migrate;
 mod models;
 mod pickers;
 mod process_tree;
 mod runtime;
 mod session;
+mod storage;
 mod voices;
 
 use audio_server::AudioServer;
@@ -30,9 +32,9 @@ use runtime::{
     stop_worker_tree, verify_installed_runtime, worker_failure_message, WorkerOptions,
 };
 use session::{
-    atomic_write_json, load_reader_session, load_saved_session, progress_path,
-    session_audio_lookup, validate_hash, validate_progress_shape, FrontendSession, Progress,
-    ReaderSession,
+    atomic_write_json, load_reader_session, parse_progress, progress_path, session_audio_lookup,
+    validate_hash, validate_progress_shape, FrontendSession, Progress, ReaderSession,
+    PROGRESS_VERSION,
 };
 use voices::{discover_voices, VoiceInfo, DEFAULT_FALLBACK_VOICE};
 
@@ -58,6 +60,22 @@ struct ActiveJob {
     cancelled: Arc<AtomicBool>,
 }
 
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_local_data_dir()
+        .map_err(|error| format!("Could not find Sonara's local data directory: {error}"))
+}
+
+/// The run directory of the open session.
+fn current_session_dir(state: &AppState) -> Result<Option<PathBuf>, String> {
+    Ok(state
+        .session
+        .lock()
+        .map_err(|_| "Reader session state is unavailable.".to_owned())?
+        .as_ref()
+        .map(|session| session.dir.clone()))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SelectedDocument {
@@ -80,10 +98,7 @@ struct SynthesisProgress {
 }
 
 fn library_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_local_data_dir()
-        .map(|dir| dir.join(LIBRARY_FILE))
-        .map_err(|error| format!("Could not find Sonara's local data directory: {error}"))
+    app_data_dir(app).map(|dir| dir.join(LIBRARY_FILE))
 }
 
 /// Run `action` on the library file while holding the library lock.
@@ -103,7 +118,7 @@ fn with_library<T>(
 #[tauri::command]
 fn list_library(app: AppHandle) -> Result<Vec<LibraryDocument>, String> {
     with_library(&app, |path| {
-        Ok(library::library_documents(library::load_library(path)))
+        Ok(library::library_documents(library::load_library(path)?))
     })
 }
 
@@ -117,7 +132,7 @@ fn open_library_document(
 ) -> Result<SelectedDocument, String> {
     validate_hash(&source_sha256)?;
     let source_path = with_library(&app, |path| {
-        library::find_source_path(path, &source_sha256)
+        library::find_source_path(path, &source_sha256)?
             .ok_or_else(|| "This document is no longer in your library.".to_owned())
     })?;
     if !source_path.is_file() {
@@ -292,19 +307,14 @@ fn list_kokoro_voices() -> Vec<VoiceInfo> {
 async fn get_reader_document(app: AppHandle) -> Result<session::ReaderDocument, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let sha256 = state
+        let (sha256, run_dir) = state
             .session
             .lock()
             .map_err(|_| "Reader session state is unavailable.".to_owned())?
             .as_ref()
-            .map(|session| session.source_sha256.clone())
+            .map(|session| (session.source_sha256.clone(), session.dir.clone()))
             .ok_or_else(|| "No document is open.".to_owned())?;
-        let output_dir = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|error| format!("Could not get app data dir: {error}"))?
-            .join("reader-output");
-        session::load_reader_document(&output_dir, &sha256)
+        session::load_reader_document(&run_dir, &sha256)
     })
     .await
     .map_err(|error| format!("Reader document task failed: {error}"))?
@@ -408,13 +418,10 @@ fn start_reading(
         return Err("Choose a valid Piper variation setting.".to_owned());
     }
 
-    let app_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| format!("Could not find Sonara's local data directory: {error}"))?;
-    let output_dir = app_data.join("reader-output");
-    fs::create_dir_all(&output_dir)
-        .map_err(|error| format!("Could not create Sonara's local audio directory: {error}"))?;
+    let app_data = app_data_dir(&app)?;
+    let job_id = make_job_id();
+    let output_dir = storage::create_run_dir(&app_data, &job_id)?;
+    let cache_dir = storage::audio_cache_dir(&app_data);
     let log_path = app_data.join("worker.log");
     let log = OpenOptions::new()
         .create(true)
@@ -433,10 +440,13 @@ fn start_reading(
         resource_profile: &selected_profile,
         expand_dates: expand_dates.unwrap_or(false),
         expand_citations: expand_citations.unwrap_or(false),
+        cache_dir: &cache_dir,
     };
     let child = spawn_sonara_worker(&runtime, &document, &output_dir, &options, log, error_log)
-        .map_err(|error| format!("Could not start the Sonara Python worker: {error}"))?;
-    let job_id = make_job_id();
+        .map_err(|error| {
+            storage::remove_run(&output_dir);
+            format!("Could not start the Sonara Python worker: {error}")
+        })?;
     let child = Arc::new(Mutex::new(child));
     let cancelled = Arc::new(AtomicBool::new(false));
     *active = Some(ActiveJob {
@@ -456,9 +466,12 @@ fn start_reading(
                 monitor_id,
                 child,
                 cancelled,
-                document,
-                output_dir,
-                log_path,
+                RunPaths {
+                    document,
+                    app_data,
+                    output_dir,
+                    log_path,
+                },
             )
         })
         .map_err(|error| {
@@ -495,10 +508,8 @@ fn load_progress(app: AppHandle, source_sha256: String) -> Result<Option<Progres
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("Could not read saved progress: {error}")),
     };
-    let progress: Progress = serde_json::from_slice(&bytes)
-        .map_err(|_| "Saved reading progress is invalid and was not restored.".to_owned())?;
-    if progress.version != 1
-        || progress.source_sha256 != source_sha256
+    let progress = parse_progress(&bytes)?;
+    if progress.source_sha256 != source_sha256
         || !progress.offset_seconds.is_finite()
         || progress.offset_seconds < 0.0
         || !progress.playback_rate.is_finite()
@@ -526,12 +537,26 @@ fn save_progress(
     let Some(chunk) = session.chunks.get(progress.segment) else {
         return Err("The saved passage is outside this document.".to_owned());
     };
+    let unit_matches = match (&progress.unit_id, &chunk.unit_id) {
+        (Some(saved), Some(actual)) => saved == actual,
+        _ => true,
+    };
     if session.source_sha256 != progress.source_sha256
         || progress.offset_seconds > chunk.duration_seconds + 0.1
+        || !unit_matches
     {
         return Err("Reading progress does not match the open document.".to_owned());
     }
     let path = progress_path(&app, &progress.source_sha256)?;
+    // Never overwrite a position saved by a newer Sonara.
+    if let Ok(bytes) = fs::read(&path) {
+        let stored = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|value| value.get("version")?.as_u64());
+        if stored.is_some_and(|version| version > u64::from(PROGRESS_VERSION)) {
+            return Err("Reading progress was saved by a newer version of Sonara.".to_owned());
+        }
+    }
     atomic_write_json(&path, &progress)
 }
 
@@ -633,14 +658,10 @@ async fn get_document_text(app: AppHandle) -> Result<String, String> {
         // The target is derived only from backend state; the frontend cannot
         // choose which file is read.
         let target = {
-            let reader_dir = app
-                .path()
-                .app_local_data_dir()
-                .map_err(|e| format!("Could not get app data dir: {e}"))?
-                .join("reader-output");
-            let txt_file = reader_dir.join("document_text.txt");
-            if txt_file.is_file() {
-                reader_dir.to_string_lossy().into_owned()
+            let session_dir =
+                current_session_dir(&state)?.filter(|dir| dir.join("document_text.txt").is_file());
+            if let Some(session_dir) = session_dir {
+                session_dir.to_string_lossy().into_owned()
             } else if let Ok(guard) = state.selected_document.lock() {
                 if let Some(selected) = guard.as_ref() {
                     selected.to_string_lossy().into_owned()
@@ -676,15 +697,29 @@ async fn get_document_text(app: AppHandle) -> Result<String, String> {
     .map_err(|e| format!("Get document text task failed: {e}"))?
 }
 
+/// The files one synthesis run reads and writes.
+struct RunPaths {
+    /// The source document.
+    document: PathBuf,
+    app_data: PathBuf,
+    /// This run's own directory under `sessions/`.
+    output_dir: PathBuf,
+    log_path: PathBuf,
+}
+
 fn monitor_worker(
     app: AppHandle,
     job_id: String,
     child: Arc<Mutex<Child>>,
     cancelled: Arc<AtomicBool>,
-    document_path: PathBuf,
-    output_dir: PathBuf,
-    log_path: PathBuf,
+    paths: RunPaths,
 ) {
+    let RunPaths {
+        document: document_path,
+        app_data,
+        output_dir,
+        log_path,
+    } = paths;
     let mut last_reported_chunks = 0;
     let chunks_manifest_path = output_dir.join("audio_chunks.json");
 
@@ -743,10 +778,21 @@ fn monitor_worker(
             }
         }
     }
-    if let Ok(session) = &session_result {
-        if let Ok(mut current) = app.state::<AppState>().inner().session.lock() {
-            *current = Some(session.clone());
+    match &session_result {
+        Ok(session) => {
+            if let Ok(mut current) = app.state::<AppState>().inner().session.lock() {
+                *current = Some(session.clone());
+            }
+            // The new run replaces the previous session on disk.
+            if storage::set_current_session(&app_data, &output_dir).is_ok() {
+                storage::prune_runs(&app_data, &[&output_dir]);
+            }
         }
+        // A cancelled or failed run leaves nothing behind; the session that
+        // was open before it is untouched.
+        Err(_) => storage::remove_run(&output_dir),
+    }
+    if let Ok(session) = &session_result {
         // The audio is ready either way; a library that cannot be written
         // only means this document will not be offered for reopening.
         let _ = with_library(&app, |path| {
@@ -838,21 +884,26 @@ pub fn run() {
             }
             let lookup_app = app.handle().clone();
             let audio_server = AudioServer::start(Arc::new(move |hash: &str, index: usize| {
-                let reader_output = lookup_app
-                    .path()
-                    .app_local_data_dir()
-                    .ok()
-                    .map(|path| path.join("reader-output"));
-                session_audio_lookup(
-                    lookup_app.state::<AppState>().inner(),
-                    reader_output.as_deref(),
-                    hash,
-                    index,
-                )
+                session_audio_lookup(lookup_app.state::<AppState>().inner(), hash, index)
             }))?;
             app.manage(audio_server);
-            let output_dir = app.path().app_local_data_dir()?.join("reader-output");
-            if let Some(session) = load_saved_session(&output_dir) {
+            let app_data = app.path().app_local_data_dir()?;
+            match migrate::migrate_to_v2(&app_data) {
+                Ok(report) if !report.already_current => {
+                    eprintln!("sonara: upgraded local data to version 2: {report:?}");
+                }
+                Ok(_) => {}
+                // Sonara still starts; the library and progress loaders refuse
+                // what they cannot read rather than overwrite it.
+                Err(error) => eprintln!("sonara: local data was not upgraded: {error}"),
+            }
+            let session = storage::load_current_session(&app_data);
+            // Remove runs a crash or forced quit left behind.
+            match &session {
+                Some(session) => storage::prune_runs(&app_data, &[&session.dir]),
+                None => storage::prune_runs(&app_data, &[]),
+            }
+            if let Some(session) = session {
                 *app.state::<AppState>()
                     .session
                     .lock()

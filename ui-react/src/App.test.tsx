@@ -5,10 +5,12 @@ import type { LibraryDocument } from "./lib/tauri";
 
 /** A minimal desktop bridge whose library holds `documents`. */
 function withDesktopLibrary(
-  documents: Array<Omit<LibraryDocument, "engine" | "available">>,
+  documents: Array<Omit<LibraryDocument, "engine" | "available" | "createdAt" | "pageCount" | "language" | "complete">>,
   responses: Record<string, unknown> = {},
 ) {
-  const library = documents.map((doc) => ({ engine: "Piper", available: true, ...doc }));
+  const library = documents.map((doc) => ({
+    engine: "Piper", available: true, createdAt: doc.lastListenedAt, pageCount: null, language: null, complete: true, ...doc,
+  }));
   const invoke = vi.fn(async (command: string): Promise<unknown> => {
     if (command in responses) return responses[command];
     if (command === "list_library") return library;

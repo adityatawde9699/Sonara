@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import html
 import importlib.util
@@ -33,6 +34,10 @@ from narration import NarrationError, build_narration_plan
 from parent_watch import start_parent_watch
 from tts_engine import KokoroEngine, PiperEngine, SynthesisStream, TtsError, kokoro_language, validate_voice_name
 from resource_policy import get_resource_profile
+
+
+# 2: adds total_units/completed_units/complete to every manifest, and page_count.
+MANIFEST_SCHEMA_VERSION = 2
 
 
 class SonaraError(RuntimeError):
@@ -388,6 +393,9 @@ def read_document(args: argparse.Namespace) -> Path:
         )
     except NarrationError as exc:
         raise SonaraError(f"Could not plan document narration: {exc}") from exc
+    cache_dir = getattr(args, "cache_dir", None)
+    cache_dir = cache_dir.expanduser().resolve() if cache_dir is not None else out / ".sonara-audio-cache"
+    write_combined = not getattr(args, "no_combined_audio", False)
     if getattr(args, "engine", "piper") == "kokoro":
         manifest = _synthesize_plan(
             plan, args.voice, data_dir, speech,
@@ -395,12 +403,18 @@ def read_document(args: argparse.Namespace) -> Path:
             engine_name="kokoro",
             kokoro_dir=getattr(args, "kokoro_dir", Path("models/kokoro")),
             resource_profile=getattr(args, "resource_profile", "standard"),
+            cache_dir=cache_dir,
+            write_combined=write_combined,
+            page_count=document.page_count,
         )
     elif _piper_python_api_available(args.piper):
         manifest = _synthesize_plan(
             plan, args.voice, data_dir, speech,
             variation=getattr(args, "variation", "voice_default"),
             resource_profile=getattr(args, "resource_profile", "standard"),
+            cache_dir=cache_dir,
+            write_combined=write_combined,
+            page_count=document.page_count,
         )
     else:
         # Keep explicit executable overrides and the PATH fallback working.
@@ -485,8 +499,16 @@ def _synthesize_plan(
     engine_name: str = "piper",
     kokoro_dir: Path = Path("models/kokoro"),
     resource_profile: str = "standard",
+    cache_dir: Path | None = None,
+    write_combined: bool = True,
+    page_count: int | None = None,
 ) -> dict[str, Any]:
-    """Generate mapped unit WAVs with one worker and return a playback manifest."""
+    """Generate mapped unit WAVs with one worker and return a playback manifest.
+
+    The manifest is rewritten after every passage (``complete: false``) so a
+    reader can start before synthesis ends. ``write_combined=False`` skips the
+    whole-document ``speech.wav``, which only the CLI needs.
+    """
     try:
         validate_voice_name(voice)
         policy = get_resource_profile(resource_profile)
@@ -499,32 +521,62 @@ def _synthesize_plan(
     except (TtsError, ValueError) as exc:
         raise SonaraError(str(exc)) from exc
     output.parent.mkdir(parents=True, exist_ok=True)
-    temp_handle = tempfile.NamedTemporaryFile(
-        prefix=".sonara-speech-", suffix=".wav", dir=output.parent, delete=False
-    )
-    temporary_output = Path(temp_handle.name)
-    temp_handle.close()
+    if cache_dir is None:
+        cache_dir = output.parent / ".sonara-audio-cache"
+    audio_format = engine.capabilities.audio_format
+    temporary_output: Path | None = None
+    if write_combined:
+        temp_handle = tempfile.NamedTemporaryFile(
+            prefix=".sonara-speech-", suffix=".wav", dir=output.parent, delete=False
+        )
+        temporary_output = Path(temp_handle.name)
+        temp_handle.close()
     manifest_chunks: list[dict[str, Any]] = []
     chunk_root = output.parent / "chunks"
     run_chunk_dir = chunk_root / plan.document_source_sha256 / uuid.uuid4().hex
     try:
         run_chunk_dir.mkdir(parents=True, exist_ok=False)
     except OSError as exc:
-        temporary_output.unlink(missing_ok=True)
+        _unlink_optional(temporary_output)
         engine.close()
         raise SonaraError(f"Could not prepare the document audio directory: {exc}") from exc
     manifest_committed = False
+
+    def manifest_for(complete: bool) -> dict[str, Any]:
+        return {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "document_source_sha256": plan.document_source_sha256,
+            "narration_ruleset_version": plan.ruleset_version,
+            "engine": engine.capabilities.engine,
+            "engine_version": engine.capabilities.engine_version,
+            "voice": engine.capabilities.voice,
+            "language": engine.capabilities.language,
+            "page_count": page_count,
+            "audio_format": {
+                "sample_rate": audio_format.sample_rate,
+                "channels": audio_format.channels,
+                "sample_width_bytes": audio_format.sample_width_bytes,
+            },
+            "total_units": len(plan.units),
+            "completed_units": len(manifest_chunks),
+            "complete": complete,
+            "chunks": list(manifest_chunks),
+        }
+
     try:
-        with wave.open(str(temporary_output), "wb") as combined:
-            combined.setnchannels(engine.capabilities.audio_format.channels)
-            combined.setsampwidth(engine.capabilities.audio_format.sample_width_bytes)
-            combined.setframerate(engine.capabilities.audio_format.sample_rate)
+        with contextlib.ExitStack() as stack:
+            combined = None
+            if temporary_output is not None:
+                combined = stack.enter_context(wave.open(str(temporary_output), "wb"))
+                combined.setnchannels(audio_format.channels)
+                combined.setsampwidth(audio_format.sample_width_bytes)
+                combined.setframerate(audio_format.sample_rate)
             chunk_count = 0
             with SynthesisStream(
                 engine,
                 plan,
                 prefetch_chunks=policy.tts_prefetch_chunks,
-                cache_dir=output.parent / ".sonara-audio-cache",
+                cache_dir=cache_dir,
                 cache_max_bytes=policy.audio_cache_bytes,
             ) as chunks:
                 for chunk in chunks:
@@ -534,27 +586,13 @@ def _synthesize_plan(
                     audio_file = chunk_path.relative_to(output.parent).as_posix()
                     with wave.open(str(chunk.wav_path), "rb") as source:
                         if (
-                            source.getframerate() != combined.getframerate()
-                            or source.getnchannels() != combined.getnchannels()
-                            or source.getsampwidth() != combined.getsampwidth()
+                            source.getframerate() != audio_format.sample_rate
+                            or source.getnchannels() != audio_format.channels
+                            or source.getsampwidth() != audio_format.sample_width_bytes
                         ):
                             raise SonaraError("Piper returned incompatible audio chunk formats.")
-                        if chunk.sequence > 0:
-                            # Chunks are trimmed to short edge pads, so write the
-                            # planned pause the player would leave between them.
-                            pause_frames = round(
-                                combined.getframerate() * plan.units[chunk.sequence - 1].pause_after_ms / 1000
-                            )
-                            combined.writeframes(bytes(pause_frames * combined.getnchannels() * combined.getsampwidth()))
-                        frames_left = source.getnframes()
-                        while frames_left:
-                            frames = source.readframes(min(frames_left, 65_536))
-                            if not frames:
-                                raise SonaraError("A synthesized WAV chunk ended before its declared frame count.")
-                            combined.writeframes(frames)
-                            frames_left -= len(frames) // (
-                                source.getnchannels() * source.getsampwidth()
-                            )
+                        if combined is not None:
+                            _append_to_combined(combined, source, plan, chunk.sequence)
                     manifest_chunks.append({
                         "sequence": chunk.sequence,
                         "unit_id": chunk.unit_id,
@@ -567,58 +605,48 @@ def _synthesize_plan(
                         "audio_file": audio_file,
                     })
                     chunk_count += 1
-                    progressive_manifest = {
-                        "schema_version": 1,
-                        "document_source_sha256": plan.document_source_sha256,
-                        "narration_ruleset_version": plan.ruleset_version,
-                        "engine": engine.capabilities.engine,
-                        "engine_version": engine.capabilities.engine_version,
-                        "voice": engine.capabilities.voice,
-                        "language": engine.capabilities.language,
-                        "audio_format": {
-                            "sample_rate": engine.capabilities.audio_format.sample_rate,
-                            "channels": engine.capabilities.audio_format.channels,
-                            "sample_width_bytes": engine.capabilities.audio_format.sample_width_bytes,
-                        },
-                        "total_units": len(plan.units),
-                        "completed_units": chunk_count,
-                        "chunks": list(manifest_chunks),
-                    }
-                    _write_json_atomic(output.parent / "audio_chunks.json", progressive_manifest)
+                    _write_json_atomic(output.parent / "audio_chunks.json", manifest_for(False))
             if chunk_count == 0:
                 raise SonaraError("Narration plan contains no speech units.")
-        os.replace(temporary_output, output)
-        manifest = {
-            "schema_version": 1,
-            "document_source_sha256": plan.document_source_sha256,
-            "narration_ruleset_version": plan.ruleset_version,
-            "engine": engine.capabilities.engine,
-            "engine_version": engine.capabilities.engine_version,
-            "voice": engine.capabilities.voice,
-            "language": engine.capabilities.language,
-            "audio_format": {
-                "sample_rate": engine.capabilities.audio_format.sample_rate,
-                "channels": engine.capabilities.audio_format.channels,
-                "sample_width_bytes": engine.capabilities.audio_format.sample_width_bytes,
-            },
-            "chunks": manifest_chunks,
-        }
+        if temporary_output is not None:
+            os.replace(temporary_output, output)
+        manifest = manifest_for(True)
         _write_json_atomic(output.with_name("audio_chunks.json"), manifest)
         manifest_committed = True
         return manifest
     except TtsError as exc:
-        temporary_output.unlink(missing_ok=True)
+        _unlink_optional(temporary_output)
         raise SonaraError(str(exc)) from exc
     except (OSError, wave.Error) as exc:
-        temporary_output.unlink(missing_ok=True)
+        _unlink_optional(temporary_output)
         raise SonaraError(f"Could not assemble synthesized audio: {exc}") from exc
     except BaseException:
-        temporary_output.unlink(missing_ok=True)
+        _unlink_optional(temporary_output)
         raise
     finally:
         engine.close()
         if not manifest_committed:
             shutil.rmtree(run_chunk_dir, ignore_errors=True)
+
+
+def _append_to_combined(combined: wave.Wave_write, source: wave.Wave_read, plan, sequence: int) -> None:
+    if sequence > 0:
+        # Chunks are trimmed to short edge pads, so write the planned pause
+        # the player would leave between them.
+        pause_frames = round(combined.getframerate() * plan.units[sequence - 1].pause_after_ms / 1000)
+        combined.writeframes(bytes(pause_frames * combined.getnchannels() * combined.getsampwidth()))
+    frames_left = source.getnframes()
+    while frames_left:
+        frames = source.readframes(min(frames_left, 65_536))
+        if not frames:
+            raise SonaraError("A synthesized WAV chunk ended before its declared frame count.")
+        combined.writeframes(frames)
+        frames_left -= len(frames) // (source.getnchannels() * source.getsampwidth())
+
+
+def _unlink_optional(path: Path | None) -> None:
+    if path is not None:
+        path.unlink(missing_ok=True)
 
 
 def _legacy_audio_manifest(document: Document, speech: Path, voice: str) -> dict[str, Any]:
@@ -633,12 +661,16 @@ def _legacy_audio_manifest(document: Document, speech: Path, voice: str) -> dict
     except (OSError, EOFError, wave.Error, ZeroDivisionError) as exc:
         raise SonaraError(f"Could not inspect the one-shot Piper WAV: {exc}") from exc
     return {
-        "schema_version": 1,
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "document_source_sha256": document.source_sha256,
         "narration_ruleset_version": "legacy-whole-document",
         "engine": "Piper CLI override",
         "voice": voice,
+        "page_count": document.page_count,
         "audio_format": audio_format,
+        "total_units": 1,
+        "completed_units": 1,
+        "complete": True,
         "chunks": [{
             "sequence": 0,
             "unit_id": "legacy-whole-document",
@@ -746,6 +778,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     read.add_argument("--data-dir", type=Path, required=True, help="directory containing the reviewed Piper voice files")
     read.add_argument("--output-dir", type=Path, default=Path("sonara-reading"))
+    read.add_argument("--cache-dir", type=Path, default=None, help="synthesis cache directory (default: .sonara-audio-cache inside --output-dir)")
+    read.add_argument("--no-combined-audio", action="store_true", help="write only the per-passage WAVs, not the combined speech.wav")
     read.add_argument(
         "--piper",
         default="piper",

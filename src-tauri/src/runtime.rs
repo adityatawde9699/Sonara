@@ -35,6 +35,8 @@ pub(crate) struct WorkerOptions<'a> {
     pub(crate) resource_profile: &'a str,
     pub(crate) expand_dates: bool,
     pub(crate) expand_citations: bool,
+    /// The synthesis cache shared by every run (`audio-cache/`).
+    pub(crate) cache_dir: &'a Path,
 }
 
 pub(crate) fn spawn_sonara_worker(
@@ -76,6 +78,11 @@ pub(crate) fn spawn_sonara_worker(
         .arg(&runtime.kokoro_dir)
         .arg("--output-dir")
         .arg(output_dir)
+        .arg("--cache-dir")
+        .arg(options.cache_dir)
+        // The desktop player streams passages; the combined WAV would only
+        // double the disk used per session.
+        .arg("--no-combined-audio")
         .args(pdf_tool_args(runtime))
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))

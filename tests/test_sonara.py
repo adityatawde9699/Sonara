@@ -325,3 +325,67 @@ class PlayerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManifestContractTests(unittest.TestCase):
+    """The schema-2 manifest the desktop app reads while and after synthesizing."""
+
+    def _run(self, root: Path, **kwargs):
+        try:
+            from test_tts_engine import FakeEngine, make_plan
+        except ImportError:
+            from tests.test_tts_engine import FakeEngine, make_plan
+
+        class ClosableEngine(FakeEngine):
+            def close(self):
+                return None
+
+        plan = make_plan("One.\n\nTwo.\n\nThree.", separate_paragraphs=True)
+        written: list[dict] = []
+        real_write = sonara._write_json_atomic
+
+        def record(path, value):
+            if path.name == "audio_chunks.json":
+                written.append(value)
+            real_write(path, value)
+
+        with (
+            patch.object(sonara, "PiperEngine", return_value=ClosableEngine()),
+            patch.object(sonara, "_write_json_atomic", side_effect=record),
+        ):
+            manifest = sonara._synthesize_plan(
+                plan, "en_US-test-medium", root, root / "speech.wav", page_count=3, **kwargs
+            )
+        return plan, manifest, written
+
+    def test_progressive_and_final_manifests_carry_counts_and_completion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plan, manifest, written = self._run(root, cache_dir=root / "cache", write_combined=False)
+            total = len(plan.units)
+            self.assertEqual(len(written), total + 1)
+            for index, progressive in enumerate(written[:-1], start=1):
+                self.assertEqual(progressive["schema_version"], 2)
+                self.assertFalse(progressive["complete"])
+                self.assertEqual(progressive["completed_units"], index)
+                self.assertEqual(progressive["total_units"], total)
+                self.assertEqual(len(progressive["chunks"]), index)
+            self.assertEqual(manifest, written[-1])
+            self.assertTrue(manifest["complete"])
+            self.assertEqual(manifest["completed_units"], total)
+            self.assertEqual(manifest["page_count"], 3)
+            self.assertTrue(all(chunk["unit_id"] for chunk in manifest["chunks"]))
+            self.assertFalse((root / "speech.wav").exists())
+            self.assertFalse(list(root.glob(".sonara-speech-*")))
+            self.assertTrue(any((root / "cache").iterdir()))
+            self.assertFalse((root / ".sonara-audio-cache").exists())
+            for chunk in manifest["chunks"]:
+                self.assertTrue((root / chunk["audio_file"]).is_file())
+
+    def test_combined_audio_is_still_written_by_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, manifest, _ = self._run(root)
+            self.assertTrue((root / "speech.wav").is_file())
+            self.assertTrue((root / ".sonara-audio-cache").is_dir())
+            self.assertTrue(manifest["complete"])

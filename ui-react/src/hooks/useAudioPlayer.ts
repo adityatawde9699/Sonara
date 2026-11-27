@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { type FrontendSession, type Progress, loadProgress, saveProgress } from "../lib/tauri";
+import { type FrontendSession, type Progress, PROGRESS_VERSION, loadProgress, resolveProgressSegment, saveProgress } from "../lib/tauri";
 
 export interface PlayerState {
   isPlaying: boolean;
@@ -124,12 +124,14 @@ export function useAudioPlayer() {
   const persistProgress = useCallback(async (index?: number, offset?: number) => {
     const s = sessionRef.current;
     if (!s) return;
+    const segment = index ?? segmentRef.current;
     const progress: Progress = {
-      version: 1,
+      version: PROGRESS_VERSION,
       sourceSha256: s.sourceSha256,
-      segment: index ?? segmentRef.current,
+      segment,
       offsetSeconds: Math.max(0, offset ?? (audioRef.current?.currentTime || 0)),
       playbackRate: Number(audioRef.current?.playbackRate || 1),
+      unitId: s.chunks[segment]?.unitId ?? null,
     };
     try {
       await saveProgress(progress);
@@ -396,10 +398,10 @@ export function useAudioPlayer() {
     totalDurationRef.current = total;
     try {
       const saved = await loadProgress(nextSession.sourceSha256);
-      const valid = saved &&
-        saved.segment < nextSession.chunks.length &&
-        saved.offsetSeconds <= nextSession.chunks[saved.segment].durationSeconds;
-      const restoreIndex = valid ? saved.segment : 0;
+      const savedIndex = saved ? resolveProgressSegment(saved, nextSession.chunks) : -1;
+      const valid = saved && savedIndex >= 0 &&
+        saved.offsetSeconds <= nextSession.chunks[savedIndex].durationSeconds;
+      const restoreIndex = valid ? savedIndex : 0;
       const restoreOffset = valid ? saved.offsetSeconds : 0;
       setSpeed(valid ? saved.playbackRate : 1, false);
       loadChunk(restoreIndex, restoreOffset, false);

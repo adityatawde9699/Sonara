@@ -16,9 +16,9 @@ const session: FrontendSession = {
   sampleWidthBytes: 2,
   audioBaseUrl: BASE,
   chunks: [
-    { durationSeconds: 10, pauseAfterMs: 0 },
-    { durationSeconds: 20, pauseAfterMs: 400 },
-    { durationSeconds: 30, pauseAfterMs: 0 },
+    { durationSeconds: 10, pauseAfterMs: 0, unitId: "u-a" },
+    { durationSeconds: 20, pauseAfterMs: 400, unitId: "u-b" },
+    { durationSeconds: 30, pauseAfterMs: 0, unitId: "u-c" },
   ],
 };
 
@@ -78,7 +78,7 @@ afterEach(() => {
 
 describe("useSonara player", () => {
   it("restores saved progress: passage, offset and speed", async () => {
-    tauri.savedProgress = { version: 1, sourceSha256: SHA, segment: 1, offsetSeconds: 5, playbackRate: 1.2 } as Progress;
+    tauri.savedProgress = { version: 2, sourceSha256: SHA, segment: 1, offsetSeconds: 5, playbackRate: 1.2 } as Progress;
     const { result } = await renderReadyPlayer();
     expect(result.current.playerState.segment).toBe(1);
     expect(audio.src).toBe(`${BASE}/${SHA}/1`);
@@ -90,7 +90,7 @@ describe("useSonara player", () => {
   it("loads the restored passage when the audio element mounts after the restore", async () => {
     // The player mounts in the same render that shows the session, and the
     // progress restore can finish first. Found by the desktop E2E test.
-    tauri.savedProgress = { version: 1, sourceSha256: SHA, segment: 2, offsetSeconds: 4, playbackRate: 1 } as Progress;
+    tauri.savedProgress = { version: 2, sourceSha256: SHA, segment: 2, offsetSeconds: 4, playbackRate: 1 } as Progress;
     const { result } = renderHook(() => useSonara());
     await waitFor(() => expect(result.current.playerState.totalDuration).toBe(60));
     expect(audio.src).toBe("");
@@ -100,8 +100,22 @@ describe("useSonara player", () => {
     expect(result.current.playerState.statusMessage).toBe("Loading passage 3 of 3…");
   });
 
+  it("restores by narration unit when passages were renumbered", async () => {
+    // Saved at index 0, but that unit is now the third passage.
+    tauri.savedProgress = { version: 2, sourceSha256: SHA, segment: 0, offsetSeconds: 3, playbackRate: 1, unitId: "u-c" } as Progress;
+    const { result } = await renderReadyPlayer();
+    expect(result.current.playerState.segment).toBe(2);
+    expect(result.current.playerState.globalPosition).toBe(33);
+  });
+
+  it("falls back to the saved index when the unit is unknown", async () => {
+    tauri.savedProgress = { version: 2, sourceSha256: SHA, segment: 1, offsetSeconds: 2, playbackRate: 1, unitId: "gone" } as Progress;
+    const { result } = await renderReadyPlayer();
+    expect(result.current.playerState.segment).toBe(1);
+  });
+
   it("ignores saved progress that does not fit the document", async () => {
-    tauri.savedProgress = { version: 1, sourceSha256: SHA, segment: 1, offsetSeconds: 999, playbackRate: 1.2 } as Progress;
+    tauri.savedProgress = { version: 2, sourceSha256: SHA, segment: 1, offsetSeconds: 999, playbackRate: 1.2 } as Progress;
     const { result } = await renderReadyPlayer();
     expect(result.current.playerState.segment).toBe(0);
     expect(result.current.playerState.playbackRate).toBe(1);
@@ -114,7 +128,9 @@ describe("useSonara player", () => {
     expect(result.current.playerState.segment).toBe(2);
     expect(audio.src).toBe(`${BASE}/${SHA}/2`);
     await waitFor(() =>
-      expect(tauri.saveProgress).toHaveBeenLastCalledWith(expect.objectContaining({ segment: 2, offsetSeconds: 5 })),
+      expect(tauri.saveProgress).toHaveBeenLastCalledWith(
+        expect.objectContaining({ version: 2, segment: 2, offsetSeconds: 5, unitId: "u-c" }),
+      ),
     );
     // Positions past the end clamp to the last passage.
     act(() => result.current.seekTo(10_000));

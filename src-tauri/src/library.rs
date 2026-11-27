@@ -14,7 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::session::{atomic_write_json, validate_hash, ReaderSession};
 
 pub(crate) const LIBRARY_FILE: &str = "library.json";
-const LIBRARY_VERSION: u8 = 1;
+/// 2 adds `createdAt`, `pageCount`, `language` and `complete`. Version 1
+/// files from Sonara 1.x are upgraded when read.
+pub(crate) const LIBRARY_VERSION: u8 = 2;
 const MAX_LIBRARY_ENTRIES: usize = 50;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -29,6 +31,20 @@ pub(crate) struct LibraryEntry {
     pub(crate) total_duration_seconds: f64,
     /// Unix time in milliseconds.
     pub(crate) last_listened_at: u64,
+    /// When the document was first prepared, in Unix milliseconds.
+    #[serde(default)]
+    pub(crate) created_at: u64,
+    #[serde(default)]
+    pub(crate) page_count: Option<u32>,
+    #[serde(default)]
+    pub(crate) language: Option<String>,
+    /// False for a document whose audio was only partly prepared.
+    #[serde(default = "default_complete")]
+    pub(crate) complete: bool,
+}
+
+fn default_complete() -> bool {
+    true
 }
 
 /// What the frontend sees: no path, plus whether the file is still there.
@@ -42,6 +58,10 @@ pub(crate) struct LibraryDocument {
     chunks_count: usize,
     total_duration_seconds: f64,
     last_listened_at: u64,
+    created_at: u64,
+    page_count: Option<u32>,
+    language: Option<String>,
+    complete: bool,
     available: bool,
 }
 
@@ -59,19 +79,25 @@ pub(crate) fn now_millis() -> u64 {
         })
 }
 
-/// Read the library, dropping anything malformed. A missing or unreadable
-/// file is an empty library, never an error the user has to clear.
-pub(crate) fn load_library(path: &Path) -> Vec<LibraryEntry> {
+pub(crate) const NEWER_LIBRARY: &str =
+    "Your library was saved by a newer version of Sonara. Update Sonara to see it; it has not been changed.";
+
+/// Read the library, dropping anything malformed. A missing or corrupt file
+/// is an empty library, never an error the user has to clear. A library
+/// from a newer Sonara is an error, so it is not overwritten.
+pub(crate) fn load_library(path: &Path) -> Result<Vec<LibraryEntry>, String> {
     let Ok(bytes) = fs::read(path) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Ok(file) = serde_json::from_slice::<LibraryFile>(&bytes) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    if file.version != LIBRARY_VERSION {
-        return Vec::new();
+    if file.version > LIBRARY_VERSION {
+        return Err(NEWER_LIBRARY.to_owned());
     }
-    file.entries
+    let upgrading = file.version < LIBRARY_VERSION;
+    Ok(file
+        .entries
         .into_iter()
         .filter(|entry| {
             validate_hash(&entry.source_sha256).is_ok()
@@ -79,8 +105,42 @@ pub(crate) fn load_library(path: &Path) -> Vec<LibraryEntry> {
                 && entry.total_duration_seconds.is_finite()
                 && entry.total_duration_seconds >= 0.0
         })
+        .map(|mut entry| {
+            if upgrading || entry.created_at == 0 {
+                entry.created_at = entry.last_listened_at;
+            }
+            if entry
+                .language
+                .as_deref()
+                .is_some_and(|lang| lang.len() > 16)
+            {
+                entry.language = None;
+            }
+            entry
+        })
         .take(MAX_LIBRARY_ENTRIES)
-        .collect()
+        .collect())
+}
+
+/// The version recorded in a library file, if it has one.
+pub(crate) fn stored_version(path: &Path) -> Option<u8> {
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    u8::try_from(value.get("version")?.as_u64()?).ok()
+}
+
+/// Rewrite a version 1 library as version 2, keeping a copy of the
+/// original beside it. Does nothing for any other version.
+pub(crate) fn upgrade_library_file(path: &Path) -> Result<(), String> {
+    if stored_version(path) != Some(1) {
+        return Ok(());
+    }
+    let backup = path.with_extension("json.v1.bak");
+    if !backup.exists() {
+        fs::copy(path, &backup)
+            .map_err(|error| format!("Could not back up the library: {error}"))?;
+    }
+    let entries = load_library(path)?;
+    save_library(path, entries)
 }
 
 fn save_library(path: &Path, entries: Vec<LibraryEntry>) -> Result<(), String> {
@@ -104,6 +164,11 @@ pub(crate) fn record_session(
     source_path: &Path,
     now: u64,
 ) -> Result<(), String> {
+    let existing = load_library(path)?;
+    let created_at = existing
+        .iter()
+        .find(|old| old.source_sha256 == session.source_sha256)
+        .map_or(now, |old| old.created_at);
     let entry = LibraryEntry {
         source_sha256: session.source_sha256.clone(),
         source_name: session.source_name.clone(),
@@ -117,10 +182,14 @@ pub(crate) fn record_session(
             .map(|chunk| chunk.duration_seconds)
             .sum(),
         last_listened_at: now,
+        created_at,
+        page_count: session.page_count,
+        language: session.language.clone(),
+        complete: true,
     };
     // A file edited since it was last prepared has a new hash but the same
     // path; keep only the newest entry for each.
-    let mut entries: Vec<_> = load_library(path)
+    let mut entries: Vec<_> = existing
         .into_iter()
         .filter(|old| old.source_sha256 != entry.source_sha256 && old.source_path != source_path)
         .collect();
@@ -129,15 +198,18 @@ pub(crate) fn record_session(
     save_library(path, entries)
 }
 
-pub(crate) fn find_source_path(path: &Path, source_sha256: &str) -> Option<PathBuf> {
-    load_library(path)
+pub(crate) fn find_source_path(
+    path: &Path,
+    source_sha256: &str,
+) -> Result<Option<PathBuf>, String> {
+    Ok(load_library(path)?
         .into_iter()
         .find(|entry| entry.source_sha256 == source_sha256)
-        .map(|entry| entry.source_path)
+        .map(|entry| entry.source_path))
 }
 
 pub(crate) fn remove_entry(path: &Path, source_sha256: &str) -> Result<(), String> {
-    let entries = load_library(path)
+    let entries = load_library(path)?
         .into_iter()
         .filter(|entry| entry.source_sha256 != source_sha256)
         .collect();
@@ -164,6 +236,10 @@ pub(crate) fn library_documents(entries: Vec<LibraryEntry>) -> Vec<LibraryDocume
             chunks_count: entry.chunks_count,
             total_duration_seconds: entry.total_duration_seconds,
             last_listened_at: entry.last_listened_at,
+            created_at: entry.created_at,
+            page_count: entry.page_count,
+            language: entry.language,
+            complete: entry.complete,
         })
         .collect()
 }
@@ -205,6 +281,8 @@ mod tests {
             narration_ruleset_version: "rules-test".to_owned(),
             voice: "en_US-ryan-medium".to_owned(),
             engine: "Piper".to_owned(),
+            language: Some("en".to_owned()),
+            page_count: Some(2),
             sample_rate: 22050,
             channels: 1,
             sample_width_bytes: 2,
@@ -215,8 +293,10 @@ mod tests {
                     duration_seconds,
                     pause_after_ms: 0,
                     source: None,
+                    unit_id: None,
                 })
                 .collect(),
+            dir: PathBuf::new(),
         }
     }
 
@@ -237,7 +317,7 @@ mod tests {
         // Preparing the first again moves it back to the top.
         record_session(&library, &session(&first, "first.txt"), &first_path, 3).unwrap();
 
-        let documents = library_documents(load_library(&library));
+        let documents = library_documents(load_library(&library).unwrap());
         let names: Vec<_> = documents
             .iter()
             .map(|doc| doc.source_name.as_str())
@@ -246,9 +326,16 @@ mod tests {
         assert_eq!(documents[0].chunks_count, 2);
         assert_eq!(documents[0].total_duration_seconds, 4.0);
         assert_eq!(documents[0].last_listened_at, 3);
+        // Re-preparing keeps the date the document was first added.
+        assert_eq!(documents[0].created_at, 1);
+        assert_eq!(documents[0].page_count, Some(2));
+        assert!(documents[0].complete);
         assert!(documents.iter().all(|doc| doc.available));
-        assert_eq!(find_source_path(&library, &first), Some(first_path));
-        assert_eq!(find_source_path(&library, &"cc".repeat(32)), None);
+        assert_eq!(
+            find_source_path(&library, &first).unwrap(),
+            Some(first_path)
+        );
+        assert_eq!(find_source_path(&library, &"cc".repeat(32)).unwrap(), None);
         // The frontend view never carries the path.
         let json = serde_json::to_string(&documents).unwrap();
         assert!(!json.contains("sourcePath"));
@@ -262,12 +349,12 @@ mod tests {
         let path = scratch.document("notes.md");
         record_session(&library, &session(&"aa".repeat(32), "notes.md"), &path, 1).unwrap();
         record_session(&library, &session(&"bb".repeat(32), "notes.md"), &path, 2).unwrap();
-        let entries = load_library(&library);
+        let entries = load_library(&library).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].source_sha256, "bb".repeat(32));
 
         fs::remove_file(&path).unwrap();
-        assert!(!library_documents(load_library(&library))[0].available);
+        assert!(!library_documents(load_library(&library).unwrap())[0].available);
     }
 
     #[test]
@@ -285,7 +372,7 @@ mod tests {
             )
             .unwrap();
         }
-        let entries = load_library(&library);
+        let entries = load_library(&library).unwrap();
         assert_eq!(entries.len(), MAX_LIBRARY_ENTRIES);
         assert_eq!(
             entries[0].source_name,
@@ -293,10 +380,13 @@ mod tests {
         );
 
         remove_entry(&library, &entries[0].source_sha256).unwrap();
-        assert_eq!(load_library(&library).len(), MAX_LIBRARY_ENTRIES - 1);
+        assert_eq!(
+            load_library(&library).unwrap().len(),
+            MAX_LIBRARY_ENTRIES - 1
+        );
 
         fs::write(&library, b"{not json").unwrap();
-        assert!(load_library(&library).is_empty());
+        assert!(load_library(&library).unwrap().is_empty());
         // A bad hash or a relative path is dropped rather than trusted.
         fs::write(
             &library,
@@ -308,10 +398,60 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        assert!(load_library(&library).is_empty());
+        assert!(load_library(&library).unwrap().is_empty());
 
         clear_library(&library).unwrap();
         clear_library(&library).unwrap();
         assert!(!library.exists());
+    }
+
+    fn v1_library(scratch: &Scratch) -> serde_json::Value {
+        serde_json::json!({"version": 1, "entries": [{
+            "sourceSha256": "aa".repeat(32), "sourceName": "old.pdf",
+            "sourcePath": scratch.document("old.pdf"), "voice": "en_US-ryan-medium",
+            "engine": "Piper", "chunksCount": 7, "totalDurationSeconds": 42.0,
+            "lastListenedAt": 1_700_000_000_000_u64
+        }]})
+    }
+
+    #[test]
+    fn a_version_one_library_is_upgraded_with_a_backup() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let original = v1_library(&scratch).to_string();
+        fs::write(&library, &original).unwrap();
+
+        // Readable before the upgrade, as version 2 data.
+        let entries = load_library(&library).unwrap();
+        assert_eq!(entries[0].created_at, 1_700_000_000_000);
+        assert!(entries[0].complete);
+        assert_eq!(entries[0].page_count, None);
+
+        upgrade_library_file(&library).unwrap();
+        assert_eq!(stored_version(&library), Some(LIBRARY_VERSION));
+        let backup = library.with_extension("json.v1.bak");
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        assert_eq!(load_library(&library).unwrap(), entries);
+        // Running it again changes nothing.
+        upgrade_library_file(&library).unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        assert_eq!(load_library(&library).unwrap(), entries);
+    }
+
+    #[test]
+    fn a_newer_library_is_refused_and_left_untouched() {
+        let scratch = Scratch::new();
+        let library = scratch.library();
+        let mut newer = v1_library(&scratch);
+        newer["version"] = serde_json::json!(3);
+        let original = newer.to_string();
+        fs::write(&library, &original).unwrap();
+
+        assert_eq!(load_library(&library).unwrap_err(), NEWER_LIBRARY);
+        let path = scratch.document("new.txt");
+        assert!(record_session(&library, &session(&"bb".repeat(32), "new.txt"), &path, 5).is_err());
+        assert!(remove_entry(&library, &"aa".repeat(32)).is_err());
+        upgrade_library_file(&library).unwrap();
+        assert_eq!(fs::read_to_string(&library).unwrap(), original);
     }
 }

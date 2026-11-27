@@ -2,6 +2,20 @@
 
 This file records notable user-facing changes. The `v1.0.0` GitHub release exists but has no installer assets. Historical implementation notes and validation evidence remain in `docs/TESTING.md` and `docs/ROADMAP.md`.
 
+## Unreleased (v2.0.0)
+
+### Breaking
+
+- Desktop data moves to a version 2 layout (see docs/CONFIGURATION.md, "Desktop data layout"). The first launch upgrades Sonara 1.x data once: the library is converted and the original kept as `library.json.v1.bak`, the audio cache moves to `audio-cache/`, and the last session is kept if all of its audio is present. The upgrade is one-way: Sonara 1.x shows an empty library on upgraded data.
+- The `audio_chunks.json` manifest is schema 2. Every manifest carries `total_units`, `completed_units` and `complete`, and `page_count`.
+
+### Changed
+
+- Each synthesis run writes to its own directory. Cancelling or failing a run no longer leaves a partial manifest behind or leaks the previous session's audio, and the session you were listening to stays intact while a new document is prepared.
+- The desktop app no longer writes the combined `speech.wav`, halving the disk used per session. The CLI still writes it; `--no-combined-audio` turns it off, and `--cache-dir` sets the synthesis cache directory.
+- Saved positions record the passage's narration unit as well as its number, so a position survives a re-synthesis that renumbers passages.
+- A library or reading position saved by a newer Sonara is refused instead of being silently replaced.
+
 ## v1.0.10 - 2026-11-17
 
 ### Added

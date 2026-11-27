@@ -19,7 +19,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -61,6 +61,7 @@ async function waitFor(description, check, timeoutMs = STEP_TIMEOUT_MS) {
   throw new Error(`Timed out waiting for ${description} (last: ${last instanceof Error ? last.message : JSON.stringify(last)})`);
 }
 
+/** Seed Sonara 1.x data: a version 1 library and a 1.x audio cache. */
 function seedLibrary(dataHome) {
   const documents = join(dataHome, "documents");
   mkdirSync(documents, { recursive: true });
@@ -82,11 +83,34 @@ function seedLibrary(dataHome) {
       lastListenedAt: Date.now(),
     }],
   }));
+  // A 1.x cache, which the version 2 migration moves to audio-cache/.
+  const legacyCache = join(appData, "reader-output", ".sonara-audio-cache");
+  mkdirSync(legacyCache, { recursive: true });
+  writeFileSync(join(legacyCache, "seeded.wav"), "cached");
+  return appData;
+}
+
+/** The version 2 layout the app should leave behind after one finished run. */
+function checkDataLayout(appData) {
+  const expect = (condition, message) => {
+    if (!condition) throw new Error(`data layout: ${message}`);
+  };
+  expect(readFileSync(join(appData, "data-version"), "utf8").trim() === "2", "data-version is not 2");
+  expect(JSON.parse(readFileSync(join(appData, "library.json"), "utf8")).version === 2, "library.json is not version 2");
+  expect(existsSync(join(appData, "library.json.v1.bak")), "the version 1 library was not backed up");
+  expect(!existsSync(join(appData, "reader-output")), "reader-output/ was not removed");
+  expect(existsSync(join(appData, "audio-cache", "seeded.wav")), "the 1.x cache was not moved");
+  const runs = readdirSync(join(appData, "sessions"));
+  expect(runs.length === 1, `expected one session run, found ${runs.length}`);
+  const run = join(appData, "sessions", runs[0]);
+  expect(readFileSync(join(appData, "current-session"), "utf8").trim() === runs[0], "current-session does not name the run");
+  expect(JSON.parse(readFileSync(join(run, "session.json"), "utf8")).version === 2, "session.json is not version 2");
+  expect(!existsSync(join(run, "speech.wav")), "the desktop run wrote a combined speech.wav");
 }
 
 async function main() {
   const dataHome = mkdtempSync(join(tmpdir(), "sonara-e2e-"));
-  seedLibrary(dataHome);
+  const appData = seedLibrary(dataHome);
   // The app inherits this environment through tauri-driver and
   // WebKitWebDriver, so its app-local data lands in the temporary directory.
   const driver = spawn("tauri-driver", ["--port", String(DRIVER_PORT)], {
@@ -173,6 +197,9 @@ async function main() {
     step("checking the library recorded the finished document");
     await click("button[title='Library']");
     await waitFor("the reader action", async () => (await bodyText()).includes("Open reader"));
+
+    step("checking the version 2 data layout on disk");
+    checkDataLayout(appData);
     console.log("Desktop smoke test passed.");
   } finally {
     if (session) await webdriver("DELETE", `/session/${session}`).catch(() => {});
