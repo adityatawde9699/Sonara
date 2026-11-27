@@ -10,8 +10,13 @@ This file records notable user-facing changes. The `v1.0.0` GitHub release exist
 - The CLI no longer writes a browser player (`index.html`). `sonara.py read` produces the passage WAVs, `speech.wav` and `audio_chunks.json`; listen in the desktop app.
 - The `audio_chunks.json` manifest is schema 2. Every manifest carries `total_units`, `completed_units` and `complete`, and `page_count`.
 
+### Added
+
+- Listening starts as soon as the first passage is ready, instead of after the whole document is synthesized. The player shows how many passages are ready and an estimated total length. If playback catches up with synthesis, it waits for the next passage ("Preparing passage N…") instead of stopping. A saved position in a passage that is not ready yet is held and resumed when that passage arrives. When synthesis finishes, playback carries on where it is. Cancelling returns to the document that was open before.
+
 ### Changed
 
+- Cancelling synthesis lets the Python worker shut down cleanly (it now handles SIGTERM), so its speech engine closes and unfinished passages are removed.
 - Each synthesis run writes to its own directory. Cancelling or failing a run no longer leaves a partial manifest behind or leaks the previous session's audio, and the session you were listening to stays intact while a new document is prepared.
 - The desktop app no longer writes the combined `speech.wav`, halving the disk used per session. The CLI still writes it; `--no-combined-audio` turns it off, and `--cache-dir` sets the synthesis cache directory.
 - Saved positions record the passage's narration unit as well as its number, so a position survives a re-synthesis that renumbers passages.

@@ -322,3 +322,48 @@ class ManifestContractTests(unittest.TestCase):
             self.assertTrue((root / "speech.wav").is_file())
             self.assertTrue((root / ".sonara-audio-cache").is_dir())
             self.assertTrue(manifest["complete"])
+
+
+class CancellationTests(unittest.TestCase):
+    def test_sigterm_unwinds_instead_of_killing_the_process(self):
+        import signal
+
+        previous = signal.getsignal(signal.SIGTERM)
+        try:
+            sonara.install_sigterm_handler()
+            with self.assertRaises(SystemExit) as raised:
+                signal.raise_signal(signal.SIGTERM)
+            self.assertEqual(raised.exception.code, 128 + signal.SIGTERM)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+
+    def test_an_interrupted_run_removes_its_uncommitted_chunks(self):
+        try:
+            from test_tts_engine import FakeEngine, make_plan
+        except ImportError:
+            from tests.test_tts_engine import FakeEngine, make_plan
+
+        class InterruptedEngine(FakeEngine):
+            def __init__(self):
+                super().__init__()
+                self.count = 0
+
+            def synthesize_to_wav(self, *args, **kwargs):
+                self.count += 1
+                if self.count == 2:
+                    raise SystemExit(143)
+                return super().synthesize_to_wav(*args, **kwargs)
+
+            def close(self):
+                return None
+
+        plan = make_plan("One.\n\nTwo.\n\nThree.", separate_paragraphs=True)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch.object(sonara, "PiperEngine", return_value=InterruptedEngine()):
+                with self.assertRaises(BaseException):
+                    sonara._synthesize_plan(
+                        plan, "en_US-test-medium", root, root / "speech.wav",
+                        cache_dir=root / "cache", write_combined=False,
+                    )
+            self.assertEqual(list((root / "chunks").rglob("*.wav")), [])

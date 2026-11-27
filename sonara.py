@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -688,8 +689,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _exit_on_sigterm(signum: int, _frame: Any) -> None:
+    # Raising here unwinds synthesis normally: the engine worker is closed
+    # and an uncommitted run's chunks are removed by its ``finally``.
+    raise SystemExit(128 + signum)
+
+
+def install_sigterm_handler() -> None:
+    """Make SIGTERM (the desktop app's cancel) run normal cleanup."""
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, _exit_on_sigterm)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    install_sigterm_handler()
     start_parent_watch()
     try:
         if args.preview:

@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FrontendSession, Progress } from "../lib/tauri";
+import type { FrontendSession, Progress, StreamingSnapshot, SynthesisFinished, SynthesisProgress } from "../lib/tauri";
 
 const SHA = "ab".repeat(32);
 const BASE = "http://127.0.0.1:5555/v1/token";
@@ -25,6 +25,11 @@ const session: FrontendSession = {
 const tauri = vi.hoisted(() => ({
   savedProgress: null as Progress | null,
   saveProgress: vi.fn().mockResolvedValue(undefined),
+  // null: no session was open at launch.
+  current: undefined as FrontendSession | null | undefined,
+  snapshot: null as StreamingSnapshot | null,
+  onProgress: null as ((payload: SynthesisProgress) => void) | null,
+  onFinished: null as ((payload: SynthesisFinished) => void) | null,
 }));
 
 vi.mock("../lib/tauri", async () => {
@@ -32,12 +37,20 @@ vi.mock("../lib/tauri", async () => {
   return {
     ...actual,
     isTauriAvailable: () => true,
-    currentSession: vi.fn(async () => session),
+    currentSession: vi.fn(async () => (tauri.current === undefined ? session : tauri.current)),
+    streamingSession: vi.fn(async () => tauri.snapshot),
     loadProgress: vi.fn(async () => tauri.savedProgress),
     saveProgress: tauri.saveProgress,
     listVoices: vi.fn(async () => []),
-    onSynthesisFinished: vi.fn(async () => () => {}),
-    onSynthesisProgress: vi.fn(async () => () => {}),
+    listLibrary: vi.fn(async () => []),
+    onSynthesisFinished: vi.fn(async (handler: (payload: SynthesisFinished) => void) => {
+      tauri.onFinished = handler;
+      return () => {};
+    }),
+    onSynthesisProgress: vi.fn(async (handler: (payload: SynthesisProgress) => void) => {
+      tauri.onProgress = handler;
+      return () => {};
+    }),
   };
 });
 
@@ -61,6 +74,10 @@ async function renderReadyPlayer() {
 
 beforeEach(() => {
   tauri.savedProgress = null;
+  tauri.current = undefined;
+  tauri.snapshot = null;
+  tauri.onProgress = null;
+  tauri.onFinished = null;
   tauri.saveProgress.mockClear();
   localStorage.clear();
   audio = document.createElement("audio");
@@ -233,5 +250,152 @@ describe("useSonara player", () => {
     });
     expect(play).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(result.current.playerState.isPlaying).toBe(true));
+  });
+});
+
+
+describe("useSonara streaming playback", () => {
+  const partial = (count: number): FrontendSession => ({ ...session, chunks: session.chunks.slice(0, count) });
+
+  /** A launch with no open session, then a run whose first passage is ready. */
+  async function renderStreaming(ready = 1) {
+    tauri.current = null;
+    const hook = renderHook(() => useSonara());
+    hook.result.current.audioRef.current = audio;
+    await waitFor(() => expect(tauri.onProgress).not.toBeNull());
+    await act(async () => {
+      tauri.onProgress!({ jobId: "job", completedChunks: ready, totalChunks: 3, firstChunk: 0, newChunks: [], session: partial(ready) });
+    });
+    await waitFor(() => expect(hook.result.current.phase).toBe("streaming"));
+    return hook;
+  }
+
+  async function addPassages(firstChunk: number, count: number) {
+    await act(async () => {
+      tauri.onProgress!({
+        jobId: "job",
+        completedChunks: firstChunk + count,
+        totalChunks: 3,
+        firstChunk,
+        newChunks: session.chunks.slice(firstChunk, firstChunk + count),
+      });
+    });
+  }
+
+  it("plays the first passage before the rest are synthesized", async () => {
+    const { result } = await renderStreaming();
+    expect(audio.src).toBe(`${BASE}/${SHA}/0`);
+    expect(result.current.playerState.isComplete).toBe(false);
+    expect(result.current.playerState.expectedChunks).toBe(3);
+    expect(result.current.playerState.totalDuration).toBe(10);
+    // Two more passages at the 10 s average of the ready one.
+    expect(result.current.playerState.estimatedDuration).toBe(30);
+    expect(result.current.statusText).toContain("1 of 3 passages ready");
+  });
+
+  it("waits at the end of the ready passages, then resumes when the next arrives", async () => {
+    const { result } = await renderStreaming();
+    await act(async () => {
+      await result.current.startPlayback();
+    });
+    act(() => result.current.handleEnded());
+    expect(result.current.playerState.isBuffering).toBe(true);
+    expect(result.current.playerState.statusMessage).toBe("Preparing passage 2 of 3…");
+    expect(result.current.playerState.statusMessage).not.toContain("end of this document");
+
+    await addPassages(1, 1);
+    expect(audio.src).toBe(`${BASE}/${SHA}/1`);
+    expect(result.current.playerState.isBuffering).toBe(false);
+    expect(result.current.session?.chunks).toHaveLength(2);
+    // It was playing when it ran out, so it carries on by itself.
+    setReadyState(HTMLMediaElement.HAVE_METADATA);
+    await act(async () => {
+      await result.current.handleLoadedMetadata();
+    });
+    expect(play).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not save a position while waiting for a passage", async () => {
+    const { result } = await renderStreaming();
+    act(() => result.current.seekToChunk(2));
+    expect(result.current.playerState.isBuffering).toBe(true);
+    act(() => result.current.pausePlayback());
+    await Promise.resolve();
+    expect(tauri.saveProgress).not.toHaveBeenCalledWith(expect.objectContaining({ segment: 2 }));
+  });
+
+  it("holds a saved position until its passage is synthesized", async () => {
+    tauri.savedProgress = { version: 2, sourceSha256: SHA, segment: 2, offsetSeconds: 4, playbackRate: 1.3, unitId: "u-c" } as Progress;
+    const { result } = await renderStreaming();
+    expect(result.current.playerState.isBuffering).toBe(true);
+    expect(result.current.playerState.statusMessage).toContain("continue where you left off");
+    expect(result.current.playerState.playbackRate).toBe(1.3);
+
+    await addPassages(1, 1);
+    expect(result.current.playerState.isBuffering).toBe(true);
+    await addPassages(2, 1);
+    expect(audio.src).toBe(`${BASE}/${SHA}/2`);
+    expect(result.current.playerState.globalPosition).toBe(34);
+    expect(result.current.playerState.statusMessage).toBe("Reading progress restored.");
+  });
+
+  it("catches up from the backend after a missed progress event", async () => {
+    const { result } = await renderStreaming();
+    tauri.snapshot = { jobId: "job", totalChunks: 3, session: partial(3) };
+    // Passage 1 was never announced; this event starts at passage 2.
+    await addPassages(2, 1);
+    expect(result.current.session?.chunks).toHaveLength(3);
+    expect(result.current.playerState.totalDuration).toBe(60);
+  });
+
+  it("keeps the listening position when the run finishes", async () => {
+    const { result } = await renderStreaming(2);
+    act(() => result.current.seekToChunk(1));
+    expect(audio.src).toBe(`${BASE}/${SHA}/1`);
+    await act(async () => {
+      tauri.onFinished!({ jobId: "job", result: { Ok: session } });
+    });
+    expect(result.current.phase).toBe("ready");
+    expect(result.current.playerState.isComplete).toBe(true);
+    expect(result.current.playerState.segment).toBe(1);
+    expect(audio.src).toBe(`${BASE}/${SHA}/1`);
+    expect(result.current.statusText).toBe("Ready to listen · 3 passages · en_US-ryan-medium");
+  });
+
+  it("reaches the end of the document only after the last planned passage", async () => {
+    const { result } = await renderStreaming(2);
+    act(() => result.current.seekToChunk(1));
+    vi.useFakeTimers();
+    act(() => result.current.handleEnded());
+    // Passage 2 is followed by a planned 400 ms pause.
+    act(() => vi.advanceTimersByTime(400));
+    expect(result.current.playerState.isBuffering).toBe(true);
+    expect(result.current.playerState.statusMessage).toBe("Preparing passage 3 of 3…");
+
+    await addPassages(2, 1);
+    expect(audio.src).toBe(`${BASE}/${SHA}/2`);
+    expect(result.current.playerState.isComplete).toBe(true);
+    act(() => result.current.handleEnded());
+    expect(result.current.playerState.isBuffering).toBe(false);
+    expect(result.current.playerState.statusMessage).toBe("You have reached the end of this document.");
+  });
+
+  it("returns to the previous session when a streaming run is cancelled", async () => {
+    const other: FrontendSession = { ...session, sourceName: "earlier.pdf", sourceSha256: "cd".repeat(32) };
+    tauri.current = other;
+    const hook = renderHook(() => useSonara());
+    hook.result.current.audioRef.current = audio;
+    await waitFor(() => expect(hook.result.current.phase).toBe("ready"));
+    await act(async () => {
+      tauri.onProgress!({ jobId: "job", completedChunks: 1, totalChunks: 3, firstChunk: 0, newChunks: [], session: partial(1) });
+    });
+    expect(hook.result.current.session?.sourceSha256).toBe(SHA);
+
+    await act(async () => {
+      tauri.onFinished!({ jobId: "job", result: { Err: "Speech generation was cancelled." } });
+    });
+    expect(hook.result.current.session?.sourceName).toBe("earlier.pdf");
+    expect(hook.result.current.phase).toBe("selected");
+    expect(audio.src).toBe(`${BASE}/${"cd".repeat(32)}/0`);
   });
 });

@@ -1,10 +1,12 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   type FrontendSession,
   type LibraryDocument,
   type NarrationPreview,
+  type SynthesisProgress,
   pickDocument,
   currentSession,
+  streamingSession,
   startReading,
   cancelReading,
   onSynthesisFinished,
@@ -25,8 +27,15 @@ export type AppPhase =
   | "idle"
   | "selected"
   | "synthesizing"
+  /** The first passages are playable while the rest are synthesized. */
+  | "streaming"
   | "ready"
   | "error";
+
+/** Phases in which a session can be listened to. */
+export function isListeningPhase(phase: AppPhase): boolean {
+  return phase === "ready" || phase === "streaming";
+}
 
 /** History kept in WebView storage before the desktop library existed. It has
  * no file paths, so its rows could never be reopened. */
@@ -61,9 +70,21 @@ export function useSonara() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
 
+  // Event handlers registered once read the latest phase and session here.
+  const phaseRef = useRef<AppPhase>("idle");
+  const sessionRef = useRef<FrontendSession | null>(null);
+  // The session open before a streaming run, restored if that run fails.
+  const previousSessionRef = useRef<FrontendSession | null>(null);
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
   const settings = useSpeechSettings(tauriAvailable);
   const player = useAudioPlayer();
-  const { openSession, suspend, togglePlayback, seekRelative, seekTo, seekToEnd, adjustSpeed } = player;
+  const { openSession, appendChunks, completeSession, suspend, togglePlayback, seekRelative, seekTo, seekToEnd, adjustSpeed } = player;
   const { selectedVoice, piperVariation, expandDates, expandCitations, speechEngine, resourceProfile } = settings;
 
   // ── Sessions and the library ────────────────────────────────────
@@ -78,13 +99,61 @@ export function useSonara() {
 
   const showSession = useCallback(async (nextSession: FrontendSession) => {
     setSession(nextSession);
+    sessionRef.current = nextSession;
     setDocumentName(nextSession.sourceName);
     setStatusText(`Ready to listen · ${nextSession.chunks.length} passages · ${nextSession.voice}`);
     setPhase("ready");
+    phaseRef.current = "ready";
     // The backend records a finished document before announcing it.
     void refreshLibrary();
     await openSession(nextSession);
   }, [openSession, refreshLibrary]);
+
+  const streamingStatus = (ready: number, total: number) =>
+    `Listen now while the rest is prepared · ${ready} of ${total} passages ready`;
+
+  /** The first passages of a run are ready: open them while the rest synthesize. */
+  const startStreaming = useCallback(async (partial: FrontendSession, totalChunks: number) => {
+    previousSessionRef.current = sessionRef.current;
+    setSession(partial);
+    sessionRef.current = partial;
+    setDocumentName(partial.sourceName);
+    setStatusText(streamingStatus(partial.chunks.length, totalChunks));
+    setPhase("streaming");
+    phaseRef.current = "streaming";
+    await openSession(partial, { expectedChunks: totalChunks });
+  }, [openSession]);
+
+  const handleSynthesisProgress = useCallback(async (payload: SynthesisProgress) => {
+    const { completedChunks, totalChunks } = payload;
+    if (payload.session) {
+      await startStreaming(payload.session, totalChunks);
+      return;
+    }
+    if (phaseRef.current !== "streaming") {
+      const pct = totalChunks > 0 ? Math.round((completedChunks / totalChunks) * 100) : 0;
+      setStatusText(`Synthesizing speech: passage ${completedChunks} of ${totalChunks} (${pct}%)…`);
+      return;
+    }
+    let grown = appendChunks(payload.firstChunk, payload.newChunks, totalChunks);
+    if (!grown) {
+      // An event was missed; catch up from the backend's copy of the run.
+      const snapshot = await streamingSession().catch(() => null);
+      const current = sessionRef.current;
+      if (snapshot && current && snapshot.session.sourceSha256 === current.sourceSha256) {
+        grown = appendChunks(
+          current.chunks.length,
+          snapshot.session.chunks.slice(current.chunks.length),
+          snapshot.totalChunks,
+        );
+      }
+    }
+    if (grown) {
+      setSession(grown);
+      sessionRef.current = grown;
+      setStatusText(streamingStatus(grown.chunks.length, totalChunks));
+    }
+  }, [appendChunks, startStreaming]);
 
   const handleClearHistory = useCallback(async () => {
     try {
@@ -194,8 +263,8 @@ export function useSonara() {
         return;
       }
 
-      // Media shortcuts require a ready session.
-      if (phase !== "ready" || !session) return;
+      // Media shortcuts require a session that can be listened to.
+      if (!isListeningPhase(phase) || !session) return;
 
       const actions: Record<string, () => void> = {
         " ": togglePlayback,
@@ -240,13 +309,35 @@ export function useSonara() {
 
       try {
         unlistenFn = await onSynthesisFinished(async (payload) => {
+          const wasStreaming = phaseRef.current === "streaming";
           if ("Ok" in payload.result) {
-            setPhase("ready");
-            await showSession(payload.result.Ok);
+            const finished = payload.result.Ok;
+            if (wasStreaming && sessionRef.current?.sourceSha256 === finished.sourceSha256) {
+              // Keep playing where the listener is; the session is now whole.
+              completeSession(finished);
+              setSession(finished);
+              sessionRef.current = finished;
+              setStatusText(`Ready to listen · ${finished.chunks.length} passages · ${finished.voice}`);
+              setPhase("ready");
+              phaseRef.current = "ready";
+              void refreshLibrary();
+            } else {
+              await showSession(finished);
+            }
           } else {
+            if (wasStreaming) {
+              // The partial run is gone; go back to the session open before it.
+              suspend();
+              const previous = previousSessionRef.current;
+              setSession(previous);
+              sessionRef.current = previous;
+              if (previous) await openSession(previous);
+            }
             setPhase("selected");
+            phaseRef.current = "selected";
             setErrorText(payload.result.Err || "Speech generation failed.");
           }
+          previousSessionRef.current = null;
         });
       } catch {
         /* event listener unavailable */
@@ -254,10 +345,7 @@ export function useSonara() {
 
       try {
         unlistenProgressFn = await onSynthesisProgress((payload) => {
-          const total = payload.totalChunks;
-          const current = payload.completedChunks;
-          const pct = total > 0 ? Math.round((current / total) * 100) : 0;
-          setStatusText(`Synthesizing speech: passage ${current} of ${total} (${pct}%)…`);
+          void handleSynthesisProgress(payload);
         });
       } catch {
         /* progress listener unavailable */
@@ -277,7 +365,7 @@ export function useSonara() {
       unlistenFn?.();
       unlistenProgressFn?.();
     };
-  }, [refreshLibrary, showSession, tauriAvailable]);
+  }, [completeSession, handleSynthesisProgress, openSession, refreshLibrary, showSession, suspend, tauriAvailable]);
 
   return {
     // State

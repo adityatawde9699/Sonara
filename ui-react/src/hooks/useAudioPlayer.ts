@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { type FrontendSession, type Progress, PROGRESS_VERSION, loadProgress, resolveProgressSegment, saveProgress } from "../lib/tauri";
+import { type FrontendChunk, type FrontendSession, type Progress, PROGRESS_VERSION, loadProgress, resolveProgressSegment, saveProgress } from "../lib/tauri";
 
 export interface PlayerState {
   isPlaying: boolean;
@@ -12,6 +12,25 @@ export interface PlayerState {
   statusMessage: string;
   canRetry: boolean;
   canSkip: boolean;
+  /** Passages planned for the document; more than are ready while streaming. */
+  expectedChunks: number;
+  /** False while later passages are still being synthesized. */
+  isComplete: boolean;
+  /** Waiting for a passage that has not been synthesized yet. */
+  isBuffering: boolean;
+  /** `totalDuration` plus an estimate for passages not yet synthesized. */
+  estimatedDuration: number;
+}
+
+/** A passage the player is waiting for, because it is not synthesized yet. */
+interface PendingPassage {
+  index: number;
+  /** Wait for this narration unit (a restored position) rather than the index. */
+  unitId: string | null;
+  offset: number;
+  autoplay: boolean;
+  /** Restoring saved progress: fall back to the start if it never arrives. */
+  restore: boolean;
 }
 
 const INITIAL_PLAYER_STATE: PlayerState = {
@@ -25,6 +44,10 @@ const INITIAL_PLAYER_STATE: PlayerState = {
   statusMessage: "Ready to play.",
   canRetry: false,
   canSkip: false,
+  expectedChunks: 0,
+  isComplete: true,
+  isBuffering: false,
+  estimatedDuration: 0,
 };
 
 const AUDIO_LOAD_TIMEOUT_MS = 12_000;
@@ -44,6 +67,12 @@ export function getChunkStarts(chunks: FrontendSession["chunks"]): number[] {
 
 export function sessionDuration(session: FrontendSession): number {
   return session.chunks.reduce((total, chunk) => total + chunk.durationSeconds, 0);
+}
+
+/** Ready duration plus the average ready passage length for each passage to come. */
+export function estimateDuration(readyDuration: number, readyChunks: number, expectedChunks: number): number {
+  if (readyChunks <= 0 || expectedChunks <= readyChunks) return readyDuration;
+  return readyDuration + (readyDuration / readyChunks) * (expectedChunks - readyChunks);
 }
 
 /**
@@ -68,6 +97,10 @@ export function useAudioPlayer() {
   const sessionRef = useRef<FrontendSession | null>(null);
   const startsRef = useRef<number[]>([]);
   const totalDurationRef = useRef(0);
+  // Streaming: passages arrive while synthesis runs.
+  const expectedChunksRef = useRef(0);
+  const completeRef = useRef(true);
+  const waitRef = useRef<PendingPassage | null>(null);
 
   // The pause between passages runs on a timer so it can be paused too.
   const narrationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -87,6 +120,27 @@ export function useAudioPlayer() {
   const updatePlayerState = useCallback((patch: Partial<PlayerState>) => {
     setPlayerState((prev) => ({ ...prev, ...patch }));
   }, []);
+
+  /** Passages planned: the ready ones, or more while synthesis runs. */
+  const plannedChunks = useCallback(() => {
+    const ready = sessionRef.current?.chunks.length ?? 0;
+    return completeRef.current ? ready : Math.max(ready, expectedChunksRef.current);
+  }, []);
+
+  /** Recompute passage start times and durations after the session grew. */
+  const refreshTotals = useCallback(() => {
+    const s = sessionRef.current;
+    if (!s) return;
+    startsRef.current = getChunkStarts(s.chunks);
+    totalDurationRef.current = sessionDuration(s);
+    const planned = plannedChunks();
+    updatePlayerState({
+      totalDuration: totalDurationRef.current,
+      expectedChunks: planned,
+      isComplete: completeRef.current,
+      estimatedDuration: estimateDuration(totalDurationRef.current, s.chunks.length, planned),
+    });
+  }, [plannedChunks, updatePlayerState]);
 
   const clearNarrationPause = useCallback(() => {
     if (narrationTimerRef.current !== null) clearTimeout(narrationTimerRef.current);
@@ -123,7 +177,8 @@ export function useAudioPlayer() {
 
   const persistProgress = useCallback(async (index?: number, offset?: number) => {
     const s = sessionRef.current;
-    if (!s) return;
+    // While waiting for a passage, keep the position saved before the wait.
+    if (!s || waitRef.current) return;
     const segment = index ?? segmentRef.current;
     const progress: Progress = {
       version: PROGRESS_VERSION,
@@ -171,21 +226,49 @@ export function useAudioPlayer() {
       errorMessage: `${errorDetail} Retry this passage or skip it.`,
       statusMessage: `${errorDetail} Retry this passage or skip it.`,
       canRetry: true,
-      canSkip: s ? segmentRef.current < s.chunks.length - 1 : false,
+      canSkip: s ? segmentRef.current < plannedChunks() - 1 : false,
     });
-  }, [clearLoadTimer, mediaDiagnostics, updatePlayerState]);
+  }, [clearLoadTimer, mediaDiagnostics, plannedChunks, updatePlayerState]);
 
   // ── Loading and playback ────────────────────────────────────────
+
+  /** Wait for a passage that is still being synthesized. */
+  const waitForPassage = useCallback((pending: PendingPassage) => {
+    clearNarrationPause();
+    clearLoadTimer();
+    audioRef.current?.pause();
+    waitRef.current = pending;
+    hasErrorRef.current = false;
+    isPlayingRef.current = pending.autoplay;
+    updatePlayerState({
+      isPlaying: pending.autoplay,
+      isBuffering: true,
+      segment: pending.index,
+      hasError: false,
+      errorMessage: "",
+      canRetry: false,
+      canSkip: false,
+      globalPosition: totalDurationRef.current,
+      statusMessage: pending.restore
+        ? `Preparing passage ${pending.index + 1} to continue where you left off…`
+        : `Preparing passage ${pending.index + 1} of ${plannedChunks()}…`,
+    });
+  }, [clearLoadTimer, clearNarrationPause, plannedChunks, updatePlayerState]);
 
   const loadChunk = useCallback((index: number, offset = 0, autoplay = false) => {
     clearNarrationPause();
     clearLoadTimer();
     const s = sessionRef.current;
+    if (s && index >= s.chunks.length && !completeRef.current) {
+      waitForPassage({ index, unitId: null, offset, autoplay, restore: false });
+      return;
+    }
     if (!s || index < 0 || index >= s.chunks.length) {
       isPlayingRef.current = false;
       updatePlayerState({ isPlaying: false });
       return;
     }
+    waitRef.current = null;
     segmentRef.current = index;
     pendingOffsetRef.current = Math.max(0, offset || 0);
     pendingAutoplayRef.current = autoplay;
@@ -211,7 +294,8 @@ export function useAudioPlayer() {
       errorMessage: "",
       canRetry: false,
       canSkip: false,
-      statusMessage: `Loading passage ${index + 1} of ${s.chunks.length}…`,
+      isBuffering: false,
+      statusMessage: `Loading passage ${index + 1} of ${plannedChunks()}…`,
     });
     renderPosition((startsRef.current[index] || 0) + pendingOffsetRef.current);
 
@@ -220,7 +304,43 @@ export function useAudioPlayer() {
         showAudioError(`The local audio did not load within 12 seconds (${mediaDiagnostics()}).`);
       }
     }, AUDIO_LOAD_TIMEOUT_MS);
-  }, [clearLoadTimer, clearNarrationPause, isExpectedAudioSource, mediaDiagnostics, renderPosition, showAudioError, updatePlayerState]);
+  }, [clearLoadTimer, clearNarrationPause, isExpectedAudioSource, mediaDiagnostics, plannedChunks, renderPosition, showAudioError, updatePlayerState, waitForPassage]);
+
+  /** Load the passage being waited for, if it has arrived (or never will). */
+  const resolveWait = useCallback(() => {
+    const pending = waitRef.current;
+    const s = sessionRef.current;
+    if (!pending || !s) return;
+    let index = -1;
+    if (pending.unitId) {
+      index = s.chunks.findIndex((chunk) => chunk.unitId === pending.unitId);
+      // The unit is gone (the rules changed); once all passages exist, fall
+      // back to the saved passage number.
+      if (index < 0 && completeRef.current && pending.index < s.chunks.length) index = pending.index;
+    } else if (pending.index < s.chunks.length) {
+      index = pending.index;
+    }
+    if (index < 0) {
+      if (!completeRef.current) return;
+      waitRef.current = null;
+      if (pending.restore && s.chunks.length) {
+        loadChunk(0, 0, false);
+        updatePlayerState({ statusMessage: "Ready to play." });
+      } else {
+        isPlayingRef.current = false;
+        updatePlayerState({
+          isPlaying: false,
+          isBuffering: false,
+          statusMessage: "You have reached the end of this document.",
+        });
+      }
+      return;
+    }
+    const offset = pending.offset <= s.chunks[index].durationSeconds ? pending.offset : 0;
+    waitRef.current = null;
+    loadChunk(index, offset, pending.autoplay);
+    if (pending.restore) updatePlayerState({ statusMessage: "Reading progress restored." });
+  }, [loadChunk, updatePlayerState]);
 
   /** Ref callback for the player's <audio> element. */
   const attachAudio = useCallback((element: HTMLAudioElement | null) => {
@@ -248,6 +368,16 @@ export function useAudioPlayer() {
     const s = sessionRef.current;
     const audio = audioRef.current;
     if (!s?.chunks?.length || !audio) return;
+
+    if (waitRef.current) {
+      waitRef.current.autoplay = true;
+      isPlayingRef.current = true;
+      updatePlayerState({
+        isPlaying: true,
+        statusMessage: `Passage ${waitRef.current.index + 1} plays as soon as it is ready…`,
+      });
+      return;
+    }
 
     if (hasErrorRef.current) {
       updatePlayerState({ statusMessage: "Retry this passage or skip it to continue." });
@@ -284,7 +414,7 @@ export function useAudioPlayer() {
       isPlayingRef.current = true;
       updatePlayerState({
         isPlaying: true,
-        statusMessage: `Playing passage ${segmentRef.current + 1} of ${s.chunks.length}.`,
+        statusMessage: `Playing passage ${segmentRef.current + 1} of ${plannedChunks()}.`,
       });
     } catch (error: unknown) {
       isPlayingRef.current = false;
@@ -301,9 +431,15 @@ export function useAudioPlayer() {
         });
       }
     }
-  }, [loadChunk, mediaDiagnostics, scheduleNextPassage, updatePlayerState]);
+  }, [loadChunk, mediaDiagnostics, plannedChunks, scheduleNextPassage, updatePlayerState]);
 
   const pausePlayback = useCallback(() => {
+    if (waitRef.current) {
+      waitRef.current.autoplay = false;
+      isPlayingRef.current = false;
+      updatePlayerState({ isPlaying: false, statusMessage: "Paused." });
+      return;
+    }
     if (narrationTimerRef.current !== null) {
       clearTimeout(narrationTimerRef.current);
       narrationTimerRef.current = null;
@@ -352,10 +488,10 @@ export function useAudioPlayer() {
   /** Jump to the start of a passage; keeps playing if it was, or starts when `autoplay`. */
   const seekToChunk = useCallback((chunkIndex: number, autoplay?: boolean) => {
     const s = sessionRef.current;
-    if (!s || chunkIndex < 0 || chunkIndex >= s.chunks.length) return;
+    if (!s || chunkIndex < 0 || chunkIndex >= plannedChunks()) return;
     loadChunk(chunkIndex, 0, autoplay ?? isPlayingRef.current);
     void persistProgress(chunkIndex, 0);
-  }, [loadChunk, persistProgress]);
+  }, [loadChunk, persistProgress, plannedChunks]);
 
   const seekRelative = useCallback((deltaSeconds: number) => {
     const current = (startsRef.current[segmentRef.current] || 0) + (audioRef.current?.currentTime || 0);
@@ -389,15 +525,41 @@ export function useAudioPlayer() {
 
   // ── Sessions ────────────────────────────────────────────────────
 
-  /** Switch to a new session and restore its saved position and speed. */
-  const openSession = useCallback(async (nextSession: FrontendSession) => {
+  /**
+   * Switch to a new session and restore its saved position and speed.
+   * `expectedChunks` above the ready count opens a session that is still
+   * being synthesized; `appendChunks` and `completeSession` extend it.
+   */
+  const openSession = useCallback(async (nextSession: FrontendSession, options: { expectedChunks?: number } = {}) => {
     sessionRef.current = nextSession;
+    waitRef.current = null;
+    expectedChunksRef.current = Math.max(options.expectedChunks ?? 0, nextSession.chunks.length);
+    completeRef.current = expectedChunksRef.current <= nextSession.chunks.length;
     const starts = getChunkStarts(nextSession.chunks);
     const total = sessionDuration(nextSession);
     startsRef.current = starts;
     totalDurationRef.current = total;
+    refreshTotals();
     try {
       const saved = await loadProgress(nextSession.sourceSha256);
+      if (saved && !completeRef.current) {
+        // A saved passage that is not synthesized yet: wait for it.
+        const byUnit = saved.unitId
+          ? nextSession.chunks.findIndex((chunk) => chunk.unitId === saved.unitId)
+          : -1;
+        const waiting = saved.unitId ? byUnit < 0 : saved.segment >= nextSession.chunks.length;
+        if (waiting && saved.segment < expectedChunksRef.current) {
+          setSpeed(saved.playbackRate, false);
+          waitForPassage({
+            index: saved.segment,
+            unitId: saved.unitId ?? null,
+            offset: saved.offsetSeconds,
+            autoplay: false,
+            restore: true,
+          });
+          return;
+        }
+      }
       const savedIndex = saved ? resolveProgressSegment(saved, nextSession.chunks) : -1;
       const valid = saved && savedIndex >= 0 &&
         saved.offsetSeconds <= nextSession.chunks[savedIndex].durationSeconds;
@@ -418,7 +580,34 @@ export function useAudioPlayer() {
         hasError: true,
       });
     }
-  }, [loadChunk, renderPosition, setSpeed, updatePlayerState]);
+  }, [loadChunk, refreshTotals, renderPosition, setSpeed, updatePlayerState, waitForPassage]);
+
+  /**
+   * Add passages that finished synthesizing. Returns the grown session, or
+   * null when `firstIndex` does not follow on from the passages already
+   * here (an event was missed); the caller then resynchronizes.
+   */
+  const appendChunks = useCallback((firstIndex: number, chunks: FrontendChunk[], expectedChunks: number): FrontendSession | null => {
+    const s = sessionRef.current;
+    if (!s || firstIndex !== s.chunks.length) return null;
+    const grown = { ...s, chunks: [...s.chunks, ...chunks] };
+    sessionRef.current = grown;
+    expectedChunksRef.current = Math.max(expectedChunks, grown.chunks.length);
+    // Every planned passage is playable; the finished event only confirms it.
+    if (grown.chunks.length >= expectedChunksRef.current) completeRef.current = true;
+    refreshTotals();
+    resolveWait();
+    return grown;
+  }, [refreshTotals, resolveWait]);
+
+  /** Synthesis finished: the session is whole. */
+  const completeSession = useCallback((finalSession: FrontendSession) => {
+    sessionRef.current = finalSession;
+    completeRef.current = true;
+    expectedChunksRef.current = finalSession.chunks.length;
+    refreshTotals();
+    resolveWait();
+  }, [refreshTotals, resolveWait]);
 
   // ── Media element events ────────────────────────────────────────
 
@@ -431,13 +620,13 @@ export function useAudioPlayer() {
     audio.playbackRate = playerState.playbackRate;
     renderPosition();
     updatePlayerState({
-      statusMessage: `Ready · passage ${segmentRef.current + 1} of ${sessionRef.current?.chunks.length ?? 0}.`,
+      statusMessage: `Ready · passage ${segmentRef.current + 1} of ${plannedChunks()}.`,
     });
     if (pendingAutoplayRef.current) {
       pendingAutoplayRef.current = false;
       await startPlayback();
     }
-  }, [clearLoadTimer, isExpectedAudioSource, playerState.playbackRate, renderPosition, startPlayback, updatePlayerState]);
+  }, [clearLoadTimer, isExpectedAudioSource, playerState.playbackRate, plannedChunks, renderPosition, startPlayback, updatePlayerState]);
 
   const handleTimeUpdate = useCallback(() => {
     renderPosition();
@@ -452,9 +641,9 @@ export function useAudioPlayer() {
     isPlayingRef.current = true;
     updatePlayerState({
       isPlaying: true,
-      statusMessage: `Playing passage ${segmentRef.current + 1} of ${sessionRef.current?.chunks.length ?? 0}.`,
+      statusMessage: `Playing passage ${segmentRef.current + 1} of ${plannedChunks()}.`,
     });
-  }, [updatePlayerState]);
+  }, [plannedChunks, updatePlayerState]);
 
   const handleEnded = useCallback(() => {
     if (!isExpectedAudioSource()) return;
@@ -463,7 +652,7 @@ export function useAudioPlayer() {
     updatePlayerState({ isPlaying: false });
     const s = sessionRef.current;
     if (!s) return;
-    if (segmentRef.current >= s.chunks.length - 1) {
+    if (completeRef.current && segmentRef.current >= s.chunks.length - 1) {
       updatePlayerState({ statusMessage: "You have reached the end of this document." });
       return;
     }
@@ -493,6 +682,8 @@ export function useAudioPlayer() {
     audioRef,
     attachAudio,
     openSession,
+    appendChunks,
+    completeSession,
     suspend,
     startPlayback,
     pausePlayback,

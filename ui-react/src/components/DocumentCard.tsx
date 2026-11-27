@@ -34,7 +34,8 @@ export const DocumentCard: FC<Props> = ({
   isPreviewing = false,
 }) => {
   const showSynthesisButton = phase === "selected";
-  const isSynthesizing = phase === "synthesizing";
+  // A streaming run is still synthesizing, and can still be cancelled.
+  const isSynthesizing = phase === "synthesizing" || phase === "streaming";
 
   return (
     <section className="document-card" aria-labelledby="document-title">

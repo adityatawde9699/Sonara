@@ -1325,7 +1325,10 @@ kbd { font-family: var(--font-mono); }
 }
 .passage-dots .dot.done { background: var(--text-3); opacity: 0.55; }
 .passage-dots .dot.active { background: var(--accent); opacity: 1; }
-.passage-dots .dot:hover:not(.active) { background: var(--text-2); opacity: 1; }
+.passage-dots .dot.pending { opacity: 0.25; cursor: default; }
+.passage-dots .dot.pending.active { background: var(--accent); opacity: 0.6; }
+.position-estimate { color: var(--text-3); }
+.passage-dots .dot:hover:not(.active):not(.pending) { background: var(--text-2); opacity: 1; }
 
 .passage-count { color: var(--text-3); font-size: 12px; }
 

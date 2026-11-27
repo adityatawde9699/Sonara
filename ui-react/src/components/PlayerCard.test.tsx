@@ -31,6 +31,10 @@ const defaultPlayerState: PlayerState = {
   statusMessage: "Ready to play.",
   canRetry: false,
   canSkip: false,
+  expectedChunks: 3,
+  isComplete: true,
+  isBuffering: false,
+  estimatedDuration: 37,
 };
 
 describe("PlayerCard component", () => {
@@ -248,5 +252,26 @@ describe("PlayerCard component", () => {
 
     fireEvent.click(skipBtn);
     expect(onSkip).toHaveBeenCalledTimes(1);
+  });
+  it("shows passages still being prepared and an estimated length while streaming", () => {
+    const partial = { ...mockSession, chunks: mockSession.chunks.slice(0, 1) };
+    const { container } = render(
+      <PlayerCard
+        session={partial}
+        state={{ ...defaultPlayerState, totalDuration: 10, expectedChunks: 3, isComplete: false, estimatedDuration: 30 }}
+        audioRef={{ current: document.createElement("audio") }}
+        chunkStarts={[0]}
+        onPlay={vi.fn()} onPause={vi.fn()} onSeek={vi.fn()} onSeekChunk={vi.fn()}
+        onSpeedChange={vi.fn()} onRetry={vi.fn()} onSkip={vi.fn()}
+        onLoadedMetadata={vi.fn()} onTimeUpdate={vi.fn()} onError={vi.fn()}
+        onPlaying={vi.fn()} onEnded={vi.fn()} onCanPlay={vi.fn()} onWaiting={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/Passage 1 of 3 · 1 ready/)).toBeInTheDocument();
+    expect(screen.getByText(/about 0:30 in all/)).toBeInTheDocument();
+    expect(container.querySelectorAll(".dot.pending")).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /Jump to passage/ })).toHaveLength(1);
+    // The next passage can be asked for; the player waits until it is ready.
+    expect(screen.getByRole("button", { name: "Next passage" })).toBeEnabled();
   });
 });

@@ -145,6 +145,19 @@ export interface SynthesisProgress {
   jobId: string;
   completedChunks: number;
   totalChunks: number;
+  /** Index of the first passage in `newChunks`. */
+  firstChunk: number;
+  /** Passages that became playable since the previous event. */
+  newChunks: FrontendChunk[];
+  /** The whole session so far, on the first event that has passages. */
+  session?: FrontendSession | null;
+}
+
+/** The run being synthesized, for resynchronizing after a missed event. */
+export interface StreamingSnapshot {
+  jobId: string;
+  totalChunks: number;
+  session: FrontendSession;
 }
 
 // ── Tauri API wrappers ───────────────────────────────────────────────
@@ -196,6 +209,10 @@ export async function clearLibrary(): Promise<void> {
 
 export async function currentSession(): Promise<FrontendSession | null> {
   return invoke<FrontendSession | null>("current_session");
+}
+
+export async function streamingSession(): Promise<StreamingSnapshot | null> {
+  return invoke<StreamingSnapshot | null>("streaming_session");
 }
 
 export const FALLBACK_KOKORO_VOICES: VoiceInfo[] = [

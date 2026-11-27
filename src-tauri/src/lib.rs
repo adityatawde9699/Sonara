@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -52,6 +52,15 @@ struct AppState {
     llm_child: Mutex<Option<Arc<Mutex<Child>>>>,
     /// Serializes read-modify-write updates of the library file.
     library: Mutex<()>,
+    /// The passages of the run being synthesized, published as they finish
+    /// so playback can start before the run ends. Cleared when it ends.
+    streaming: Mutex<Option<StreamingSession>>,
+}
+
+struct StreamingSession {
+    job_id: String,
+    total_chunks: usize,
+    session: ReaderSession,
 }
 
 struct ActiveJob {
@@ -66,14 +75,27 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Could not find Sonara's local data directory: {error}"))
 }
 
-/// The run directory of the open session.
-fn current_session_dir(state: &AppState) -> Result<Option<PathBuf>, String> {
+/// The session being listened to: the run still being synthesized if there
+/// is one, otherwise the open session.
+fn listening_session(state: &AppState) -> Result<Option<ReaderSession>, String> {
+    if let Some(streaming) = state
+        .streaming
+        .lock()
+        .map_err(|_| "Reader session state is unavailable.".to_owned())?
+        .as_ref()
+    {
+        return Ok(Some(streaming.session.clone()));
+    }
     Ok(state
         .session
         .lock()
         .map_err(|_| "Reader session state is unavailable.".to_owned())?
-        .as_ref()
-        .map(|session| session.dir.clone()))
+        .clone())
+}
+
+/// The run directory of the session being listened to.
+fn current_session_dir(state: &AppState) -> Result<Option<PathBuf>, String> {
+    Ok(listening_session(state)?.map(|session| session.dir))
 }
 
 #[derive(Serialize)]
@@ -89,12 +111,27 @@ struct SynthesisFinished {
     result: Result<FrontendSession, String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SynthesisProgress {
     job_id: String,
     completed_chunks: usize,
     total_chunks: usize,
+    /// Index of the first passage in `new_chunks`.
+    first_chunk: usize,
+    /// Passages that became playable since the previous event.
+    new_chunks: Vec<session::FrontendChunk>,
+    /// The whole session so far, on the first event that has passages.
+    session: Option<FrontendSession>,
+}
+
+/// The run being synthesized, for a frontend that missed progress events.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamingSnapshot {
+    job_id: String,
+    total_chunks: usize,
+    session: FrontendSession,
 }
 
 fn library_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -275,6 +312,23 @@ fn current_session(
         .map(|session| FrontendSession::from_session(session, &audio_server.base_url)))
 }
 
+#[tauri::command]
+fn streaming_session(
+    state: State<'_, AppState>,
+    audio_server: State<'_, AudioServer>,
+) -> Result<Option<StreamingSnapshot>, String> {
+    Ok(state
+        .streaming
+        .lock()
+        .map_err(|_| "Reader session state is unavailable.".to_owned())?
+        .as_ref()
+        .map(|streaming| StreamingSnapshot {
+            job_id: streaming.job_id.clone(),
+            total_chunks: streaming.total_chunks,
+            session: FrontendSession::from_session(&streaming.session, &audio_server.base_url),
+        }))
+}
+
 /// Speech models the app can download, and whether each is installed.
 #[tauri::command]
 async fn list_models(app: AppHandle) -> Result<Vec<models::ModelStatus>, String> {
@@ -307,14 +361,11 @@ fn list_kokoro_voices() -> Vec<VoiceInfo> {
 async fn get_reader_document(app: AppHandle) -> Result<session::ReaderDocument, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let (sha256, run_dir) = state
-            .session
-            .lock()
-            .map_err(|_| "Reader session state is unavailable.".to_owned())?
-            .as_ref()
-            .map(|session| (session.source_sha256.clone(), session.dir.clone()))
-            .ok_or_else(|| "No document is open.".to_owned())?;
-        session::load_reader_document(&run_dir, &sha256)
+        // A streaming run already has its extracted document: Python writes
+        // it before synthesizing the first passage.
+        let session =
+            listening_session(&state)?.ok_or_else(|| "No document is open.".to_owned())?;
+        session::load_reader_document(&session.dir, &session.source_sha256)
     })
     .await
     .map_err(|error| format!("Reader document task failed: {error}"))?
@@ -528,12 +579,23 @@ fn save_progress(
 ) -> Result<(), String> {
     validate_hash(&progress.source_sha256)?;
     validate_progress_shape(&progress)?;
-    let session = state
-        .session
+    // While a run streams, its passages are the ones being listened to.
+    let streaming = state
+        .streaming
         .lock()
         .map_err(|_| "Reader session state is unavailable.".to_owned())?
-        .clone()
-        .ok_or_else(|| "There is no open reading session.".to_owned())?;
+        .as_ref()
+        .filter(|streaming| streaming.session.source_sha256 == progress.source_sha256)
+        .map(|streaming| streaming.session.clone());
+    let session = match streaming {
+        Some(session) => session,
+        None => state
+            .session
+            .lock()
+            .map_err(|_| "Reader session state is unavailable.".to_owned())?
+            .clone()
+            .ok_or_else(|| "There is no open reading session.".to_owned())?,
+    };
     let Some(chunk) = session.chunks.get(progress.segment) else {
         return Err("The saved passage is outside this document.".to_owned());
     };
@@ -720,29 +782,21 @@ fn monitor_worker(
         output_dir,
         log_path,
     } = paths;
+    let audio_base_url = app.state::<AudioServer>().base_url.clone();
+    let mut published: Option<ReaderSession> = None;
     let mut last_reported_chunks = 0;
-    let chunks_manifest_path = output_dir.join("audio_chunks.json");
 
     let exit_status = loop {
-        if let Ok(content) = fs::read_to_string(&chunks_manifest_path) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                let completed = val
-                    .get("completed_units")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize;
-                let total = val.get("total_units").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                if completed > last_reported_chunks {
-                    last_reported_chunks = completed;
-                    let _ = app.emit(
-                        "synthesis-progress",
-                        SynthesisProgress {
-                            job_id: job_id.clone(),
-                            completed_chunks: completed,
-                            total_chunks: total,
-                        },
-                    );
-                }
-            }
+        if !cancelled.load(Ordering::SeqCst) {
+            publish_new_passages(
+                &app,
+                &job_id,
+                &document_path,
+                &output_dir,
+                &audio_base_url,
+                &mut published,
+                &mut last_reported_chunks,
+            );
         }
 
         let status = match child.lock() {
@@ -783,6 +837,7 @@ fn monitor_worker(
             if let Ok(mut current) = app.state::<AppState>().inner().session.lock() {
                 *current = Some(session.clone());
             }
+            clear_streaming(&app, &job_id);
             // The new run replaces the previous session on disk.
             if storage::set_current_session(&app_data, &output_dir).is_ok() {
                 storage::prune_runs(&app_data, &[&output_dir]);
@@ -790,7 +845,10 @@ fn monitor_worker(
         }
         // A cancelled or failed run leaves nothing behind; the session that
         // was open before it is untouched.
-        Err(_) => storage::remove_run(&output_dir),
+        Err(_) => {
+            clear_streaming(&app, &job_id);
+            storage::remove_run(&output_dir);
+        }
     }
     if let Ok(session) = &session_result {
         // The audio is ready either way; a library that cannot be written
@@ -799,10 +857,66 @@ fn monitor_worker(
             library::record_session(path, session, &document_path, library::now_millis())
         });
     }
-    let audio_base_url = app.state::<AudioServer>().base_url.clone();
     let result =
         session_result.map(|session| FrontendSession::from_session(&session, &audio_base_url));
     let _ = app.emit("synthesis-finished", SynthesisFinished { job_id, result });
+}
+
+/// Publish passages the worker has finished since the last poll: extend the
+/// streaming session the audio server reads, and tell the frontend.
+fn publish_new_passages(
+    app: &AppHandle,
+    job_id: &str,
+    document_path: &Path,
+    output_dir: &Path,
+    audio_base_url: &str,
+    published: &mut Option<ReaderSession>,
+    last_reported: &mut usize,
+) {
+    // The manifest is rewritten after each passage; until the first one it
+    // does not exist, and a read that fails is retried on the next poll.
+    let Ok(Some(update)) =
+        session::refresh_partial_session(output_dir, document_path, published.as_ref())
+    else {
+        return;
+    };
+    let completed = update.session.chunks.len();
+    if completed <= *last_reported {
+        return;
+    }
+    let first_event = published.is_none();
+    let new_chunks = update.session.chunks[update.first_new..]
+        .iter()
+        .map(session::FrontendChunk::from_chunk)
+        .collect();
+    let total = update.progress.total.max(completed);
+    if let Ok(mut streaming) = app.state::<AppState>().inner().streaming.lock() {
+        *streaming = Some(StreamingSession {
+            job_id: job_id.to_owned(),
+            total_chunks: total,
+            session: update.session.clone(),
+        });
+    }
+    let event = SynthesisProgress {
+        job_id: job_id.to_owned(),
+        completed_chunks: completed,
+        total_chunks: total,
+        first_chunk: if first_event { 0 } else { update.first_new },
+        new_chunks: if first_event { Vec::new() } else { new_chunks },
+        session: first_event
+            .then(|| FrontendSession::from_session(&update.session, audio_base_url)),
+    };
+    *last_reported = completed;
+    *published = Some(update.session);
+    let _ = app.emit("synthesis-progress", event);
+}
+
+fn clear_streaming(app: &AppHandle, job_id: &str) {
+    if let Ok(mut streaming) = app.state::<AppState>().inner().streaming.lock() {
+        if streaming.as_ref().is_some_and(|run| run.job_id == job_id) {
+            *streaming = None;
+        }
+    }
 }
 
 fn validate_document(path: &Path) -> Result<PathBuf, String> {
@@ -854,6 +968,7 @@ pub fn run() {
             pick_document,
             preview_narration,
             current_session,
+            streaming_session,
             start_reading,
             cancel_reading,
             load_progress,

@@ -134,13 +134,19 @@ impl FrontendSession {
             chunks: session
                 .chunks
                 .iter()
-                .map(|chunk| FrontendChunk {
-                    duration_seconds: chunk.duration_seconds,
-                    pause_after_ms: chunk.pause_after_ms,
-                    source: chunk.source.clone(),
-                    unit_id: chunk.unit_id.clone(),
-                })
+                .map(FrontendChunk::from_chunk)
                 .collect(),
+        }
+    }
+}
+
+impl FrontendChunk {
+    pub(crate) fn from_chunk(chunk: &ReaderChunk) -> Self {
+        Self {
+            duration_seconds: chunk.duration_seconds,
+            pause_after_ms: chunk.pause_after_ms,
+            source: chunk.source.clone(),
+            unit_id: chunk.unit_id.clone(),
         }
     }
 }
@@ -193,26 +199,55 @@ pub(crate) fn parse_progress(bytes: &[u8]) -> Result<Progress, String> {
     Ok(progress)
 }
 
-/// Build the session for a finished run from its `audio_chunks.json`, and
-/// save it as the run's `session.json`.
-pub(crate) fn load_reader_session(
-    output_dir: &Path,
-    source_path: &Path,
-) -> Result<ReaderSession, String> {
+fn read_manifest(output_dir: &Path) -> Result<serde_json::Value, String> {
     let manifest_path = output_dir.join("audio_chunks.json");
-    let manifest: serde_json::Value = serde_json::from_slice(
+    serde_json::from_slice(
         &fs::read(&manifest_path)
             .map_err(|error| format!("Could not read the audio manifest: {error}"))?,
     )
-    .map_err(|error| format!("The generated audio manifest is invalid: {error}"))?;
+    .map_err(|error| format!("The generated audio manifest is invalid: {error}"))
+}
+
+/// How far synthesis has got, as the manifest reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ManifestProgress {
+    pub(crate) completed: usize,
+    /// Passages planned; equal to `completed` for a finished manifest.
+    pub(crate) total: usize,
+    pub(crate) complete: bool,
+}
+
+fn manifest_progress(manifest: &serde_json::Value) -> ManifestProgress {
+    let chunk_count = manifest
+        .get("chunks")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    let number = |key: &str| {
+        manifest
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+    };
     // Schema 1 manifests have no completion flag; they are written whole.
-    if manifest
+    let complete = manifest
         .get("complete")
         .and_then(serde_json::Value::as_bool)
-        == Some(false)
-    {
-        return Err("Speech generation stopped before the document was finished.".to_owned());
+        .unwrap_or(true);
+    let completed = number("completed_units").unwrap_or(chunk_count);
+    let total = number("total_units").unwrap_or(chunk_count).max(completed);
+    ManifestProgress {
+        completed,
+        total,
+        complete,
     }
+}
+
+/// The session metadata in a manifest, with no passages yet.
+fn session_header(
+    manifest: &serde_json::Value,
+    source_path: &Path,
+    canonical_output: PathBuf,
+) -> Result<ReaderSession, String> {
     let source_name = source_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -227,34 +262,60 @@ pub(crate) fn load_reader_session(
     let audio_format = manifest
         .get("audio_format")
         .ok_or_else(|| "The audio manifest has no audio format.".to_owned())?;
-    let sample_rate = audio_format
-        .get("sample_rate")
-        .and_then(serde_json::Value::as_u64)
+    let format_value = |key: &str| {
+        audio_format
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .filter(|value| *value > 0)
+    };
+    let sample_rate = format_value("sample_rate")
         .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
         .ok_or_else(|| "The manifest sample rate is invalid.".to_owned())?;
-    let channels = audio_format
-        .get("channels")
-        .and_then(serde_json::Value::as_u64)
+    let channels = format_value("channels")
         .and_then(|value| u16::try_from(value).ok())
-        .filter(|value| *value > 0)
         .ok_or_else(|| "The manifest channel count is invalid.".to_owned())?;
-    let sample_width_bytes = audio_format
-        .get("sample_width_bytes")
-        .and_then(serde_json::Value::as_u64)
+    let sample_width_bytes = format_value("sample_width_bytes")
         .and_then(|value| u16::try_from(value).ok())
-        .filter(|value| *value > 0)
         .ok_or_else(|| "The manifest sample width is invalid.".to_owned())?;
+    let text = |key: &str| manifest.get(key).and_then(serde_json::Value::as_str);
+    Ok(ReaderSession {
+        source_name,
+        source_sha256,
+        narration_ruleset_version: text("narration_ruleset_version")
+            .unwrap_or("unknown")
+            .to_owned(),
+        voice: text("voice").unwrap_or(DEFAULT_FALLBACK_VOICE).to_owned(),
+        engine: text("engine").unwrap_or("Piper").to_owned(),
+        language: text("language")
+            .filter(|language| language.len() <= 16)
+            .map(str::to_owned),
+        page_count: manifest
+            .get("page_count")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pages| u32::try_from(pages).ok())
+            .filter(|pages| *pages > 0),
+        sample_rate,
+        channels,
+        sample_width_bytes,
+        chunks: Vec::new(),
+        dir: canonical_output,
+    })
+}
+
+/// Validate the manifest's passages from `start` on: each must be a file
+/// inside the run directory, with a positive duration.
+fn manifest_chunks(
+    manifest: &serde_json::Value,
+    output_dir: &Path,
+    canonical_output: &Path,
+    start: usize,
+) -> Result<Vec<ReaderChunk>, String> {
     let chunk_values = manifest
         .get("chunks")
         .and_then(serde_json::Value::as_array)
-        .filter(|chunks| !chunks.is_empty())
         .ok_or_else(|| "The audio manifest contains no playable chunks.".to_owned())?;
-    let canonical_output = output_dir
-        .canonicalize()
-        .map_err(|error| format!("Could not inspect generated audio: {error}"))?;
-    let mut chunks = Vec::with_capacity(chunk_values.len());
-    for (index, value) in chunk_values.iter().enumerate() {
+    let mut chunks = Vec::with_capacity(chunk_values.len().saturating_sub(start));
+    for (index, value) in chunk_values.iter().enumerate().skip(start) {
         let audio_file = value
             .get("audio_file")
             .and_then(serde_json::Value::as_str)
@@ -266,11 +327,11 @@ pub(crate) fn load_reader_session(
                 index + 1
             ));
         }
-        let file = output_dir.join(relative);
-        let canonical_file = file
+        let canonical_file = output_dir
+            .join(relative)
             .canonicalize()
             .map_err(|error| format!("Audio passage {} is unavailable: {error}", index + 1))?;
-        if !canonical_file.starts_with(&canonical_output) || !canonical_file.is_file() {
+        if !canonical_file.starts_with(canonical_output) || !canonical_file.is_file() {
             return Err(format!(
                 "Audio passage {} is outside Sonara's output directory.",
                 index + 1
@@ -281,14 +342,13 @@ pub(crate) fn load_reader_session(
             .and_then(serde_json::Value::as_f64)
             .filter(|duration| duration.is_finite() && *duration > 0.0)
             .ok_or_else(|| format!("Audio passage {} has an invalid duration.", index + 1))?;
-        let pause_after_ms = value
-            .get("pause_after_ms")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
         chunks.push(ReaderChunk {
             audio_file: canonical_file.to_string_lossy().into_owned(),
             duration_seconds,
-            pause_after_ms,
+            pause_after_ms: value
+                .get("pause_after_ms")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
             source: SourceSpan::from_manifest(value),
             unit_id: value
                 .get("unit_id")
@@ -297,42 +357,78 @@ pub(crate) fn load_reader_session(
                 .map(str::to_owned),
         });
     }
-    let session = ReaderSession {
-        source_name,
-        source_sha256,
-        narration_ruleset_version: manifest
-            .get("narration_ruleset_version")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned(),
-        voice: manifest
-            .get("voice")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(DEFAULT_FALLBACK_VOICE)
-            .to_owned(),
-        engine: manifest
-            .get("engine")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("Piper")
-            .to_owned(),
-        language: manifest
-            .get("language")
-            .and_then(serde_json::Value::as_str)
-            .filter(|language| language.len() <= 16)
-            .map(str::to_owned),
-        page_count: manifest
-            .get("page_count")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|pages| u32::try_from(pages).ok())
-            .filter(|pages| *pages > 0),
-        sample_rate,
-        channels,
-        sample_width_bytes,
-        chunks,
-        dir: canonical_output,
-    };
+    Ok(chunks)
+}
+
+/// Build the session for a finished run from its `audio_chunks.json`, and
+/// save it as the run's `session.json`.
+pub(crate) fn load_reader_session(
+    output_dir: &Path,
+    source_path: &Path,
+) -> Result<ReaderSession, String> {
+    let manifest = read_manifest(output_dir)?;
+    if !manifest_progress(&manifest).complete {
+        return Err("Speech generation stopped before the document was finished.".to_owned());
+    }
+    let canonical_output = output_dir
+        .canonicalize()
+        .map_err(|error| format!("Could not inspect generated audio: {error}"))?;
+    let mut session = session_header(&manifest, source_path, canonical_output.clone())?;
+    session.chunks = manifest_chunks(&manifest, output_dir, &canonical_output, 0)?;
+    if session.chunks.is_empty() {
+        return Err("The audio manifest contains no playable chunks.".to_owned());
+    }
     save_session(&session)?;
     Ok(session)
+}
+
+/// Passages that a running synthesis has added since `previous`.
+#[derive(Debug)]
+pub(crate) struct PartialUpdate {
+    pub(crate) session: ReaderSession,
+    /// Index of the first passage not in `previous`.
+    pub(crate) first_new: usize,
+    pub(crate) progress: ManifestProgress,
+}
+
+/// Read a run's manifest while it is being written and extend `previous`
+/// (the passages already published) with the ones that are new. Only the
+/// new passages are validated. `None` until the first passage exists.
+pub(crate) fn refresh_partial_session(
+    output_dir: &Path,
+    source_path: &Path,
+    previous: Option<&ReaderSession>,
+) -> Result<Option<PartialUpdate>, String> {
+    let manifest = read_manifest(output_dir)?;
+    let progress = manifest_progress(&manifest);
+    let mut session = match previous {
+        Some(previous) => {
+            let sha = manifest
+                .get("document_source_sha256")
+                .and_then(serde_json::Value::as_str);
+            if sha != Some(previous.source_sha256.as_str()) {
+                return Err("The audio manifest changed document while it was written.".to_owned());
+            }
+            previous.clone()
+        }
+        None => {
+            let canonical_output = output_dir
+                .canonicalize()
+                .map_err(|error| format!("Could not inspect generated audio: {error}"))?;
+            session_header(&manifest, source_path, canonical_output)?
+        }
+    };
+    let first_new = session.chunks.len();
+    let new_chunks = manifest_chunks(&manifest, output_dir, &session.dir.clone(), first_new)?;
+    if session.chunks.is_empty() && new_chunks.is_empty() {
+        return Ok(None);
+    }
+    session.chunks.extend(new_chunks);
+    Ok(Some(PartialUpdate {
+        session,
+        first_new,
+        progress,
+    }))
 }
 
 /// Write `session.json` into the session's own run directory.
@@ -422,26 +518,46 @@ pub(crate) fn is_safe_relative_audio_path(path: &Path) -> bool {
             .all(|item| matches!(item, Component::Normal(_)))
 }
 
-/// Map an audio route to the active session's manifest entry. The session
-/// lock is held only long enough to copy one path.
+/// Map an audio route to a manifest entry: of the session being
+/// synthesized when it is for this document, otherwise of the open session.
+/// Each lock is held only long enough to copy one path.
 pub(crate) fn session_audio_lookup(
     state: &AppState,
     document_hash: &str,
     index: usize,
 ) -> AudioLookup {
+    {
+        let Ok(streaming) = state.streaming.lock() else {
+            return AudioLookup::StateError;
+        };
+        if let Some(streaming) = streaming
+            .as_ref()
+            .filter(|streaming| streaming.session.source_sha256 == document_hash)
+        {
+            // A passage the new run has not written yet is not served from
+            // an older run of the same document.
+            return chunk_lookup(&streaming.session, index);
+        }
+    }
     let Ok(session) = state.session.lock() else {
         return AudioLookup::StateError;
     };
     match session
         .as_ref()
         .filter(|session| session.source_sha256 == document_hash)
-        .and_then(|session| Some((session, session.chunks.get(index)?)))
     {
-        Some((session, chunk)) if !session.dir.as_os_str().is_empty() => AudioLookup::Passage {
+        Some(session) => chunk_lookup(session, index),
+        None => AudioLookup::NotFound,
+    }
+}
+
+fn chunk_lookup(session: &ReaderSession, index: usize) -> AudioLookup {
+    match session.chunks.get(index) {
+        Some(_) if session.dir.as_os_str().is_empty() => AudioLookup::Unavailable,
+        Some(chunk) => AudioLookup::Passage {
             audio_file: PathBuf::from(&chunk.audio_file),
             chunks_root: session.dir.join("chunks"),
         },
-        Some(_) => AudioLookup::Unavailable,
         None => AudioLookup::NotFound,
     }
 }
@@ -691,6 +807,122 @@ mod tests {
         // A chunk that has gone missing makes the saved session unusable.
         fs::remove_file(root.join("chunks/run/chunk-000000.wav")).unwrap();
         assert!(load_saved_session(&root).is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A run part-way through: `ready` of `total` passages written.
+    fn write_partial_run(root: &Path, sha: &str, ready: usize, total: usize) {
+        let chunks_dir = root.join("chunks/run");
+        fs::create_dir_all(&chunks_dir).unwrap();
+        let chunks: Vec<_> = (0..ready)
+            .map(|index| {
+                let name = format!("chunk-{index:06}.wav");
+                fs::write(chunks_dir.join(&name), b"RIFF").unwrap();
+                serde_json::json!({
+                    "unit_id": format!("u-{index}"), "pause_after_ms": 0,
+                    "duration_seconds": 1.0 + index as f64,
+                    "audio_file": format!("chunks/run/{name}")
+                })
+            })
+            .collect();
+        let manifest = serde_json::json!({
+            "schema_version": 2, "document_source_sha256": sha, "engine": "Piper",
+            "voice": "en_US-test-medium",
+            "audio_format": {"sample_rate": 22050, "channels": 1, "sample_width_bytes": 2},
+            "total_units": total, "completed_units": ready, "complete": ready == total,
+            "chunks": chunks,
+        });
+        fs::write(root.join("audio_chunks.json"), manifest.to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_streaming_run_is_extended_one_batch_of_passages_at_a_time() {
+        let root = std::env::temp_dir().join(format!("sonara-stream-{}", make_job_id()));
+        fs::create_dir_all(&root).unwrap();
+        let source = Path::new("/docs/long.pdf");
+        let sha = "a1".repeat(32);
+        // Before the first passage there is no manifest to read.
+        assert!(refresh_partial_session(&root, source, None).is_err());
+        write_partial_run(&root, &sha, 0, 5);
+        assert!(refresh_partial_session(&root, source, None)
+            .unwrap()
+            .is_none());
+
+        write_partial_run(&root, &sha, 2, 5);
+        let first = refresh_partial_session(&root, source, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.first_new, 0);
+        assert_eq!(first.session.chunks.len(), 2);
+        assert_eq!(
+            first.progress,
+            ManifestProgress {
+                completed: 2,
+                total: 5,
+                complete: false
+            }
+        );
+        assert!(
+            !root.join(SESSION_FILE).exists(),
+            "a partial run is not saved"
+        );
+
+        write_partial_run(&root, &sha, 4, 5);
+        let second = refresh_partial_session(&root, source, Some(&first.session))
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.first_new, 2);
+        assert_eq!(second.session.chunks.len(), 4);
+        assert_eq!(second.session.chunks[3].unit_id.as_deref(), Some("u-3"));
+
+        // A manifest for another document is refused, not merged.
+        write_partial_run(&root, &"b2".repeat(32), 4, 5);
+        assert!(refresh_partial_session(&root, source, Some(&second.session)).is_err());
+
+        write_partial_run(&root, &sha, 5, 5);
+        let done = load_reader_session(&root, source).unwrap();
+        assert_eq!(done.chunks.len(), 5);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn audio_for_a_streaming_document_comes_only_from_the_new_run() {
+        let root = std::env::temp_dir().join(format!("sonara-stream-lookup-{}", make_job_id()));
+        let (old_run, new_run) = (root.join("old"), root.join("new"));
+        fs::create_dir_all(&old_run).unwrap();
+        fs::create_dir_all(&new_run).unwrap();
+        let sha = "c3".repeat(32);
+        write_partial_run(&old_run, &sha, 3, 3);
+        write_partial_run(&new_run, &sha, 1, 3);
+        let source = Path::new("/docs/a.pdf");
+        let state = AppState::default();
+        *state.session.lock().unwrap() = Some(load_reader_session(&old_run, source).unwrap());
+        let streaming = refresh_partial_session(&new_run, source, None)
+            .unwrap()
+            .unwrap();
+        *state.streaming.lock().unwrap() = Some(crate::StreamingSession {
+            job_id: "job".to_owned(),
+            total_chunks: 3,
+            session: streaming.session,
+        });
+
+        match session_audio_lookup(&state, &sha, 0) {
+            AudioLookup::Passage { chunks_root, .. } => {
+                assert!(chunks_root.starts_with(new_run.canonicalize().unwrap()));
+            }
+            _ => panic!("the ready passage is served from the streaming run"),
+        }
+        // Passage 2 exists only in the old run; it must not be served.
+        assert!(matches!(
+            session_audio_lookup(&state, &sha, 2),
+            AudioLookup::NotFound
+        ));
+
+        *state.streaming.lock().unwrap() = None;
+        assert!(matches!(
+            session_audio_lookup(&state, &sha, 2),
+            AudioLookup::Passage { .. }
+        ));
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -66,7 +66,11 @@ function seedLibrary(dataHome) {
   const documents = join(dataHome, "documents");
   mkdirSync(documents, { recursive: true });
   const documentPath = join(documents, "smoke-notes.txt");
-  const text = "Sonara end-to-end check.\n\nThe library reopened this file, and Piper read it aloud on this device.\n";
+  // Enough passages that playback can be seen starting before synthesis ends.
+  const filler = Array.from({ length: 24 }, (_, index) =>
+    `Paragraph ${index + 3} gives the speech worker more to prepare while the first passage plays.`);
+  const text = ["Sonara end-to-end check.", "The library reopened this file, and Piper read it aloud on this device.", ...filler]
+    .join("\n\n") + "\n";
   writeFileSync(documentPath, text);
   const appData = join(dataHome, IDENTIFIER);
   mkdirSync(appData, { recursive: true });
@@ -145,13 +149,25 @@ async function main() {
 
     step("preparing speech with the local Python worker and Piper");
     await click("#start-synthesis");
+    // Streaming: the player appears, pointing at passage 1, while later
+    // passages are still being synthesized.
+    let streamed = null;
     const ready = await waitFor("synthesis to finish", async () => {
-      const text = await bodyText();
-      if (/Speech generation failed|could not|is not installed/i.test(text) && !text.includes("Synthesizing")) {
-        throw new Error(text.slice(0, 400));
+      const page = await run(`return {
+        text: document.body.innerText,
+        src: document.querySelector("audio")?.getAttribute("src") ?? "",
+      }`);
+      if (/Speech generation failed|could not|is not installed/i.test(page.text) && !page.text.includes("Synthesizing")) {
+        throw new Error(page.text.slice(0, 400));
       }
-      return text.match(/Ready to listen · (\d+) passages/);
+      const partial = page.text.match(/(\d+) of (\d+) passages ready/);
+      if (!streamed && partial && Number(partial[1]) < Number(partial[2]) && page.src.endsWith("/0")) {
+        streamed = partial[0];
+      }
+      return page.text.match(/Ready to listen · (\d+) passages/);
     }, SYNTHESIS_TIMEOUT_MS);
+    if (!streamed) throw new Error("the player never opened before synthesis finished");
+    console.log(`  playable while preparing: ${streamed}`);
     console.log(`  ${ready[0]}`);
 
     step("loading the first passage from the loopback audio server");

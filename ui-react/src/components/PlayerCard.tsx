@@ -70,6 +70,10 @@ export const PlayerCard: FC<Props> = ({
     ? Math.min(100, Math.max(0, (state.globalPosition / state.totalDuration) * 100))
     : 0;
 
+  // While the rest is synthesized, only the ready passages can be reached.
+  const plannedChunks = Math.max(state.expectedChunks, session.chunks.length);
+  const streaming = !state.isComplete;
+
   return (
     <section className="player-card" aria-labelledby="player-title" role="region">
       <div className="player-heading">
@@ -149,8 +153,8 @@ export const PlayerCard: FC<Props> = ({
           type="button"
           aria-label="Next passage"
           title="Next passage"
-          disabled={state.segment >= session.chunks.length - 1}
-          onClick={() => onSeekChunk(Math.min(session.chunks.length - 1, state.segment + 1))}
+          disabled={state.segment >= plannedChunks - 1}
+          onClick={() => onSeekChunk(Math.min(plannedChunks - 1, state.segment + 1))}
         >
           <SkipForward size={16} fill="currentColor" aria-hidden="true" />
         </button>
@@ -172,6 +176,11 @@ export const PlayerCard: FC<Props> = ({
           <span>Position</span>
           <span id="position-label" className="mono">
             {formatClock(state.globalPosition)} / {formatClock(state.totalDuration)}
+            {streaming && (
+              <span className="position-estimate" title="Estimated from the passages prepared so far">
+                {" "}ready · about {formatClock(state.estimatedDuration)} in all
+              </span>
+            )}
           </span>
         </label>
         <div className="range-track-wrapper">
@@ -189,7 +198,7 @@ export const PlayerCard: FC<Props> = ({
             aria-valuemin={0}
             aria-valuemax={1000}
             aria-valuenow={seekValue}
-            aria-valuetext={`${formatClock(state.globalPosition)} of ${formatClock(state.totalDuration)}`}
+            aria-valuetext={`${formatClock(state.globalPosition)} of ${formatClock(state.totalDuration)}${streaming ? " prepared so far" : ""}`}
           />
         </div>
       </div>
@@ -219,10 +228,13 @@ export const PlayerCard: FC<Props> = ({
       <div className="passage-navigation">
         <div className="passage-navigation-label">
           <span>Passages</span>
-          <span>Passage {state.segment + 1} of {session.chunks.length}</span>
+          <span>
+            Passage {state.segment + 1} of {plannedChunks}
+            {streaming && ` · ${session.chunks.length} ready`}
+          </span>
         </div>
-        <div className="passage-dots" role="group" aria-label={`Passages: currently on passage ${state.segment + 1} of ${session.chunks.length}`}>
-          {session.chunks.length <= 64 && session.chunks.map((chunk, i) => {
+        <div className="passage-dots" role="group" aria-label={`Passages: currently on passage ${state.segment + 1} of ${plannedChunks}`}>
+          {plannedChunks <= 64 && session.chunks.map((chunk, i) => {
             const isCurrent = i === state.segment;
             const isDone = i < state.segment;
             const startTime = chunkStarts[i] ?? 0;
@@ -233,12 +245,23 @@ export const PlayerCard: FC<Props> = ({
                 className={`dot${isCurrent ? " active" : ""}${isDone ? " done" : ""}`}
                 onClick={() => onSeekChunk(i)}
                 title={`Passage ${i + 1} (${formatClock(startTime)}, ${chunk.durationSeconds.toFixed(1)}s)`}
-                aria-label={`Jump to passage ${i + 1} of ${session.chunks.length}`}
+                aria-label={`Jump to passage ${i + 1} of ${plannedChunks}`}
                 aria-current={isCurrent ? "step" : undefined}
               />
             );
           })}
-          {session.chunks.length > 64 && (
+          {plannedChunks <= 64 && Array.from({ length: plannedChunks - session.chunks.length }, (_, k) => {
+            const i = session.chunks.length + k;
+            return (
+              <span
+                key={i}
+                className={`dot pending${i === state.segment ? " active" : ""}`}
+                title={`Passage ${i + 1} is being prepared`}
+                aria-hidden="true"
+              />
+            );
+          })}
+          {plannedChunks > 64 && (
             <span className="passage-count">Use Position above to move through passages.</span>
           )}
         </div>

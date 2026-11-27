@@ -23,7 +23,7 @@ Not verified: listener judgement of the voice profiles, normalization rules, or 
 `e2e/desktop-smoke.mjs` drives the real app through `tauri-driver` and WebKitWebDriver (Linux; `webkit2gtk-driver` on Debian/Ubuntu, `cargo install tauri-driver --locked`). It has no npm dependencies and speaks the W3C WebDriver protocol over `fetch`. The native file picker cannot be automated, so the test seeds Sonara 1.x data (a version 1 `library.json` and a 1.x audio cache) in a temporary `XDG_DATA_HOME`. It then:
 
 1. reopens the document from the library by hash;
-2. prepares speech with the Python worker and the Ryan Piper voice;
+2. prepares speech with the Python worker and the Ryan Piper voice for a 26-passage document, and checks that the player opens on passage 1 while later passages are still being synthesized ("k of N passages ready");
 3. waits for the first passage's metadata from the loopback audio server, and checks the URL shape;
 4. opens the reading view, checks that the first passage is highlighted, and uses "Listen from here" on paragraph 2;
 5. checks that the library shows the finished document;

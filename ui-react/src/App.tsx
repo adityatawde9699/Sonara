@@ -8,7 +8,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { AssistantDrawer } from "./components/AssistantDrawer";
 import { NarrationPreviewModal } from "./components/NarrationPreviewModal";
-import { useSonara } from "./hooks/useSonara";
+import { isListeningPhase, useSonara } from "./hooks/useSonara";
 import { isModalDialogOpen } from "./hooks/useModalDialog";
 import type { NarrationPreview } from "./lib/tauri";
 import { ArrowLeft, BookOpenText, History, House, Info, Library, Play, Plus, Search, Settings, ShieldCheck, Star, SunMoon, X } from "lucide-react";
@@ -112,7 +112,7 @@ export default function App() {
   };
 
   return (
-    <main className="app-layout" data-ui="sonara-app" data-player={sonara.session && sonara.phase === "ready" ? "true" : "false"}>
+    <main className="app-layout" data-ui="sonara-app" data-player={sonara.session && isListeningPhase(sonara.phase) ? "true" : "false"}>
       <aside className="app-rail" aria-label="Sonara navigation">
         <button className="rail-brand" type="button" onClick={() => setPage("home")} aria-label="Sonara home">
           <span className="rail-brand-mark" aria-hidden="true">
@@ -229,7 +229,7 @@ export default function App() {
                 <button className="continue-text-action" type="button" onClick={() => sonara.setIsSettingsOpen(true)}>Review settings</button>
               </aside>
             </section>
-          ) : page === "reader" && sonara.session && sonara.phase === "ready" ? (
+          ) : page === "reader" && sonara.session && isListeningPhase(sonara.phase) ? (
             <section className="reader-page"><button className="back-link" type="button" onClick={() => setPage("home")}><ArrowLeft size={16} aria-hidden="true" />Home</button><ReaderPanel
               sourceName={sonara.session.sourceName}
               sourceSha256={sonara.session.sourceSha256}
@@ -267,7 +267,7 @@ export default function App() {
 
           <div className="workspace-grid">
             <section className="workspace-primary" aria-label="Current listening and document import">
-              {sonara.session && sonara.phase === "ready" && (() => {
+              {sonara.session && isListeningPhase(sonara.phase) && (() => {
                 return <section className="continue-card" aria-labelledby="continue-title">
                   <div className="continue-art" aria-hidden="true"><span className="continue-page"><span className="continue-file-kind">{formatDocumentType(sonara.session.sourceName)}</span><i /><i /><i className="is-lit" /><i /><i /><i /></span></div>
                   <div className="continue-copy">
@@ -352,7 +352,7 @@ export default function App() {
 
           </>}
         </div>
-        {sonara.session && sonara.phase === "ready" && (
+        {sonara.session && isListeningPhase(sonara.phase) && (
           <PlayerCard
             session={sonara.session} state={sonara.playerState}
             voiceLabel={[...sonara.voices, ...sonara.kokoroVoices].find((voice) => voice.id === sonara.session?.voice)?.name}

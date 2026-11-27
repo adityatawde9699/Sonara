@@ -32,7 +32,7 @@ The Rust Tauri process owns one persistent `llm_client.py worker`, started lazil
 
 ## Deliberately deferred
 
-SQLx/SQLite, CPAL, Symphonia, Rubato, PyO3, FFmpeg, and spaCy remain deferred. Re-evaluate each against a concrete feature and measured need. The desktop WebView schedules generated passage WAVs through a range-capable local URI protocol, but synthesis still completes before playback; add native audio only if browser/WebView testing shows a real device or interruption problem.
+SQLx/SQLite, CPAL, Symphonia, Rubato, PyO3, FFmpeg, and spaCy remain deferred. Re-evaluate each against a concrete feature and measured need. The desktop WebView schedules generated passage WAVs through a range-capable loopback HTTP server, starting after the first passage while the rest synthesize; add native audio only if browser/WebView testing shows a real device or interruption problem.
 
 ## Primary references
 
